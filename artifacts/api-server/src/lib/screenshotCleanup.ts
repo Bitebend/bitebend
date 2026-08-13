@@ -1,4 +1,4 @@
-import { db, orders } from "@workspace/db";
+import { db, orders, paymentScreenshotInbox } from "@workspace/db";
 import { and, isNotNull, lt, or, eq } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -39,9 +39,20 @@ export async function purgeExpiredScreenshots(): Promise<void> {
       )
       .returning({ id: orders.id });
 
-    if (purged.length > 0) {
+    const purgedInbox = await db
+      .update(paymentScreenshotInbox)
+      .set({ screenshotData: null, updatedAt: new Date() })
+      .where(
+        and(
+          isNotNull(paymentScreenshotInbox.screenshotData),
+          lt(paymentScreenshotInbox.receivedAt, cutoff),
+        ),
+      )
+      .returning({ id: paymentScreenshotInbox.id });
+
+    if (purged.length > 0 || purgedInbox.length > 0) {
       logger.info(
-        { purged: purged.length, cutoff },
+        { orderScreenshotsPurged: purged.length, inboxScreenshotsPurged: purgedInbox.length, cutoff },
         "screenshot_cleanup: purged expired payment screenshots",
       );
     }

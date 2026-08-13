@@ -150,6 +150,30 @@ export interface SessionBill {
   updatedAt: string;
 }
 
+export interface PaymentScreenshotInboxEntry {
+  id: number;
+  restaurantId: number;
+  receivedAt: string;
+  senderJid: string | null;
+  senderPhone: string | null;
+  source: string;
+  matchStatus: "matched" | "unmatched" | "ambiguous";
+  matchedSessionId: number | null;
+  matchedBillId: number | null;
+  matchingStrategy: string | null;
+  isDuplicate: boolean;
+  hasScreenshot: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PaymentScreenshotInboxResponse {
+  entries: PaymentScreenshotInboxEntry[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
 export interface HistorySessionBill {
   id: number;
   sessionId: number;

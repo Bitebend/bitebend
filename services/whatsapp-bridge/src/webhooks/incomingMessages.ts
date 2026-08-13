@@ -81,7 +81,7 @@ export async function handleIncomingMessage(restaurantId: number, msg: Message):
     }
 
     await sendWebhook({ restaurantId, customerPhone, messageType: 'image', imageUrl, timestamp });
-    await sendPaymentScreenshotWebhook({ restaurantId, customerPhone, imageUrl, timestamp });
+    await sendPaymentScreenshotWebhook({ restaurantId, customerPhone, senderJid: msg.from, imageUrl, timestamp });
     return;
   }
 
@@ -91,7 +91,7 @@ export async function handleIncomingMessage(restaurantId: number, msg: Message):
       const imageUrl = urlMatch[0];
       logger.info(`Detected image URL in text message from ${customerPhone}`, { imageUrl });
       await sendWebhook({ restaurantId, customerPhone, messageType: 'image', imageUrl, timestamp });
-      await sendPaymentScreenshotWebhook({ restaurantId, customerPhone, imageUrl, timestamp });
+      await sendPaymentScreenshotWebhook({ restaurantId, customerPhone, senderJid: msg.from, imageUrl, timestamp });
       return;
     }
 

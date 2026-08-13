@@ -3,3 +3,4 @@
 - [Replit artifact port routing](replit-artifact-routing.md) — artifact system routes /api→8080, portal→5000, menu→5173; portal Vite server is main entry (port 5000); use Vite proxy for non-API traffic like WebSockets.
 - [WhatsApp Bridge integration](whatsapp-bridge.md) — bridge at services/whatsapp-bridge (port 3001); migration 0013 added whatsapp_status+whatsapp_phone to restaurants; Drizzle journal needed manual 0013 entry after direct psql apply.
 - [Rupee migration (paise → rupees)](rupee-migration.md) — migration 0022 converts subscription tables from paise; menu/order was already rupees; Razorpay boundary always needs *100; all monetary columns now doublePrecision.
+- [Imported project verification](imported-project-verification.md) — Node 24 builds the app despite a Node 20 engine; bridge typecheck and overlapping launcher workflows need separate follow-up decisions.

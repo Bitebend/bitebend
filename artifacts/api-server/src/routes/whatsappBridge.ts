@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { requireOwner } from "../middlewares/auth";
 import { logger } from "../lib/logger";
-import { db } from "@workspace/db";
-import { sessionBills, tableSessions } from "@workspace/db";
-import { eq, and, desc, gte } from "drizzle-orm";
-import { emitSessionScreenshotEvent } from "../lib/orderEvents";
+import { db, paymentScreenshotInbox } from "@workspace/db";
+import { eq, and, desc } from "drizzle-orm";
+import { emitSessionScreenshotEvent, emitScreenshotInboxEvent } from "../lib/orderEvents";
+import { matchAndAttachScreenshot } from "../lib/screenshotMatcher";
 import { getBridgeState, isBridgeManaged } from "../lib/bridgeManager";
 import type { RequestHandler } from "express";
 
@@ -120,18 +120,9 @@ router.post("/whatsapp/incoming", ((req, res) => {
 }) as RequestHandler);
 
 // ── Payment screenshot webhook from the bridge ────────────────────────────────
-// Called when a customer sends an image via WhatsApp.
-//
-// Matching priority:
-//   1. Session bill match (deterministic):
-//      incoming phone === session_bill.customer_phone
-//      AND session_bill.status = 'sent'
-//      AND session_bill.restaurant_id = restaurantId
-//      → Screenshot attached to session bill; session moves to awaiting_verification
-//
-//   2. Fallback — order-level match (legacy / individual orders without sessions):
-//      Find latest unpaid order for that phone + restaurant
-//      → Screenshot attached to the order
+// IMPORTANT: every screenshot is persisted in paymentScreenshotInbox BEFORE
+// automatic matching. A failed/ambiguous match therefore remains visible in
+// the owner's Payment Screenshot Inbox instead of being discarded.
 router.post("/whatsapp/payment-screenshot", (async (req, res) => {
   const secret = req.headers["x-webhook-secret"];
   if (BITEBEND_WEBHOOK_SECRET && secret !== BITEBEND_WEBHOOK_SECRET) {
@@ -139,297 +130,240 @@ router.post("/whatsapp/payment-screenshot", (async (req, res) => {
     return;
   }
 
-  const { restaurantId, customerPhone, imageUrl, timestamp } = req.body as {
-    restaurantId: number;
-    customerPhone: string;
-    imageUrl: string;
-    timestamp: string;
+  const body = req.body as {
+    restaurantId?: number;
+    customerPhone?: string;
+    senderJid?: string;
+    imageUrl?: string;
+    timestamp?: string;
   };
 
+  const restaurantId = body.restaurantId;
+  const customerPhone = body.customerPhone ?? "";
+  const senderJid = body.senderJid;
+  const imageUrl = body.imageUrl ?? "";
+  const receivedAt = body.timestamp ? new Date(body.timestamp) : new Date();
+
   if (!restaurantId || !customerPhone || !imageUrl) {
-    res.status(400).json({ error: "restaurantId, customerPhone and imageUrl are required" });
+    res.status(400).json({
+      error: "restaurantId, customerPhone and imageUrl are required",
+    });
+    return;
+  }
+
+  if (Number.isNaN(receivedAt.getTime())) {
+    res.status(400).json({ error: "timestamp must be a valid ISO date" });
     return;
   }
 
   logger.info(
-    { restaurantId, customerPhone, imageUrl, timestamp },
-    "[whatsapp:payment-screenshot] screenshot received"
+    { restaurantId, customerPhone, senderJid, timestamp: receivedAt.toISOString() },
+    "[whatsapp:payment-screenshot] screenshot received",
   );
 
-  // ── Normalize phone ────────────────────────────────────────────────────────
+  // Normalize the sender phone. For @lid messages the bridge may only be able
+  // to provide an opaque LID number; those screenshots are still stored in the
+  // inbox and can be manually attached by staff.
   const digits = customerPhone.replace(/\D/g, "").replace(/^0+/, "");
   let normalizedPhone: string | null = null;
   if (digits.length === 10) normalizedPhone = `91${digits}`;
   else if (digits.length === 12 && digits.startsWith("91")) normalizedPhone = digits;
   else if (digits.length === 11 && digits.startsWith("0")) normalizedPhone = `91${digits.slice(1)}`;
 
-  if (!normalizedPhone) {
-    // ── LID / unresolvable phone fallback ───────────────────────────────────
-    // WhatsApp's newer linked-device architecture can deliver msg.from as an
-    // @lid JID (e.g. "268641748652129@lid").  whatsapp-web.js contact.number
-    // returns the LID digits, not the real phone — so Indian-pattern normali-
-    // sation always fails for these senders.
-    //
-    // Fallback: if exactly ONE session bill is in 'sent' status for this
-    // restaurant, the incoming image is unambiguously from that customer.
-    // Resolve their phone from the bill and continue the normal flow.
-    // If there are zero or multiple pending bills we cannot safely assign the
-    // screenshot and return 422 as before.
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-    const pendingBills = await db
-      .select({ id: sessionBills.id, customerPhone: sessionBills.customerPhone, sentAt: sessionBills.sentAt })
-      .from(sessionBills)
-      .where(
-        and(
-          eq(sessionBills.restaurantId, restaurantId),
-          eq(sessionBills.status, "sent"),
-          gte(sessionBills.sentAt, thirtyMinutesAgo),
-        )
-      )
-      .limit(2);
-
-    logger.info(
-      { customerPhone, restaurantId, pendingBillCount: pendingBills.length, windowMinutes: 30 },
-      "[whatsapp:payment-screenshot:fallback] queried recent sent bills"
-    );
-
-    if (pendingBills.length === 1) {
-      const bill = pendingBills[0];
-      normalizedPhone = bill.customerPhone;
-      logger.info(
-        {
-          customerPhone,
-          resolvedTo: normalizedPhone,
-          sessionBillId: bill.id,
-          sentAt: bill.sentAt,
-          fallbackAccepted: true,
-        },
-        "[whatsapp:payment-screenshot:fallback] accepted — exactly 1 recent pending bill, phone resolved"
-      );
-    } else {
-      logger.warn(
-        {
-          customerPhone,
-          restaurantId,
-          pendingBillCount: pendingBills.length,
-          windowMinutes: 30,
-          fallbackAccepted: false,
-          reason: pendingBills.length === 0 ? "no_recent_pending_bills" : "multiple_pending_bills",
-        },
-        "[whatsapp:payment-screenshot:fallback] rejected — cannot safely assign screenshot"
-      );
-      res.status(422).json({ error: "Could not normalize phone number" });
-      return;
-    }
-  }
-
-  // ── Download image from bridge URL → base64 data URL ──────────────────────
-  // Bridges may send either an HTTP(S) URL to fetch, or a data: URI directly.
+  // Download the image into the database-owned data URL. We do this before
+  // inserting the inbox row so the inbox always contains a usable screenshot.
   let screenshotDataUrl: string;
   if (imageUrl.startsWith("data:")) {
     screenshotDataUrl = imageUrl;
-    logger.debug("[whatsapp:payment-screenshot] image received as data URI — no fetch needed");
   } else {
     try {
       const imageRes = await fetch(imageUrl, { signal: AbortSignal.timeout(10_000) });
       if (!imageRes.ok) throw new Error(`HTTP ${imageRes.status} fetching image`);
       const contentType = imageRes.headers.get("content-type") ?? "image/jpeg";
-      const buffer = await imageRes.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString("base64");
-      screenshotDataUrl = `data:${contentType};base64,${base64}`;
-      logger.debug({ bytes: buffer.byteLength }, "[whatsapp:payment-screenshot] image downloaded and encoded");
-    } catch (fetchErr) {
+      const buffer = Buffer.from(await imageRes.arrayBuffer());
+      screenshotDataUrl = `data:${contentType};base64,${buffer.toString("base64")}`;
+    } catch (error) {
       logger.error(
-        { imageUrl, error: (fetchErr as Error).message },
-        "[whatsapp:payment-screenshot] failed to download image — aborting"
+        { restaurantId, imageUrl, error: (error as Error).message },
+        "[whatsapp:payment-screenshot] failed to fetch image",
       );
       res.status(502).json({ error: "Failed to fetch image from bridge" });
       return;
     }
   }
 
-  const now = new Date();
+  const { createHash } = await import("node:crypto");
+  const imageHash = createHash("sha256").update(screenshotDataUrl).digest("hex");
 
-  // ── Priority 1: Session bill match (deterministic phone-based) ─────────────
-  // Match incoming phone === session_bill.customer_phone AND status = 'sent'
-  const [sessionBill] = await db
-    .select()
-    .from(sessionBills)
+  // Persist FIRST. Duplicate screenshots are retained for auditability but are
+  // not automatically attached to another bill.
+  const [existingDuplicate] = await db
+    .select({ id: paymentScreenshotInbox.id })
+    .from(paymentScreenshotInbox)
     .where(
       and(
-        eq(sessionBills.restaurantId, restaurantId),
-        eq(sessionBills.customerPhone, normalizedPhone ?? ""),
-        eq(sessionBills.status, "sent"),
-      )
+        eq(paymentScreenshotInbox.restaurantId, restaurantId),
+        eq(paymentScreenshotInbox.imageHash, imageHash),
+      ),
     )
-    .orderBy(desc(sessionBills.createdAt))
+    .orderBy(desc(paymentScreenshotInbox.createdAt))
     .limit(1);
 
-  if (sessionBill) {
-    // Attach screenshot to the session bill (phones matched — normal flow)
-    await db
-      .update(sessionBills)
-      .set({
-        screenshotUrl: screenshotDataUrl,
-        screenshotReceivedAt: now,
-        senderPhone: normalizedPhone,
-        phoneMismatch: false,
-        status: "awaiting_verification",
-        updatedAt: now,
-      })
-      .where(eq(sessionBills.id, sessionBill.id));
+  const [inboxEntry] = await db
+    .insert(paymentScreenshotInbox)
+    .values({
+      restaurantId,
+      receivedAt,
+      senderJid: senderJid ?? null,
+      senderPhone: normalizedPhone ?? customerPhone,
+      screenshotData: screenshotDataUrl,
+      source: "whatsapp",
+      matchStatus: "unmatched",
+      imageHash,
+      isDuplicate: !!existingDuplicate,
+      duplicateOfId: existingDuplicate?.id ?? null,
+    })
+    .returning();
 
-    // Advance session to awaiting_verification
-    await db
-      .update(tableSessions)
-      .set({ status: "awaiting_verification", updatedAt: now })
-      .where(eq(tableSessions.id, sessionBill.sessionId));
-
-    // Fetch session for the table number (needed for SSE payload)
-    const [session] = await db
-      .select()
-      .from(tableSessions)
-      .where(eq(tableSessions.id, sessionBill.sessionId))
-      .limit(1);
-
-    logger.info(
-      {
-        event: "session_screenshot_received",
-        sessionBillId: sessionBill.id,
-        sessionId: sessionBill.sessionId,
-        restaurantId,
-        customerPhone: normalizedPhone,
-      },
-      "[whatsapp:payment-screenshot] screenshot attached to session bill — awaiting_verification"
-    );
-
-    emitSessionScreenshotEvent(restaurantId, {
-      sessionId: sessionBill.sessionId,
-      billId: sessionBill.id,
-      tableNumber: session?.tableNumber ?? "?",
-      billNumber: sessionBill.billNumber,
-      total: sessionBill.total,
-      customerPhone: normalizedPhone ?? "",
-    });
-
-    res.json({ ok: true, matched: "session_bill", sessionBillId: sessionBill.id });
+  if (!inboxEntry) {
+    res.status(500).json({ error: "Failed to create screenshot inbox entry" });
     return;
   }
 
-  // ── Priority 1.5: Phone mismatch — screenshot from wrong phone ────────────
-  // A screenshot arrived from a phone that does NOT match any 'sent' bill.
-  // If exactly one 'sent' bill exists for this restaurant in the last 30 min,
-  // we can safely attach the screenshot with phone_mismatch=true, send an
-  // auto-reply to the sender, and let staff handle it via the warning UI.
-  // If zero or multiple bills are pending we cannot assign the screenshot.
-  {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-    const sentBills = await db
-      .select()
-      .from(sessionBills)
-      .where(
-        and(
-          eq(sessionBills.restaurantId, restaurantId),
-          eq(sessionBills.status, "sent"),
-          gte(sessionBills.sentAt, thirtyMinutesAgo),
-        )
-      )
-      .orderBy(desc(sessionBills.createdAt))
-      .limit(2);
+  // A duplicate is deliberately left in the inbox for staff visibility. It is
+  // never allowed to overwrite/replace a bill automatically.
+  if (existingDuplicate) {
+    emitScreenshotInboxEvent(restaurantId, {
+      inboxId: inboxEntry.id,
+      matchStatus: "unmatched",
+      receivedAt: receivedAt.toISOString(),
+      isDuplicate: true,
+    });
 
-    if (sentBills.length === 1) {
-      const mismatchBill = sentBills[0]!;
-
-      await db
-        .update(sessionBills)
-        .set({
-          screenshotUrl: screenshotDataUrl,
-          screenshotReceivedAt: now,
-          senderPhone: normalizedPhone,
-          phoneMismatch: true,
-          status: "awaiting_verification",
-          updatedAt: now,
-        })
-        .where(eq(sessionBills.id, mismatchBill.id));
-
-      await db
-        .update(tableSessions)
-        .set({ status: "awaiting_verification", updatedAt: now })
-        .where(eq(tableSessions.id, mismatchBill.sessionId));
-
-      // Auto-reply to the sender's phone
-      const replyMessage =
-        "The phone number used to send this payment proof does not match the phone number used to place the order.\n\nPlease resend the payment proof from the original ordering phone number.";
-      try {
-        await fetch(`${BRIDGE_URL}/api/send-message`, {
-          method: "POST",
-          headers: bridgeHeaders(),
-          body: JSON.stringify({ restaurantId, phone: normalizedPhone, message: replyMessage }),
-          signal: AbortSignal.timeout(8000),
-        });
-        logger.info(
-          { restaurantId, senderPhone: normalizedPhone },
-          "[whatsapp:payment-screenshot:mismatch] auto-reply sent to sender"
-        );
-      } catch (replyErr) {
-        logger.warn(
-          { error: (replyErr as Error).message },
-          "[whatsapp:payment-screenshot:mismatch] auto-reply failed — continuing"
-        );
-      }
-
-      logger.warn(
-        {
-          event: "session_screenshot_phone_mismatch",
-          sessionBillId: mismatchBill.id,
-          sessionId: mismatchBill.sessionId,
-          restaurantId,
-          expectedPhone: mismatchBill.customerPhone,
-          senderPhone: normalizedPhone,
-        },
-        "[whatsapp:payment-screenshot] phone mismatch — screenshot stored, approval blocked"
-      );
-
-      // Fetch session for SSE payload
-      const [mismatchSession] = await db
-        .select()
-        .from(tableSessions)
-        .where(eq(tableSessions.id, mismatchBill.sessionId))
-        .limit(1);
-
-      emitSessionScreenshotEvent(restaurantId, {
-        sessionId: mismatchBill.sessionId,
-        billId: mismatchBill.id,
-        tableNumber: mismatchSession?.tableNumber ?? "?",
-        billNumber: mismatchBill.billNumber,
-        total: mismatchBill.total,
-        customerPhone: mismatchBill.customerPhone ?? normalizedPhone ?? "",
-      });
-
-      res.json({ ok: true, matched: "session_bill_mismatch", sessionBillId: mismatchBill.id });
-      return;
-    }
-
-    logger.info(
-      { restaurantId, senderPhone: normalizedPhone, pendingBillCount: sentBills.length },
-      "[whatsapp:payment-screenshot:mismatch] cannot assign — skipping to order fallback"
+    logger.warn(
+      { restaurantId, inboxId: inboxEntry.id, duplicateOfId: existingDuplicate.id },
+      "[whatsapp:payment-screenshot] duplicate screenshot stored in inbox",
     );
+
+    res.json({
+      ok: true,
+      inboxId: inboxEntry.id,
+      matched: "none",
+      reason: "duplicate",
+    });
+    return;
   }
 
-  // ── No matching sent bill — screenshot is unmatched, log and discard ─────────
-  // A screenshot arrived but there is no session bill in 'sent' status that can
-  // receive it (zero or multiple pending bills, and no phone match).
-  // We do NOT attach it to any order.
+  let outcome;
+  try {
+    outcome = await matchAndAttachScreenshot({
+      restaurantId,
+      senderJid,
+      normalizedPhone,
+      screenshotDataUrl,
+      now: receivedAt,
+    });
+  } catch (error) {
+    logger.error(
+      { restaurantId, inboxId: inboxEntry.id, error: (error as Error).message },
+      "[whatsapp:payment-screenshot] matching failed after inbox persistence",
+    );
+    // Keep the inbox row as unmatched. A later retry can safely run the matcher.
+    emitScreenshotInboxEvent(restaurantId, {
+      inboxId: inboxEntry.id,
+      matchStatus: "unmatched",
+      receivedAt: receivedAt.toISOString(),
+      isDuplicate: false,
+    });
+    res.status(202).json({ ok: true, inboxId: inboxEntry.id, matched: "none", reason: "matching_failed" });
+    return;
+  }
+
+  if (outcome.ok) {
+    await db
+      .update(paymentScreenshotInbox)
+      .set({
+        matchStatus: "matched",
+        matchedSessionId: outcome.sessionId,
+        matchedBillId: outcome.sessionBillId,
+        matchingStrategy: outcome.strategy,
+        updatedAt: new Date(),
+      })
+      .where(eq(paymentScreenshotInbox.id, inboxEntry.id));
+
+    emitSessionScreenshotEvent(restaurantId, {
+      sessionId: outcome.sessionId,
+      billId: outcome.sessionBillId,
+      tableNumber: outcome.tableNumber,
+      billNumber: outcome.billNumber,
+      total: outcome.total,
+      customerPhone: outcome.effectivePhone ?? normalizedPhone ?? customerPhone,      
+    });
+
+    emitScreenshotInboxEvent(restaurantId, {
+      inboxId: inboxEntry.id,
+      matchStatus: "matched",
+      receivedAt: receivedAt.toISOString(),
+      isDuplicate: false,
+    });
+
+    logger.info(
+      {
+        event: "screenshot_matched",
+        restaurantId,
+        inboxId: inboxEntry.id,
+        sessionBillId: outcome.sessionBillId,
+        strategy: outcome.strategy,
+      },
+      "[whatsapp:payment-screenshot] screenshot matched and attached",
+    );
+
+    res.json({
+      ok: true,
+      inboxId: inboxEntry.id,
+      matched: "session_bill",
+      sessionBillId: outcome.sessionBillId,
+    });
+    return;
+  }
+
+  const matchStatus = outcome.reason === "ambiguous_phone_multiple_bills"
+    ? "ambiguous"
+    : "unmatched";
+
+  await db
+    .update(paymentScreenshotInbox)
+    .set({
+      matchStatus,
+      matchingStrategy: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(paymentScreenshotInbox.id, inboxEntry.id));
+
+  emitScreenshotInboxEvent(restaurantId, {
+    inboxId: inboxEntry.id,
+    matchStatus,
+    receivedAt: receivedAt.toISOString(),
+    isDuplicate: false,
+  });
+
   logger.warn(
     {
       event: "screenshot_unmatched",
       restaurantId,
-      senderPhone: normalizedPhone,
-      reason: "no_sent_bill_to_match",
+      inboxId: inboxEntry.id,
+      reason: outcome.reason,
+      candidates: outcome.candidates,
     },
-    "[whatsapp:payment-screenshot] screenshot discarded — no matching 'sent' session bill found"
+    "[whatsapp:payment-screenshot] screenshot retained in inbox for manual review",
   );
-  res.json({ ok: true, matched: "none", reason: "no_sent_bill_to_match" });
+
+  res.json({
+    ok: true,
+    inboxId: inboxEntry.id,
+    matched: "none",
+    reason: outcome.reason,
+  });
 }) as RequestHandler);
 
 export default router;
