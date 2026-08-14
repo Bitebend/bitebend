@@ -9,23 +9,50 @@ interface OrderEvent {
   itemCount: number;
 }
 
-function playNotificationSound() {
+interface ScreenshotEvent {
+  orderId: number;
+  customerPhone: string;
+  customerName: string | null;
+  total: number;
+}
+
+export interface SessionScreenshotEvent {
+  sessionId: number;
+  billId: number;
+  tableNumber: string;
+  billNumber: string;
+  total: number;
+  customerPhone: string;
+}
+
+export interface ScreenshotInboxReceivedEvent {
+  inboxId: number;
+  matchStatus: "matched" | "unmatched" | "ambiguous";
+  receivedAt: string;
+  isDuplicate?: boolean;
+}
+
+function playNotificationSound(): void {
   try {
     const ctx = new AudioContext();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
+
     osc.connect(gain);
     gain.connect(ctx.destination);
+
     osc.type = "sine";
     osc.frequency.setValueAtTime(880, ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.15);
+
     gain.gain.setValueAtTime(0.35, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.5);
     osc.onended = () => void ctx.close();
   } catch {
-    // AudioContext not available (e.g. browser blocked autoplay)
+    // Browser autoplay / AudioContext policy may block sound.
   }
 }
 
@@ -37,132 +64,174 @@ interface UseOrderNotificationsOptions {
   onScreenshotInboxReceived?: () => void;
 }
 
-export function useOrderNotifications({ enabled, onNewOrder, onSessionScreenshotReceived, onScreenshotInboxReceived }: UseOrderNotificationsOptions) {
+function parseEvent<T>(event: MessageEvent): T | null {
+  try {
+    return JSON.parse(String(event.data)) as T;
+  } catch {
+    return null;
+  }
+}
+
+export function useOrderNotifications({
+  enabled,
+  onNewOrder,
+  onSessionScreenshotReceived,
+  onScreenshotInboxReceived,
+}: UseOrderNotificationsOptions): void {
   const { toast } = useToast();
-  const retryDelayRef = useRef(1000);
+
   const esRef = useRef<EventSource | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryDelayRef = useRef(1000);
+  const stoppedRef = useRef(false);
 
-  // Store callbacks in refs so the SSE connection is never torn down/rebuilt
-  // just because the callback identity changes between renders.
   const onNewOrderRef = useRef(onNewOrder);
   const onSessionScreenshotRef = useRef(onSessionScreenshotReceived);
   const onScreenshotInboxRef = useRef(onScreenshotInboxReceived);
-  useEffect(() => { onNewOrderRef.current = onNewOrder; }, [onNewOrder]);
-  useEffect(() => { onSessionScreenshotRef.current = onSessionScreenshotReceived; }, [onSessionScreenshotReceived]);
-  useEffect(() => { onScreenshotInboxRef.current = onScreenshotInboxReceived; }, [onScreenshotInboxReceived]);
+  useEffect(() => {
+    onNewOrderRef.current = onNewOrder;
+  }, [onNewOrder]);
+
+  useEffect(() => {
+    onSessionScreenshotRef.current = onSessionScreenshotReceived;
+  }, [onSessionScreenshotReceived]);
+
+  useEffect(() => {
+    onScreenshotInboxRef.current = onScreenshotInboxReceived;
+  }, [onScreenshotInboxReceived]);
 
   useEffect(() => {
     if (!enabled) return;
 
-    let stopped = false;
+    stoppedRef.current = false;
+
+    const clearRetry = () => {
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (stoppedRef.current || retryTimerRef.current !== null) return;
+
+      const delay = retryDelayRef.current;
+      retryDelayRef.current = Math.min(delay * 2, 30_000);
+
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
+        connect();
+      }, delay);
+    };
 
     function connect() {
-      if (stopped) return;
+      if (stoppedRef.current) return;
 
-      const es = new EventSource("/api/owner/orders/stream", { withCredentials: true });
+      const es = new EventSource("/api/owner/orders/stream", {
+        withCredentials: true,
+      });
+
+      esRef.current?.close();
       esRef.current = es;
 
-      es.addEventListener("new-order", (e: MessageEvent) => {
+      es.addEventListener("open", () => {
+        retryDelayRef.current = 1000;
+      });
+
+      es.addEventListener("new-order", (event: MessageEvent) => {
         retryDelayRef.current = 1000;
 
-        let order: OrderEvent;
-        try {
-          order = JSON.parse(e.data as string) as OrderEvent;
-        } catch {
-          return;
-        }
+        const order = parseEvent<OrderEvent>(event);
+        if (!order) return;
 
         playNotificationSound();
 
-        const table = order.tableNumber ? `Table ${order.tableNumber}` : "Take-away";
+        const table = order.tableNumber
+          ? `Table ${order.tableNumber}`
+          : "Take-away";
         const name = order.customerName ? ` · ${order.customerName}` : "";
         const amount = `₹${Number(order.total).toLocaleString("en-IN")}`;
 
         toast({
           title: "New Order!",
-          description: `${table}${name} — ${order.itemCount} item${order.itemCount !== 1 ? "s" : ""} — ${amount}`,
+          description: `${table}${name} — ${order.itemCount} item${
+            order.itemCount !== 1 ? "s" : ""
+          } — ${amount}`,
         });
 
         onNewOrderRef.current?.();
       });
 
-      es.addEventListener("screenshot-received", (e: MessageEvent) => {
+      es.addEventListener("screenshot-received", (event: MessageEvent) => {
         retryDelayRef.current = 1000;
 
-        interface ScreenshotEvent { orderId: number; customerPhone: string; customerName: string | null; total: number; }
-        let event: ScreenshotEvent;
-        try {
-          event = JSON.parse(e.data as string) as ScreenshotEvent;
-        } catch {
-          return;
-        }
+        const data = parseEvent<ScreenshotEvent>(event);
+        if (!data) return;
 
         playNotificationSound();
 
-        const name = event.customerName ? ` · ${event.customerName}` : "";
-        const amount = `₹${event.total.toLocaleString("en-IN")}`;
+        const name = data.customerName ? ` · ${data.customerName}` : "";
+        const amount = `₹${Number(data.total).toLocaleString("en-IN")}`;
 
         toast({
           title: "📸 Payment Screenshot Received",
-          description: `Order #${event.orderId}${name} — ${amount} via WhatsApp`,
+          description: `Order #${data.orderId}${name} — ${amount} via WhatsApp`,
         });
 
         onNewOrderRef.current?.();
       });
 
-      es.addEventListener("session-screenshot-received", (e: MessageEvent) => {
-        retryDelayRef.current = 1000;
+      es.addEventListener(
+        "session-screenshot-received",
+        (event: MessageEvent) => {
+          retryDelayRef.current = 1000;
 
-        interface SessionScreenshotEvent {
-          sessionId: number;
-          billId: number;
-          tableNumber: string;
-          billNumber: string;
-          total: number;
-          customerPhone: string;
-        }
-        let event: SessionScreenshotEvent;
-        try {
-          event = JSON.parse(e.data as string) as SessionScreenshotEvent;
-        } catch {
-          return;
-        }
+          const data = parseEvent<SessionScreenshotEvent>(event);
+          if (!data) return;
 
-        playNotificationSound();
+          playNotificationSound();
 
-        toast({
-          title: "📸 Payment Screenshot Received",
-          description: `Table ${event.tableNumber} — ${event.billNumber} — ₹${event.total.toLocaleString("en-IN")}`,
-        });
+          toast({
+            title: "📸 Payment Screenshot Received",
+            description: `Table ${data.tableNumber} — ${data.billNumber} — ₹${Number(
+              data.total,
+            ).toLocaleString("en-IN")}`,
+          });
 
-        // Invalidate cached screenshot for this session so next "Verify Payment"
-        // click loads a fresh image even if a previous screenshot was cached.
-        onSessionScreenshotRef.current?.(event.sessionId);
-        onNewOrderRef.current?.();
-      });
+          onSessionScreenshotRef.current?.(data.sessionId);
+          onNewOrderRef.current?.();
+        },
+      );
 
-      es.addEventListener("screenshot-inbox-received", (e: MessageEvent) => {
-        retryDelayRef.current = 1000;
+      es.addEventListener(
+        "screenshot-inbox-received",
+        (event: MessageEvent) => {
+          retryDelayRef.current = 1000;
 
-        interface InboxEvent { inboxId: number; matchStatus: string; receivedAt: string; }
-        let event: InboxEvent;
-        try {
-          event = JSON.parse(e.data as string) as InboxEvent;
-        } catch {
-          return;
-        }
+          const data = parseEvent<ScreenshotInboxReceivedEvent>(event);
+          if (!data) return;
 
-        playNotificationSound();
+          playNotificationSound();
 
-        const label = event.matchStatus === "ambiguous" ? "Ambiguous" : "Unmatched";
-        toast({
-          title: "⚠️ Payment Screenshot Unmatched",
-          description: `${label} screenshot received — manual review required`,
-        });
+          if (data.matchStatus === "matched") {
+            toast({
+              title: "📸 Payment Screenshot Received",
+              description: data.isDuplicate
+                ? "Duplicate screenshot received and retained in the inbox"
+                : "Payment screenshot matched successfully",
+            });
+          } else {
+            const label = data.matchStatus === "ambiguous" ? "Ambiguous" : "Unmatched";
+            toast({
+              title: data.isDuplicate ? "📸 Duplicate Payment Screenshot" : "⚠️ Payment Screenshot Needs Review",
+              description: `${label} screenshot received — manual review required`,
+            });
+          }
 
-        onScreenshotInboxRef.current?.();
-      });
+          onScreenshotInboxRef.current?.();
+        },
+      );
+
 
       es.addEventListener("heartbeat", () => {
         retryDelayRef.current = 1000;
@@ -170,24 +239,23 @@ export function useOrderNotifications({ enabled, onNewOrder, onSessionScreenshot
 
       es.onerror = () => {
         es.close();
-        esRef.current = null;
-        if (!stopped) {
-          const delay = retryDelayRef.current;
-          retryDelayRef.current = Math.min(delay * 2, 30000);
-          retryTimerRef.current = setTimeout(connect, delay);
+
+        if (esRef.current === es) {
+          esRef.current = null;
         }
+
+        scheduleReconnect();
       };
     }
 
     connect();
 
     return () => {
-      stopped = true;
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
-      }
+      stoppedRef.current = true;
+      clearRetry();
+
+      esRef.current?.close();
+      esRef.current = null;
     };
   }, [enabled, toast]);
 }

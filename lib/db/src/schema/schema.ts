@@ -425,24 +425,22 @@ export const sessionBills = pgTable(
 export const paymentScreenshotInbox = pgTable(
   "payment_screenshot_inbox",
   {
-    id:               serial("id").primaryKey(),
-    restaurantId:     integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
-    receivedAt:       timestamp("received_at").notNull(),
-    senderJid:        text("sender_jid"),
-    senderPhone:      text("sender_phone"),
-    /** Base64 data URL — nullable after 30-day retention cleanup */
-    screenshotData:   text("screenshot_data"),
-    source:           text("source").notNull().default("whatsapp"),
-    matchStatus:      text("match_status", { enum: ["matched", "unmatched", "ambiguous"] }).notNull().default("unmatched"),
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    receivedAt: timestamp("received_at").notNull(),
+    senderJid: text("sender_jid"),
+    senderPhone: text("sender_phone"),
+    screenshotData: text("screenshot_data"),
+    source: text("source").notNull().default("whatsapp"),
+    matchStatus: text("match_status", { enum: ["matched", "unmatched", "ambiguous"] }).notNull().default("unmatched"),
     matchedSessionId: integer("matched_session_id").references(() => tableSessions.id, { onDelete: "set null" }),
-    matchedBillId:    integer("matched_bill_id").references(() => sessionBills.id, { onDelete: "set null" }),
+    matchedBillId: integer("matched_bill_id").references(() => sessionBills.id, { onDelete: "set null" }),
     matchingStrategy: text("matching_strategy"),
-    /** SHA-256 of screenshotData for duplicate detection */
-    imageHash:        text("image_hash"),
-    isDuplicate:      boolean("is_duplicate").notNull().default(false),
-    duplicateOfId:    integer("duplicate_of_id"),
-    createdAt:        timestamp("created_at").defaultNow().notNull(),
-    updatedAt:        timestamp("updated_at").defaultNow().notNull(),
+    imageHash: text("image_hash"),
+    isDuplicate: boolean("is_duplicate").notNull().default(false),
+    duplicateOfId: integer("duplicate_of_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
     index("idx_psi_restaurant_status").on(t.restaurantId, t.matchStatus),
@@ -457,31 +455,28 @@ export const paymentScreenshotInbox = pgTable(
 
 // ── Visitor Analytics (migration 0029) ────────────────────────────────────────
 // Platform-level visitor tracking for Bitebend pages (initially /login).
-// One row per unique visitor (visitor_id UUID from localStorage).
-// No PII: IP is SHA-256 hashed, no emails/names stored.
 export const visitorSessions = pgTable(
   "visitor_sessions",
   {
-    id:          serial("id").primaryKey(),
-    visitorId:   text("visitor_id").notNull(),   // UUID in localStorage
-    sessionId:   text("session_id").notNull(),   // UUID per browser session
-    firstVisit:  timestamp("first_visit").defaultNow().notNull(),
-    lastVisit:   timestamp("last_visit").defaultNow().notNull(),
-    visitCount:  integer("visit_count").notNull().default(1),
-    isNew:       boolean("is_new").notNull().default(true),
-    // migration 0030: bot filtering
-    isBot:       boolean("is_bot").notNull().default(false),
-    country:     text("country"),
-    state:       text("state"),
-    city:        text("city"),
-    browser:     text("browser"),
-    os:          text("os"),
-    device:      text("device"),
-    language:    text("language"),
-    timezone:    text("timezone"),
-    hashedIp:    text("hashed_ip"),
-    createdAt:   timestamp("created_at").defaultNow().notNull(),
-    updatedAt:   timestamp("updated_at").defaultNow().notNull(),
+    id: serial("id").primaryKey(),
+    visitorId: text("visitor_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    firstVisit: timestamp("first_visit").defaultNow().notNull(),
+    lastVisit: timestamp("last_visit").defaultNow().notNull(),
+    visitCount: integer("visit_count").notNull().default(1),
+    isNew: boolean("is_new").notNull().default(true),
+    isBot: boolean("is_bot").notNull().default(false),
+    country: text("country"),
+    state: text("state"),
+    city: text("city"),
+    browser: text("browser"),
+    os: text("os"),
+    device: text("device"),
+    language: text("language"),
+    timezone: text("timezone"),
+    hashedIp: text("hashed_ip"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
     index("idx_vs_visitor_id").on(t.visitorId),
@@ -490,29 +485,25 @@ export const visitorSessions = pgTable(
   ],
 );
 
-// One row per page load event, linked to a visitor_sessions row.
 export const pageViews = pgTable(
   "page_views",
   {
-    id:               serial("id").primaryKey(),
-    visitorSessionId: integer("visitor_session_id")
-      .notNull()
-      .references(() => visitorSessions.id, { onDelete: "cascade" }),
-    page:             text("page").notNull(),
-    referrer:         text("referrer"),
-    utmSource:        text("utm_source"),
-    utmMedium:        text("utm_medium"),
-    utmCampaign:      text("utm_campaign"),
-    utmContent:       text("utm_content"),
-    screenWidth:      integer("screen_width"),
-    screenHeight:     integer("screen_height"),
-    userAgent:        text("user_agent"),
-    // migration 0030: bot filtering, duration, pre-computed classification
-    isBot:            boolean("is_bot").notNull().default(false),
-    durationSeconds:  integer("duration_seconds"),
-    referrerDomain:   text("referrer_domain"),
-    trafficSource:    text("traffic_source"),
-    createdAt:        timestamp("created_at").defaultNow().notNull(),
+    id: serial("id").primaryKey(),
+    visitorSessionId: integer("visitor_session_id").notNull().references(() => visitorSessions.id, { onDelete: "cascade" }),
+    page: text("page").notNull(),
+    referrer: text("referrer"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmContent: text("utm_content"),
+    screenWidth: integer("screen_width"),
+    screenHeight: integer("screen_height"),
+    userAgent: text("user_agent"),
+    isBot: boolean("is_bot").notNull().default(false),
+    durationSeconds: integer("duration_seconds"),
+    referrerDomain: text("referrer_domain"),
+    trafficSource: text("traffic_source"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
     index("idx_pv_visitor_session_id").on(t.visitorSessionId),
@@ -523,21 +514,17 @@ export const pageViews = pgTable(
   ],
 );
 
-// Generic named-event tracking for conversion funnel (migration 0030).
-// Events link back to visitor_sessions when the visitor UUID is known.
 export const analyticsEvents = pgTable(
   "analytics_events",
   {
-    id:               serial("id").primaryKey(),
-    visitorSessionId: integer("visitor_session_id")
-      .references(() => visitorSessions.id, { onDelete: "set null" }),
-    sessionId:        text("session_id").notNull(),
-    eventName:        text("event_name").notNull(),
-    page:             text("page"),
-    // JSONB bag — lets callers store arbitrary structured data without schema changes
-    properties:       jsonb("properties"),
-    isBot:            boolean("is_bot").notNull().default(false),
-    createdAt:        timestamp("created_at").defaultNow().notNull(),
+    id: serial("id").primaryKey(),
+    visitorSessionId: integer("visitor_session_id").references(() => visitorSessions.id, { onDelete: "set null" }),
+    sessionId: text("session_id").notNull(),
+    eventName: text("event_name").notNull(),
+    page: text("page"),
+    properties: jsonb("properties"),
+    isBot: boolean("is_bot").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
     index("idx_ae_event_name").on(t.eventName),
@@ -546,7 +533,6 @@ export const analyticsEvents = pgTable(
     index("idx_ae_visitor_session").on(t.visitorSessionId),
   ],
 );
-
 export const resources = pgTable("resources", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
