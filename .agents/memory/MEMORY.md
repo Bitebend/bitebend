@@ -9,3 +9,4 @@
 - [Payment Screenshot Inbox](screenshot-inbox.md) — migration 0028; additive safety net; INSERT before matching, UPDATE after; duplicate detection (imageHash+5min); 4 routes in screenshotInbox.ts; dashboard section with filter tabs + retry + manual attach.
 - [Visitor Analytics System](visitor-analytics.md) — migration 0029; visitor_sessions + page_views; POST /platform/analytics/visit is public (unauthenticated); GET endpoints behind requireAdmin; useVisitorTracking hook on /login.
 - [Analytics Enhancements](analytics-enhancements.md) — migration 0030; bot filtering, pre-computed traffic_source, duration_seconds, referrer_domain, analytics_events table; 3 new public endpoints + funnel + export.
+- [Imported project verification](imported-project-verification.md) — Node 24 builds the app despite a Node 20 engine; bridge typecheck and overlapping launcher workflows need separate follow-up decisions.

@@ -5,7 +5,14 @@ import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "wouter";
 import { useOrderNotifications } from "@/hooks/useOrderNotifications";
-import type { Order, DashboardStats, SessionSummary, SessionBill, ScreenshotInboxEntry, ScreenshotInboxPage } from "@/lib/types";
+import type {
+  Order,
+  DashboardStats,
+  SessionSummary,
+  SessionBill,
+  ScreenshotInboxEntry,
+  ScreenshotInboxPage,
+} from "@/lib/types";
 import { HistoryTab } from "@/pages/history/HistoryTab";
 import {
   IndianRupee,
@@ -38,6 +45,8 @@ import {
   Inbox,
   Link2,
   RotateCcw,
+  RotateCw,
+  ImageOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,19 +61,55 @@ import { cn } from "@/lib/utils";
 // ─── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  ordered:               { label: "Ordered",        color: "bg-yellow-100 text-yellow-800 border-yellow-200" },
-  pending_payment:       { label: "Ordered",        color: "bg-yellow-100 text-yellow-800 border-yellow-200" },
-  awaiting_confirmation: { label: "Ordered",        color: "bg-yellow-100 text-yellow-800 border-yellow-200" },
-  pending:               { label: "Ordered",        color: "bg-yellow-100 text-yellow-800 border-yellow-200" },
-  confirmed:             { label: "Ordered",        color: "bg-yellow-100 text-yellow-800 border-yellow-200" },
-  preparing:             { label: "Preparing",      color: "bg-purple-100 text-purple-800 border-purple-200" },
-  ready:                 { label: "Ready",          color: "bg-green-100 text-green-800 border-green-200" },
-  completed:             { label: "Completed",      color: "bg-gray-100 text-gray-600 border-gray-200" },
-  cancelled:             { label: "Cancelled",      color: "bg-red-100 text-red-600 border-red-200" },
-  payment_failed:        { label: "Payment Failed", color: "bg-red-100 text-red-700 border-red-300" },
+  ordered: {
+    label: "Ordered",
+    color: "bg-yellow-100 text-yellow-800 border-yellow-200",
+  },
+  pending_payment: {
+    label: "Ordered",
+    color: "bg-yellow-100 text-yellow-800 border-yellow-200",
+  },
+  awaiting_confirmation: {
+    label: "Ordered",
+    color: "bg-yellow-100 text-yellow-800 border-yellow-200",
+  },
+  pending: {
+    label: "Ordered",
+    color: "bg-yellow-100 text-yellow-800 border-yellow-200",
+  },
+  confirmed: {
+    label: "Ordered",
+    color: "bg-yellow-100 text-yellow-800 border-yellow-200",
+  },
+  preparing: {
+    label: "Preparing",
+    color: "bg-purple-100 text-purple-800 border-purple-200",
+  },
+  ready: {
+    label: "Ready",
+    color: "bg-green-100 text-green-800 border-green-200",
+  },
+  completed: {
+    label: "Completed",
+    color: "bg-gray-100 text-gray-600 border-gray-200",
+  },
+  cancelled: {
+    label: "Cancelled",
+    color: "bg-red-100 text-red-600 border-red-200",
+  },
+  payment_failed: {
+    label: "Payment Failed",
+    color: "bg-red-100 text-red-700 border-red-300",
+  },
 };
 
-const LEGACY_ENTRY = new Set(["ordered", "pending_payment", "awaiting_confirmation", "pending", "confirmed"]);
+const LEGACY_ENTRY = new Set([
+  "ordered",
+  "pending_payment",
+  "awaiting_confirmation",
+  "pending",
+  "confirmed",
+]);
 
 function getNextStatus(status: string): string | null {
   if (LEGACY_ENTRY.has(status)) return "preparing";
@@ -74,7 +119,13 @@ function getNextStatus(status: string): string | null {
 }
 
 const ACTIVE_STATUSES = [
-  "ordered", "pending_payment", "awaiting_confirmation", "pending", "confirmed", "preparing", "ready",
+  "ordered",
+  "pending_payment",
+  "awaiting_confirmation",
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready",
 ];
 
 function extractUtr(notes: string | null | undefined): string | null {
@@ -94,56 +145,127 @@ interface OcrData {
   error?: string;
 }
 
+interface PaymentInboxEntry {
+  id: number;
+  restaurantId: number;
+  receivedAt: string;
+  senderJid: string | null;
+  senderPhone: string | null;
+  source: string;
+  matchStatus: "matched" | "unmatched" | "ambiguous";
+  matchedSessionId: number | null;
+  matchedBillId: number | null;
+  matchingStrategy: string | null;
+  isDuplicate: boolean;
+  hasScreenshot: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface PaymentInboxResponse {
+  entries: PaymentInboxEntry[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
 
 // ─── Main dashboard ────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"live" | "history">("live");
-  const [stats, setStats]   = useState<DashboardStats | null>(null);
+  const [activeTab, setActiveTab] = useState<
+    "live" | "orders" | "payment-inbox" | "history"
+  >("live");
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [expandedSessions, setExpandedSessions] = useState<Set<number>>(() => new Set());
-  const [newOrderSessionIds, setNewOrderSessionIds] = useState<Set<number>>(() => {
-    try { return new Set<number>(JSON.parse(localStorage.getItem("bb_new_session_badges") ?? "[]")); }
-    catch { return new Set(); }
-  });
+
+  // Payment Screenshot Inbox
+  const [paymentInbox, setPaymentInbox] = useState<PaymentInboxEntry[]>([]);
+  const [paymentInboxTotal, setPaymentInboxTotal] = useState(0);
+  const [paymentInboxLoading, setPaymentInboxLoading] = useState(false);
+  const [paymentInboxStatus, setPaymentInboxStatus] = useState<
+    "all" | "matched" | "unmatched" | "ambiguous"
+  >("all");
+  const [viewingInboxId, setViewingInboxId] = useState<number | null>(null);
+  const [inboxImages, setInboxImages] = useState<Map<number, string>>(
+    new Map(),
+  );
+  const [loadingInboxImageId, setLoadingInboxImageId] = useState<number | null>(
+    null,
+  );
+  const [retryingInboxId, setRetryingInboxId] = useState<number | null>(null);
+  const [attachingInboxId, setAttachingInboxId] = useState<number | null>(null);
+  const [selectedInboxBillId, setSelectedInboxBillId] = useState<number | null>(
+    null,
+  );
+  const [expandedSessions, setExpandedSessions] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [newOrderSessionIds, setNewOrderSessionIds] = useState<Set<number>>(
+    () => {
+      try {
+        return new Set<number>(
+          JSON.parse(localStorage.getItem("bb_new_session_badges") ?? "[]"),
+        );
+      } catch {
+        return new Set();
+      }
+    },
+  );
   const [showPasswordReminder, setShowPasswordReminder] = useState(() => {
     try {
       const ts = localStorage.getItem("bb_pw_reminder_dismissed_at");
       if (!ts) return true;
       return Date.now() - parseInt(ts, 10) > 30 * 24 * 60 * 60 * 1000;
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   });
   const [loading, setLoading] = useState(true);
-  const [updatingId, setUpdatingId]       = useState<number | null>(null);
-  const [verifyingId, setVerifyingId]     = useState<number | null>(null);
-  const [rejectingId, setRejectingId]     = useState<number | null>(null);
+  const [updatingId, setUpdatingId] = useState<number | null>(null);
+  const [verifyingId, setVerifyingId] = useState<number | null>(null);
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [orderErrors, setOrderErrors] = useState<Record<number, string>>({});
-
 
   // Tracks the last WhatsApp tab opened by "Send Bill".
   const waWindowRef = useRef<Window | null>(null);
-
 
   // Session bill generation
   const [generatingBillId, setGeneratingBillId] = useState<number | null>(null);
 
   // Session bill: send / approve / reject / mark-paid
-  const [sendingBillSessionId, setSendingBillSessionId] = useState<number | null>(null);
-  const [approvingBillSessionId, setApprovingBillSessionId] = useState<number | null>(null);
-  const [rejectingBillSessionId, setRejectingBillSessionId] = useState<number | null>(null);
-  const [markingPaidSessionId, setMarkingPaidSessionId] = useState<number | null>(null);
+  const [sendingBillSessionId, setSendingBillSessionId] = useState<
+    number | null
+  >(null);
+  const [approvingBillSessionId, setApprovingBillSessionId] = useState<
+    number | null
+  >(null);
+  const [rejectingBillSessionId, setRejectingBillSessionId] = useState<
+    number | null
+  >(null);
+  const [markingPaidSessionId, setMarkingPaidSessionId] = useState<
+    number | null
+  >(null);
 
   // Session bill screenshot viewer
-  const [sessionScreenshots, setSessionScreenshots] = useState<Map<number, string>>(new Map());
-  const [loadingScreenshotSessionId, setLoadingScreenshotSessionId] = useState<number | null>(null);
-  const [viewingScreenshotSessionId, setViewingScreenshotSessionId] = useState<number | null>(null);
+  const [sessionScreenshots, setSessionScreenshots] = useState<
+    Map<number, string>
+  >(new Map());
+  const [loadingScreenshotSessionId, setLoadingScreenshotSessionId] = useState<
+    number | null
+  >(null);
+  const [viewingScreenshotSessionId, setViewingScreenshotSessionId] = useState<
+    number | null
+  >(null);
   const [sessionBillImageZoomed, setSessionBillImageZoomed] = useState(false);
 
   // Incomplete-orders guard modal — shown when Generate Bill is clicked before all orders are completed
-  const [incompleteOrdersModal, setIncompleteOrdersModal] = useState<{ sessionId: number; orders: Order[] } | null>(null);
+  const [incompleteOrdersModal, setIncompleteOrdersModal] = useState<{
+    sessionId: number;
+    orders: Order[];
+  } | null>(null);
 
   // View Bill modal — shows itemized bill for a session
   const [viewingBillSessionId, setViewingBillSessionId] = useState<number | null>(null);
@@ -155,51 +277,78 @@ export default function Dashboard() {
   const [inboxLoading, setInboxLoading] = useState(false);
   const [inboxPage, setInboxPage] = useState(1);
   const [viewingInboxImage, setViewingInboxImage] = useState<{ id: number; data: string | null }>({ id: -1, data: null });
-  const [loadingInboxImageId, setLoadingInboxImageId] = useState<number | null>(null);
   const [attachEntry, setAttachEntry] = useState<ScreenshotInboxEntry | null>(null);
   const [attachBillId, setAttachBillId] = useState<number | null>(null);
   const [attachConfirmReplace, setAttachConfirmReplace] = useState(false);
   const [attachLoading, setAttachLoading] = useState(false);
-  const [retryingInboxId, setRetryingInboxId] = useState<number | null>(null);
 
   const handleSessionScreenshotReceived = useCallback((sessionId: number) => {
-    setSessionScreenshots((prev) => { const next = new Map(prev); next.delete(sessionId); return next; });
+    setSessionScreenshots((prev) => {
+      const next = new Map(prev);
+      next.delete(sessionId);
+      return next;
+    });
   }, []);
 
   const fetchData = useCallback(async () => {
     if (!user) return;
     try {
-      const [statsData, ordersData, sessionsData] = await Promise.all([
-        apiFetch<DashboardStats>("/owner/stats"),
-        apiFetch<Order[]>("/owner/orders"),
-        apiFetch<SessionSummary[]>("/owner/sessions"),
-      ]);
+      const [statsData, ordersData, sessionsData, inboxData] =
+        await Promise.all([
+          apiFetch<DashboardStats>("/owner/stats"),
+          apiFetch<Order[]>("/owner/orders"),
+          apiFetch<SessionSummary[]>("/owner/sessions"),
+          apiFetch<PaymentInboxResponse>(
+            `/owner/screenshot-inbox?status=${paymentInboxStatus}`,
+          ),
+        ]);
       setStats(statsData);
       setOrders(ordersData);
       setSessions(sessionsData);
+      setPaymentInbox(inboxData.entries);
+      setPaymentInboxTotal(inboxData.total);
       // Detect new orders added to existing sessions — localStorage-backed so badge survives refresh
       try {
-        const storedCounts: Record<string, number> = JSON.parse(localStorage.getItem("bb_session_order_counts") ?? "{}");
-        const storedBadges: number[] = JSON.parse(localStorage.getItem("bb_new_session_badges") ?? "[]");
+        const storedCounts: Record<string, number> = JSON.parse(
+          localStorage.getItem("bb_session_order_counts") ?? "{}",
+        );
+        const storedBadges: number[] = JSON.parse(
+          localStorage.getItem("bb_new_session_badges") ?? "[]",
+        );
         const badges = new Set<number>(storedBadges);
         const updatedCounts: Record<string, number> = { ...storedCounts };
         for (const session of sessionsData) {
           const knownCount = storedCounts[String(session.id)];
-          if (knownCount !== undefined && session.orderCount > Number(knownCount)) badges.add(session.id);
+          if (
+            knownCount !== undefined &&
+            session.orderCount > Number(knownCount)
+          )
+            badges.add(session.id);
           updatedCounts[String(session.id)] = session.orderCount;
         }
         // Clean up badges for sessions that are no longer in the active list
         for (const badgeId of badges) {
-          if (!sessionsData.find((s) => s.id === badgeId)) badges.delete(badgeId);
+          if (!sessionsData.find((s) => s.id === badgeId))
+            badges.delete(badgeId);
         }
-        localStorage.setItem("bb_session_order_counts", JSON.stringify(updatedCounts));
-        localStorage.setItem("bb_new_session_badges", JSON.stringify([...badges]));
+        localStorage.setItem(
+          "bb_session_order_counts",
+          JSON.stringify(updatedCounts),
+        );
+        localStorage.setItem(
+          "bb_new_session_badges",
+          JSON.stringify([...badges]),
+        );
         setNewOrderSessionIds(badges);
-      } catch { /* ignore storage errors */ }
-    } catch { /* silently fail on poll */ } finally {
+      } catch {
+        /* ignore storage errors */
+      }
+    } catch {
+      /* silently fail on poll */
+    } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, paymentInboxStatus]);
 
   useEffect(() => {
     if (!user) return;
@@ -227,19 +376,6 @@ export default function Dashboard() {
     void fetchInbox();
   }, [fetchInbox, user]);
 
-  const loadInboxImage = useCallback(async (id: number) => {
-    setLoadingInboxImageId(id);
-    setViewingInboxImage({ id, data: null }); // open dialog immediately while loading
-    try {
-      const res = await apiFetch<{ screenshotData: string }>(`/owner/screenshot-inbox/${id}/image`);
-      setViewingInboxImage({ id, data: res.screenshotData });
-    } catch {
-      toast.error("Could not load screenshot");
-      setViewingInboxImage({ id: -1, data: null });
-    } finally {
-      setLoadingInboxImageId(null);
-    }
-  }, []);
 
   const handleRetryMatch = useCallback(async (inboxId: number) => {
     setRetryingInboxId(inboxId);
@@ -270,7 +406,10 @@ export default function Dashboard() {
         `/owner/screenshot-inbox/${attachEntry.id}/attach`,
         {
           method: "PATCH",
-          body: JSON.stringify({ sessionBillId: attachBillId, forceReplace: attachConfirmReplace }),
+          body: JSON.stringify({
+            sessionBillId: attachBillId,
+            forceReplace: attachConfirmReplace,
+          }),
         },
       );
       if (res.needsConfirmation && !attachConfirmReplace) {
@@ -296,147 +435,304 @@ export default function Dashboard() {
     onScreenshotInboxReceived: fetchInbox,
   });
 
-  const handleGenerateBill = useCallback(async (sessionId: number) => {
-    // Pre-flight: block if any non-cancelled, non-completed orders exist.
-    // Mirrors the backend generateBill 409 guard — frontend convenience only.
-    const session = sessions.find((s) => s.id === sessionId);
-    if (session) {
-      const incomplete = session.orders.filter(
-        (o) => o.status !== "cancelled" && o.status !== "payment_failed" && o.status !== "completed",
-      );
-      if (incomplete.length > 0) {
-        setIncompleteOrdersModal({ sessionId, orders: incomplete });
+  const handleGenerateBill = useCallback(
+    async (sessionId: number) => {
+      // Pre-flight: block if any non-cancelled, non-completed orders exist.
+      // Mirrors the backend generateBill 409 guard — frontend convenience only.
+      const session = sessions.find((s) => s.id === sessionId);
+      if (session) {
+        const incomplete = session.orders.filter(
+          (o) =>
+            o.status !== "cancelled" &&
+            o.status !== "payment_failed" &&
+            o.status !== "completed",
+        );
+        if (incomplete.length > 0) {
+          setIncompleteOrdersModal({ sessionId, orders: incomplete });
+          return;
+        }
+      }
+      setGeneratingBillId(sessionId);
+      try {
+        await apiFetch<SessionBill>(`/owner/sessions/${sessionId}/bill`, {
+          method: "POST",
+        });
+        toast.success("Bill generated — table moved to awaiting payment");
+        await fetchData();
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to generate bill",
+        );
+      } finally {
+        setGeneratingBillId(null);
+      }
+    },
+    [fetchData, sessions],
+  );
+
+  const handleSendSessionBill = useCallback(
+    async (sessionId: number) => {
+      setSendingBillSessionId(sessionId);
+      try {
+        const data = await apiFetch<{
+          ok: boolean;
+          billNumber: string;
+          customerPhone: string;
+          customerName: string;
+          deliveryMethod: "bridge" | "deeplink";
+          sent: boolean;
+          whatsappUrl: string | null;
+        }>(`/owner/sessions/${sessionId}/bill/send`, { method: "POST" });
+
+        if (data.deliveryMethod === "bridge" && data.sent) {
+          toast.success(`Bill sent to ${data.customerName} via WhatsApp ✓`);
+        } else if (data.whatsappUrl) {
+          if (waWindowRef.current && !waWindowRef.current.closed)
+            waWindowRef.current.close();
+          waWindowRef.current = window.open(data.whatsappUrl, "_blank") ?? null;
+          toast.success("WhatsApp opened — tap Send to deliver the bill");
+        }
+        await fetchData();
+      } catch (err: unknown) {
+        toast.error(err instanceof Error ? err.message : "Failed to send bill");
+      } finally {
+        setSendingBillSessionId(null);
+      }
+    },
+    [fetchData],
+  );
+
+  const handleApproveSessionBill = useCallback(
+    async (sessionId: number) => {
+      setApprovingBillSessionId(sessionId);
+      try {
+        await apiFetch(`/owner/sessions/${sessionId}/bill/approve`, {
+          method: "PATCH",
+        });
+        toast.success("Payment approved — session closed ✓");
+        setViewingScreenshotSessionId(null);
+        await fetchData();
+        setActiveTab("history");
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to approve payment",
+        );
+      } finally {
+        setApprovingBillSessionId(null);
+      }
+    },
+    [fetchData],
+  );
+
+  const handleRejectSessionBill = useCallback(
+    async (sessionId: number) => {
+      setRejectingBillSessionId(sessionId);
+      try {
+        await apiFetch(`/owner/sessions/${sessionId}/bill/reject`, {
+          method: "PATCH",
+        });
+        toast.success("Payment rejected — waiting for new screenshot");
+        setViewingScreenshotSessionId(null);
+        await fetchData();
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to reject payment",
+        );
+      } finally {
+        setRejectingBillSessionId(null);
+      }
+    },
+    [fetchData],
+  );
+
+  const handleMarkSessionPaid = useCallback(
+    async (sessionId: number) => {
+      setMarkingPaidSessionId(sessionId);
+      try {
+        await apiFetch(`/owner/sessions/${sessionId}/bill/mark-paid`, {
+          method: "PATCH",
+        });
+        toast.success("Payment recorded — session closed ✓");
+        await fetchData();
+        setActiveTab("history");
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to mark payment",
+        );
+      } finally {
+        setMarkingPaidSessionId(null);
+      }
+    },
+    [fetchData],
+  );
+
+  const loadSessionScreenshot = useCallback(
+    async (sessionId: number) => {
+      if (sessionScreenshots.has(sessionId)) {
+        setViewingScreenshotSessionId(sessionId);
+        setSessionBillImageZoomed(false);
         return;
       }
-    }
-    setGeneratingBillId(sessionId);
-    try {
-      await apiFetch<SessionBill>(`/owner/sessions/${sessionId}/bill`, { method: "POST" });
-      toast.success("Bill generated — table moved to awaiting payment");
-      await fetchData();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to generate bill");
-    } finally {
-      setGeneratingBillId(null);
-    }
-  }, [fetchData, sessions]);
-
-  const handleSendSessionBill = useCallback(async (sessionId: number) => {
-    setSendingBillSessionId(sessionId);
-    try {
-      const data = await apiFetch<{
-        ok: boolean;
-        billNumber: string;
-        customerPhone: string;
-        customerName: string;
-        deliveryMethod: "bridge" | "deeplink";
-        sent: boolean;
-        whatsappUrl: string | null;
-      }>(`/owner/sessions/${sessionId}/bill/send`, { method: "POST" });
-
-      if (data.deliveryMethod === "bridge" && data.sent) {
-        toast.success(`Bill sent to ${data.customerName} via WhatsApp ✓`);
-      } else if (data.whatsappUrl) {
-        if (waWindowRef.current && !waWindowRef.current.closed) waWindowRef.current.close();
-        waWindowRef.current = window.open(data.whatsappUrl, "_blank") ?? null;
-        toast.success("WhatsApp opened — tap Send to deliver the bill");
+      setLoadingScreenshotSessionId(sessionId);
+      try {
+        const data = await apiFetch<{ screenshotUrl: string }>(
+          `/owner/sessions/${sessionId}/bill/screenshot`,
+        );
+        setSessionScreenshots((prev) =>
+          new Map(prev).set(sessionId, data.screenshotUrl),
+        );
+        setViewingScreenshotSessionId(sessionId);
+        setSessionBillImageZoomed(false);
+      } catch {
+        toast.error("Could not load screenshot");
+      } finally {
+        setLoadingScreenshotSessionId(null);
       }
-      await fetchData();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to send bill");
-    } finally {
-      setSendingBillSessionId(null);
-    }
-  }, [fetchData]);
+    },
+    [sessionScreenshots],
+  );
 
-  const handleApproveSessionBill = useCallback(async (sessionId: number) => {
-    setApprovingBillSessionId(sessionId);
-    try {
-      await apiFetch(`/owner/sessions/${sessionId}/bill/approve`, { method: "PATCH" });
-      toast.success("Payment approved — session closed ✓");
-      setViewingScreenshotSessionId(null);
-      await fetchData();
-      setActiveTab("history");
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to approve payment");
-    } finally {
-      setApprovingBillSessionId(null);
-    }
-  }, [fetchData]);
+  const loadInboxImage = useCallback(
+    async (inboxId: number) => {
+      if (inboxImages.has(inboxId)) {
+        setViewingInboxId(inboxId);
+        return;
+      }
+      setLoadingInboxImageId(inboxId);
+      try {
+        const data = await apiFetch<{ screenshotData: string }>(
+          `/owner/screenshot-inbox/${inboxId}/image`,
+        );
+        setInboxImages((prev) =>
+          new Map(prev).set(inboxId, data.screenshotData),
+        );
+        setViewingInboxId(inboxId);
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : "Could not load payment screenshot",
+        );
+      } finally {
+        setLoadingInboxImageId(null);
+      }
+    },
+    [inboxImages],
+  );
 
-  const handleRejectSessionBill = useCallback(async (sessionId: number) => {
-    setRejectingBillSessionId(sessionId);
-    try {
-      await apiFetch(`/owner/sessions/${sessionId}/bill/reject`, { method: "PATCH" });
-      toast.success("Payment rejected — waiting for new screenshot");
-      setViewingScreenshotSessionId(null);
-      await fetchData();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to reject payment");
-    } finally {
-      setRejectingBillSessionId(null);
-    }
-  }, [fetchData]);
+  const handleRetryInboxMatch = useCallback(
+    async (inboxId: number) => {
+      setRetryingInboxId(inboxId);
+      try {
+        const data = await apiFetch<{
+          ok: boolean;
+          matchStatus: string;
+          reason?: string;
+          strategy?: string;
+        }>(`/owner/screenshot-inbox/${inboxId}/retry-match`, {
+          method: "POST",
+        });
+        if (data.matchStatus === "matched")
+          toast.success(
+            `Screenshot matched${data.strategy ? ` via ${data.strategy.replaceAll("_", " ")}` : ""} ✓`,
+          );
+        else
+          toast.info(
+            `Still ${data.matchStatus}${data.reason ? ` — ${data.reason.replaceAll("_", " ")}` : ""}`,
+          );
+        await fetchData();
+      } catch (err: unknown) {
+        toast.error(err instanceof Error ? err.message : "Retry failed");
+      } finally {
+        setRetryingInboxId(null);
+      }
+    },
+    [fetchData],
+  );
 
-  const handleMarkSessionPaid = useCallback(async (sessionId: number) => {
-    setMarkingPaidSessionId(sessionId);
-    try {
-      await apiFetch(`/owner/sessions/${sessionId}/bill/mark-paid`, { method: "PATCH" });
-      toast.success("Payment recorded — session closed ✓");
-      await fetchData();
-      setActiveTab("history");
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to mark payment");
-    } finally {
-      setMarkingPaidSessionId(null);
-    }
-  }, [fetchData]);
-
-  const loadSessionScreenshot = useCallback(async (sessionId: number) => {
-    if (sessionScreenshots.has(sessionId)) {
-      setViewingScreenshotSessionId(sessionId);
-      setSessionBillImageZoomed(false);
-      return;
-    }
-    setLoadingScreenshotSessionId(sessionId);
-    try {
-      const data = await apiFetch<{ screenshotUrl: string }>(`/owner/sessions/${sessionId}/bill/screenshot`);
-      setSessionScreenshots((prev) => new Map(prev).set(sessionId, data.screenshotUrl));
-      setViewingScreenshotSessionId(sessionId);
-      setSessionBillImageZoomed(false);
-    } catch {
-      toast.error("Could not load screenshot");
-    } finally {
-      setLoadingScreenshotSessionId(null);
-    }
-  }, [sessionScreenshots]);
+  const handleAttachInboxScreenshot = useCallback(
+    async (inboxId: number, billId: number, forceReplace = false) => {
+      setAttachingInboxId(inboxId);
+      try {
+        const data = await apiFetch<{
+          ok?: boolean;
+          needsConfirmation?: boolean;
+          message?: string;
+        }>(`/owner/screenshot-inbox/${inboxId}/attach`, {
+          method: "PATCH",
+          body: JSON.stringify({ sessionBillId: billId, forceReplace }),
+        });
+        if (data.needsConfirmation && !forceReplace) {
+          if (
+            window.confirm(
+              data.message ??
+                "This bill already has a payment screenshot. Replace it?",
+            )
+          ) {
+            await handleAttachInboxScreenshot(inboxId, billId, true);
+          }
+          return;
+        }
+        toast.success("Payment screenshot attached to bill ✓");
+        setViewingInboxId(null);
+        setSelectedInboxBillId(null);
+        await fetchData();
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not attach screenshot",
+        );
+      } finally {
+        setAttachingInboxId(null);
+      }
+    },
+    [fetchData],
+  );
 
   const clearError = (id: number) =>
-    setOrderErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setOrderErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
 
   const handleStatusUpdate = async (orderId: number, status: string) => {
     clearError(orderId);
     setUpdatingId(orderId);
     try {
-      await apiFetch(`/owner/orders/${orderId}`, { method: "PUT", body: JSON.stringify({ status }) });
+      await apiFetch(`/owner/orders/${orderId}`, {
+        method: "PUT",
+        body: JSON.stringify({ status }),
+      });
       // Clear the NEW badge when staff clicks "Mark Preparing" on any order in the session
       if (status === "preparing") {
-        const owningSession = sessions.find((s) => s.orders.some((o) => o.id === orderId));
+        const owningSession = sessions.find((s) =>
+          s.orders.some((o) => o.id === orderId),
+        );
         if (owningSession) {
           setNewOrderSessionIds((prev) => {
             const next = new Set(prev);
             next.delete(owningSession.id);
             try {
-              const stored: number[] = JSON.parse(localStorage.getItem("bb_new_session_badges") ?? "[]");
-              localStorage.setItem("bb_new_session_badges", JSON.stringify(stored.filter((id) => id !== owningSession.id)));
-            } catch { /* ignore */ }
+              const stored: number[] = JSON.parse(
+                localStorage.getItem("bb_new_session_badges") ?? "[]",
+              );
+              localStorage.setItem(
+                "bb_new_session_badges",
+                JSON.stringify(stored.filter((id) => id !== owningSession.id)),
+              );
+            } catch {
+              /* ignore */
+            }
             return next;
           });
         }
       }
       await fetchData();
     } catch (err: unknown) {
-      setOrderErrors((prev) => ({ ...prev, [orderId]: err instanceof Error ? err.message : "Failed" }));
+      setOrderErrors((prev) => ({
+        ...prev,
+        [orderId]: err instanceof Error ? err.message : "Failed",
+      }));
     } finally {
       setUpdatingId(null);
     }
@@ -449,7 +745,10 @@ export default function Dashboard() {
       await apiFetch(`/owner/orders/${orderId}/verify-upi`, { method: "POST" });
       await fetchData();
     } catch (err: unknown) {
-      setOrderErrors((prev) => ({ ...prev, [orderId]: err instanceof Error ? err.message : "Failed" }));
+      setOrderErrors((prev) => ({
+        ...prev,
+        [orderId]: err instanceof Error ? err.message : "Failed",
+      }));
     } finally {
       setVerifyingId(null);
     }
@@ -462,59 +761,80 @@ export default function Dashboard() {
       await apiFetch(`/owner/orders/${orderId}/reject-upi`, { method: "POST" });
       await fetchData();
     } catch (err: unknown) {
-      setOrderErrors((prev) => ({ ...prev, [orderId]: err instanceof Error ? err.message : "Failed" }));
+      setOrderErrors((prev) => ({
+        ...prev,
+        [orderId]: err instanceof Error ? err.message : "Failed",
+      }));
     } finally {
       setRejectingId(null);
     }
   };
 
-
   // Orders belonging to any displayed session — shown in the Sessions section, not below
   const activeSessionOrderIds = new Set(
     sessions
-      .filter((s) => s.status === "active" || s.status === "awaiting_payment" || s.status === "awaiting_verification")
+      .filter(
+        (s) =>
+          s.status === "active" ||
+          s.status === "awaiting_payment" ||
+          s.status === "awaiting_verification",
+      )
       .flatMap((s) => s.orders.map((o) => o.id)),
   );
 
   const subBanner = (() => {
     if (!stats) return null;
-    if (stats.hasPendingUpi) return {
-      color: "bg-amber-50 border-amber-200 text-amber-800",
-      icon: <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />,
-      title: "UPI payment pending confirmation",
-      body: "We received your payment request. Our admin will verify and activate your plan within 2 hours.",
-      action: null,
-    };
-    if (!stats.planId && stats.customerLimit === 0) return {
-      color: "bg-orange-50 border-orange-200 text-orange-900",
-      icon: <CreditCard className="w-5 h-5 text-orange-500 shrink-0" />,
-      title: "No active plan — subscribe to go live",
-      body: "You can set up your menu and tables, but you won't be able to accept orders until you subscribe.",
-      action: { label: "Subscribe Now", onClick: () => navigate("/restaurant/subscription") },
-    };
-    if (stats.subscriptionStatus === "exhausted") return {
-      color: "bg-red-50 border-red-200 text-red-900",
-      icon: <XCircle className="w-5 h-5 text-red-500 shrink-0" />,
-      title: "Customer limit reached — recharge your plan",
-      body: `You've served all ${stats.customerLimit >= 999999 ? "Unlimited" : stats.customerLimit.toLocaleString()} customers on your current plan. Recharge now.`,
-      action: { label: "Recharge Plan", onClick: () => navigate("/restaurant/subscription") },
-    };
-    if (stats.subscriptionStatus === "expired") return {
-      color: "bg-red-50 border-red-200 text-red-900",
-      icon: <XCircle className="w-5 h-5 text-red-500 shrink-0" />,
-      title: "Subscription expired — renew to continue accepting orders",
-      body: stats.subscriptionExpiresAt
-        ? `Your plan expired on ${new Date(stats.subscriptionExpiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}. Renew now.`
-        : "Your subscription has expired. Renew now to keep accepting orders.",
-      action: { label: "Renew Plan", onClick: () => navigate("/restaurant/subscription") },
-    };
-    if (stats.subscriptionStatus === "suspended") return {
-      color: "bg-slate-100 border-slate-300 text-slate-800",
-      icon: <AlertCircle className="w-5 h-5 text-slate-500 shrink-0" />,
-      title: "Account suspended",
-      body: "Your account has been suspended by the admin. Please contact support to resolve this.",
-      action: null,
-    };
+    if (stats.hasPendingUpi)
+      return {
+        color: "bg-amber-50 border-amber-200 text-amber-800",
+        icon: <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />,
+        title: "UPI payment pending confirmation",
+        body: "We received your payment request. Our admin will verify and activate your plan within 2 hours.",
+        action: null,
+      };
+    if (!stats.planId && stats.customerLimit === 0)
+      return {
+        color: "bg-orange-50 border-orange-200 text-orange-900",
+        icon: <CreditCard className="w-5 h-5 text-orange-500 shrink-0" />,
+        title: "No active plan — subscribe to go live",
+        body: "You can set up your menu and tables, but you won't be able to accept orders until you subscribe.",
+        action: {
+          label: "Subscribe Now",
+          onClick: () => navigate("/restaurant/subscription"),
+        },
+      };
+    if (stats.subscriptionStatus === "exhausted")
+      return {
+        color: "bg-red-50 border-red-200 text-red-900",
+        icon: <XCircle className="w-5 h-5 text-red-500 shrink-0" />,
+        title: "Customer limit reached — recharge your plan",
+        body: `You've served all ${stats.customerLimit >= 999999 ? "Unlimited" : stats.customerLimit.toLocaleString()} customers on your current plan. Recharge now.`,
+        action: {
+          label: "Recharge Plan",
+          onClick: () => navigate("/restaurant/subscription"),
+        },
+      };
+    if (stats.subscriptionStatus === "expired")
+      return {
+        color: "bg-red-50 border-red-200 text-red-900",
+        icon: <XCircle className="w-5 h-5 text-red-500 shrink-0" />,
+        title: "Subscription expired — renew to continue accepting orders",
+        body: stats.subscriptionExpiresAt
+          ? `Your plan expired on ${new Date(stats.subscriptionExpiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}. Renew now.`
+          : "Your subscription has expired. Renew now to keep accepting orders.",
+        action: {
+          label: "Renew Plan",
+          onClick: () => navigate("/restaurant/subscription"),
+        },
+      };
+    if (stats.subscriptionStatus === "suspended")
+      return {
+        color: "bg-slate-100 border-slate-300 text-slate-800",
+        icon: <AlertCircle className="w-5 h-5 text-slate-500 shrink-0" />,
+        title: "Account suspended",
+        body: "Your account has been suspended by the admin. Please contact support to resolve this.",
+        action: null,
+      };
     return null;
   })();
 
@@ -523,7 +843,9 @@ export default function Dashboard() {
   // Single table  → prefix "Table",  label "T2"
   // Multiple tables → prefix "Tables", label "T2, T6" (sorted, deduplicated)
   // Falls back to session.tableNumber if no per-order table numbers are present.
-  const deriveSessionTableLabel = (session: SessionSummary): { prefix: string; label: string } => {
+  const deriveSessionTableLabel = (
+    session: SessionSummary,
+  ): { prefix: string; label: string } => {
     const tables = [
       ...new Set(
         session.orders
@@ -543,47 +865,67 @@ export default function Dashboard() {
   // ─── Order card renderer (shared between sessions view and orders list) ──
 
   const renderOrderCard = (order: Order, i: number) => {
-    const cfg        = STATUS_CONFIG[order.status] ?? STATUS_CONFIG.ordered;
+    const cfg = STATUS_CONFIG[order.status] ?? STATUS_CONFIG.ordered;
     const nextStatus = getNextStatus(order.status);
     const isUpdating = updatingId === order.id;
     const isManualReview = order.paymentStatus === "manual_review";
-    const isAwaitingVerification = order.paymentStatus === "awaiting_verification";
+    const isAwaitingVerification =
+      order.paymentStatus === "awaiting_verification";
     const orderError = orderErrors[order.id];
     const isPendingUpiVerification =
       order.status === "awaiting_confirmation" &&
       order.paymentMethod === "upi" &&
       order.paymentStatus !== "paid";
     const utr = isPendingUpiVerification ? extractUtr(order.notes) : null;
-    const isVerifying        = verifyingId === order.id;
-    const isRejecting        = rejectingId === order.id;
+    const isVerifying = verifyingId === order.id;
+    const isRejecting = rejectingId === order.id;
 
     let ocrData: OcrData | null = null;
     if (order.paymentOcrData) {
-      try { ocrData = JSON.parse(order.paymentOcrData) as OcrData; } catch { /* ignore */ }
+      try {
+        ocrData = JSON.parse(order.paymentOcrData) as OcrData;
+      } catch {
+        /* ignore */
+      }
     }
 
     const verificationStatus = order.paymentVerificationStatus;
-    const isAiVerified      = verificationStatus === "ai_verified";
-    const isApproved        = verificationStatus === "approved";
+    const isAiVerified = verificationStatus === "ai_verified";
+    const isApproved = verificationStatus === "approved";
     const isRejectedPayment = verificationStatus === "rejected";
 
     return (
-      <div key={order.id} className={cn("p-4 transition-colors", i % 2 === 0 ? "bg-[#F9FAFB] hover:bg-[#F1F3F5]" : "bg-[#EEF2FF] hover:bg-[#E5EAFC]")}>
+      <div
+        key={order.id}
+        className={cn(
+          "p-4 transition-colors",
+          i % 2 === 0
+            ? "bg-[#F9FAFB] hover:bg-[#F1F3F5]"
+            : "bg-[#EEF2FF] hover:bg-[#E5EAFC]",
+        )}
+      >
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-
           {/* Left: order info */}
           <div className="flex-1 min-w-0">
             {/* Badges */}
             <div className="flex items-center gap-2 flex-wrap mb-1">
               <span className="font-bold text-sm">#{order.id}</span>
               {order.tableNumber && (
-                <span className="text-xs bg-muted px-2 py-0.5 rounded-full font-medium">Table {order.tableNumber}</span>
+                <span className="text-xs bg-muted px-2 py-0.5 rounded-full font-medium">
+                  Table {order.tableNumber}
+                </span>
               )}
               {order.paymentStatus === "paid" && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 font-medium flex items-center gap-1">
-                  {(isAiVerified || isApproved) && <BadgeCheck className="w-3 h-3" />}
+                  {(isAiVerified || isApproved) && (
+                    <BadgeCheck className="w-3 h-3" />
+                  )}
                   ✓ Paid
-                  {isAiVerified && <span className="text-[10px] text-green-500 ml-0.5">AI</span>}
+                  {isAiVerified && (
+                    <span className="text-[10px] text-green-500 ml-0.5">
+                      AI
+                    </span>
+                  )}
                 </span>
               )}
               {isAwaitingVerification && (
@@ -599,21 +941,26 @@ export default function Dashboard() {
                 </span>
               )}
               {isRejectedPayment && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200 font-medium">Rejected</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200 font-medium">
+                  Rejected
+                </span>
               )}
               {order.paymentMethod && (
                 <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-muted text-muted-foreground border-border">
                   {order.paymentMethod === "cash"
                     ? "Cash Payment"
-                    : order.paymentMethod === "upi" || order.paymentMethod === "razorpay"
-                    ? "QR · Online Payment"
-                    : order.paymentMethod}
+                    : order.paymentMethod === "upi" ||
+                        order.paymentMethod === "razorpay"
+                      ? "QR · Online Payment"
+                      : order.paymentMethod}
                 </span>
               )}
             </div>
 
             <p className="text-sm font-medium">{order.customerName}</p>
-            <p className="text-xs text-muted-foreground">{order.customerPhone}</p>
+            <p className="text-xs text-muted-foreground">
+              {order.customerPhone}
+            </p>
 
             {/* Error */}
             {orderError && (
@@ -626,31 +973,55 @@ export default function Dashboard() {
             {/* Items */}
             <div className="mt-2 space-y-0.5">
               {order.items.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className={cn("w-2 h-2 rounded-full shrink-0", item.isVeg ? "bg-green-500" : "bg-red-500")} />
-                  <span>{item.quantity}× {item.name}</span>
-                  <span className="ml-auto font-medium text-foreground">₹{item.unitPrice * item.quantity}</span>
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 text-xs text-muted-foreground"
+                >
+                  <span
+                    className={cn(
+                      "w-2 h-2 rounded-full shrink-0",
+                      item.isVeg ? "bg-green-500" : "bg-red-500",
+                    )}
+                  />
+                  <span>
+                    {item.quantity}× {item.name}
+                  </span>
+                  <span className="ml-auto font-medium text-foreground">
+                    ₹{item.unitPrice * item.quantity}
+                  </span>
                 </div>
               ))}
             </div>
 
             <div className="mt-2 flex items-center gap-3 text-xs">
-              <span className="text-muted-foreground">Subtotal ₹{order.subtotal}</span>
-              {order.tax > 0 && <span className="text-muted-foreground">Tax ₹{order.tax}</span>}
-              <span className="font-bold text-foreground">Total ₹{order.total}</span>
+              <span className="text-muted-foreground">
+                Subtotal ₹{order.subtotal}
+              </span>
+              {order.tax > 0 && (
+                <span className="text-muted-foreground">Tax ₹{order.tax}</span>
+              )}
+              <span className="font-bold text-foreground">
+                Total ₹{order.total}
+              </span>
             </div>
             {order.notes && (
-              <p className="mt-1 text-xs text-muted-foreground italic">Note: {order.notes}</p>
+              <p className="mt-1 text-xs text-muted-foreground italic">
+                Note: {order.notes}
+              </p>
             )}
 
             {/* OCR / AI verification panel */}
             {ocrData && (
-              <div className={cn(
-                "mt-3 rounded-lg border p-3",
-                !ocrData.ocrConfigured ? "border-slate-200 bg-slate-50"
-                  : isAiVerified        ? "border-green-200 bg-green-50"
-                  : "border-amber-200 bg-amber-50",
-              )}>
+              <div
+                className={cn(
+                  "mt-3 rounded-lg border p-3",
+                  !ocrData.ocrConfigured
+                    ? "border-slate-200 bg-slate-50"
+                    : isAiVerified
+                      ? "border-green-200 bg-green-50"
+                      : "border-amber-200 bg-amber-50",
+                )}
+              >
                 {!ocrData.ocrConfigured ? (
                   <p className="text-xs text-slate-600 flex items-center gap-1.5">
                     <ScanLine className="w-3.5 h-3.5 shrink-0" />
@@ -658,17 +1029,61 @@ export default function Dashboard() {
                   </p>
                 ) : (
                   <>
-                    <p className={cn("text-xs font-semibold flex items-center gap-1.5 mb-2", isAiVerified ? "text-green-800" : "text-amber-800")}>
-                      {isAiVerified
-                        ? <><BadgeCheck className="w-3.5 h-3.5 shrink-0" />AI Verified Payment</>
-                        : <><AlertTriangle className="w-3.5 h-3.5 shrink-0" />Low Confidence — Manual Review</>}
-                      <span className="ml-auto font-mono text-[10px]">{ocrData.confidence}% confidence</span>
+                    <p
+                      className={cn(
+                        "text-xs font-semibold flex items-center gap-1.5 mb-2",
+                        isAiVerified ? "text-green-800" : "text-amber-800",
+                      )}
+                    >
+                      {isAiVerified ? (
+                        <>
+                          <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
+                          AI Verified Payment
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                          Low Confidence — Manual Review
+                        </>
+                      )}
+                      <span className="ml-auto font-mono text-[10px]">
+                        {ocrData.confidence}% confidence
+                      </span>
                     </p>
-                    <div className={cn("space-y-1 text-xs", isAiVerified ? "text-green-700" : "text-amber-700")}>
-                      {ocrData.utr    && <div className="flex justify-between"><span className="opacity-70">UTR</span><span className="font-mono font-bold">{ocrData.utr}</span></div>}
-                      {ocrData.amount !== null && <div className="flex justify-between"><span className="opacity-70">Amount</span><span className="font-bold">₹{ocrData.amount}</span></div>}
-                      {ocrData.status && <div className="flex justify-between"><span className="opacity-70">Status</span><span className="font-semibold capitalize">{ocrData.status}</span></div>}
-                      {ocrData.merchant && <div className="flex justify-between"><span className="opacity-70">Merchant</span><span>{ocrData.merchant}</span></div>}
+                    <div
+                      className={cn(
+                        "space-y-1 text-xs",
+                        isAiVerified ? "text-green-700" : "text-amber-700",
+                      )}
+                    >
+                      {ocrData.utr && (
+                        <div className="flex justify-between">
+                          <span className="opacity-70">UTR</span>
+                          <span className="font-mono font-bold">
+                            {ocrData.utr}
+                          </span>
+                        </div>
+                      )}
+                      {ocrData.amount !== null && (
+                        <div className="flex justify-between">
+                          <span className="opacity-70">Amount</span>
+                          <span className="font-bold">₹{ocrData.amount}</span>
+                        </div>
+                      )}
+                      {ocrData.status && (
+                        <div className="flex justify-between">
+                          <span className="opacity-70">Status</span>
+                          <span className="font-semibold capitalize">
+                            {ocrData.status}
+                          </span>
+                        </div>
+                      )}
+                      {ocrData.merchant && (
+                        <div className="flex justify-between">
+                          <span className="opacity-70">Merchant</span>
+                          <span>{ocrData.merchant}</span>
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
@@ -683,15 +1098,29 @@ export default function Dashboard() {
                   Payment Pending Verification
                 </p>
                 <div className="space-y-1 text-xs text-amber-700">
-                  <div className="flex justify-between"><span className="text-amber-600">Order</span><span className="font-mono font-bold text-amber-900">#{order.id}</span></div>
-                  <div className="flex justify-between"><span className="text-amber-600">Amount</span><span className="font-bold text-amber-900">₹{order.total}</span></div>
+                  <div className="flex justify-between">
+                    <span className="text-amber-600">Order</span>
+                    <span className="font-mono font-bold text-amber-900">
+                      #{order.id}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-amber-600">Amount</span>
+                    <span className="font-bold text-amber-900">
+                      ₹{order.total}
+                    </span>
+                  </div>
                   {utr ? (
                     <div className="flex justify-between items-center mt-1 pt-1 border-t border-amber-200">
                       <span className="text-amber-600">UTR</span>
-                      <span className="font-mono font-bold tracking-wider text-amber-900 text-sm">{utr}</span>
+                      <span className="font-mono font-bold tracking-wider text-amber-900 text-sm">
+                        {utr}
+                      </span>
                     </div>
                   ) : (
-                    <div className="mt-1 pt-1 border-t border-amber-200 text-amber-600 italic">No UTR provided</div>
+                    <div className="mt-1 pt-1 border-t border-amber-200 text-amber-600 italic">
+                      No UTR provided
+                    </div>
                   )}
                 </div>
               </div>
@@ -700,38 +1129,63 @@ export default function Dashboard() {
 
           {/* Right: action buttons */}
           <div className="flex flex-row flex-wrap gap-2 sm:flex-col sm:shrink-0 sm:min-w-[148px]">
-
             {/* Legacy UPI verify/reject */}
-            {isPendingUpiVerification && (<>
-              <Button size="sm" className="w-full text-xs h-8 bg-green-600 hover:bg-green-700 text-white"
-                onClick={() => handleVerifyUpi(order.id)} disabled={isVerifying || isRejecting}>
-                {isVerifying ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <CheckCircle2 className="w-3 h-3 mr-1" />}
-                Verify Payment
-              </Button>
-              <Button size="sm" variant="outline" className="w-full text-xs h-8 text-red-600 border-red-300 hover:bg-red-50"
-                onClick={() => handleRejectUpi(order.id)} disabled={isVerifying || isRejecting}>
-                {isRejecting ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
-                Reject Payment
-              </Button>
-            </>)}
+            {isPendingUpiVerification && (
+              <>
+                <Button
+                  size="sm"
+                  className="w-full text-xs h-8 bg-green-600 hover:bg-green-700 text-white"
+                  onClick={() => handleVerifyUpi(order.id)}
+                  disabled={isVerifying || isRejecting}
+                >
+                  {isVerifying ? (
+                    <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                  ) : (
+                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                  )}
+                  Verify Payment
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full text-xs h-8 text-red-600 border-red-300 hover:bg-red-50"
+                  onClick={() => handleRejectUpi(order.id)}
+                  disabled={isVerifying || isRejecting}
+                >
+                  {isRejecting ? (
+                    <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                  ) : (
+                    <XCircle className="w-3 h-3 mr-1" />
+                  )}
+                  Reject Payment
+                </Button>
+              </>
+            )}
 
             {/* Advance status */}
             {nextStatus && !isPendingUpiVerification && !isManualReview && (
-              <Button size="sm" className="w-full text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
-                onClick={() => handleStatusUpdate(order.id, nextStatus)} disabled={isUpdating}>
-                {isUpdating && <Loader2 className="w-3 h-3 animate-spin mr-1" />}
+              <Button
+                size="sm"
+                className="w-full text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
+                onClick={() => handleStatusUpdate(order.id, nextStatus)}
+                disabled={isUpdating}
+              >
+                {isUpdating && (
+                  <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                )}
                 {nextStatus === "preparing" && "Mark Preparing"}
-                {nextStatus === "ready"     && "Mark Ready"}
+                {nextStatus === "ready" && "Mark Ready"}
                 {nextStatus === "completed" && "Mark Completed"}
               </Button>
             )}
-
-
           </div>
         </div>
 
         <p className="text-xs text-muted-foreground mt-2">
-          {new Date(order.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+          {new Date(order.createdAt).toLocaleTimeString("en-IN", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
           {" · "}
           {new Date(order.createdAt).toLocaleDateString("en-IN")}
         </p>
@@ -742,7 +1196,9 @@ export default function Dashboard() {
   // ─── Table sessions to display (active + awaiting_payment + awaiting_verification, with at least one order) ───
   const displaySessions = sessions.filter(
     (s) =>
-      (s.status === "active" || s.status === "awaiting_payment" || s.status === "awaiting_verification") &&
+      (s.status === "active" ||
+        s.status === "awaiting_payment" ||
+        s.status === "awaiting_verification") &&
       s.orderCount > 0,
   );
 
@@ -761,13 +1217,14 @@ export default function Dashboard() {
 
   return (
     <AppShell>
-
       <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">Welcome back, {stats?.restaurantName ?? user?.name}</p>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Welcome back, {stats?.restaurantName ?? user?.name}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <div className="flex gap-1 bg-muted rounded-lg p-0.5">
@@ -775,295 +1232,491 @@ export default function Dashboard() {
                 onClick={() => setActiveTab("live")}
                 className={cn(
                   "text-xs px-3 py-1.5 rounded-md font-medium transition-all",
-                  activeTab === "live" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  activeTab === "live"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 Live
               </button>
               <button
+                onClick={() => setActiveTab("orders")}
+                className={cn(
+                  "text-xs px-3 py-1.5 rounded-md font-medium transition-all",
+                  activeTab === "orders"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Orders
+              </button>
+              <button
+                onClick={() => setActiveTab("payment-inbox")}
+                className={cn(
+                  "text-xs px-3 py-1.5 rounded-md font-medium transition-all flex items-center gap-1.5",
+                  activeTab === "payment-inbox"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Inbox className="w-3.5 h-3.5" />
+                Payment Inbox
+                {paymentInboxTotal > 0 && (
+                  <span
+                    className={cn(
+                      "min-w-4 h-4 px-1 rounded-full text-[10px] leading-4 text-center",
+                      paymentInbox.some((e) => e.matchStatus !== "matched")
+                        ? "bg-red-500 text-white"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {paymentInboxTotal > 99 ? "99+" : paymentInboxTotal}
+                  </span>
+                )}
+              </button>
+              <button
                 onClick={() => setActiveTab("history")}
                 className={cn(
                   "text-xs px-3 py-1.5 rounded-md font-medium transition-all",
-                  activeTab === "history" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  activeTab === "history"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 History
               </button>
             </div>
-            {activeTab === "live" && (
-              <Button variant="outline" size="sm" onClick={fetchData} disabled={loading}>
-                <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
+            {(activeTab === "live" ||
+              activeTab === "orders" ||
+              activeTab === "payment-inbox") && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchData}
+                disabled={loading}
+              >
+                <RefreshCw
+                  className={cn("w-4 h-4 mr-2", loading && "animate-spin")}
+                />
                 Refresh
               </Button>
             )}
           </div>
         </div>
 
+        {/* Orders tab — restored customer order management view.
+            Order status/payment actions reuse the same renderer and APIs used by
+            the current session-centric dashboard. Session billing remains the
+            source of truth for bills; the button below opens the owning session. */}
+        {activeTab === "orders" && (
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <ShoppingBag className="w-4 h-4 text-blue-600 shrink-0" />
+                <h2 className="text-base font-semibold">Customer Orders</h2>
+                <span className="text-xs bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 font-semibold">
+                  {orders.length}
+                </span>
+              </div>
+              <span className="text-xs text-muted-foreground hidden sm:block">
+                Session billing and payment verification remain unchanged
+              </span>
+            </div>
+
+            {loading ? (
+              <div className="py-12 flex justify-center">
+                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                No customer orders found.
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {orders.map((order, i) => {
+                  const session =
+                    order.sessionId !== null
+                      ? (sessions.find(
+                          (candidate) => candidate.id === order.sessionId,
+                        ) ?? null)
+                      : null;
+
+                  return (
+                    <div key={order.id}>
+                      {renderOrderCard(order, i)}
+                      {session && (
+                        <div className="px-4 pb-3 -mt-1 flex justify-end gap-2 flex-wrap">
+                          {session.status === "active" && !session.bill && (
+                            <Button
+                              size="sm"
+                              className="h-8 text-xs"
+                              onClick={() =>
+                                void handleGenerateBill(session.id)
+                              }
+                              disabled={generatingBillId === session.id}
+                            >
+                              {generatingBillId === session.id ? (
+                                <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                              ) : (
+                                <Receipt className="w-3 h-3 mr-1.5" />
+                              )}
+                              Generate Bill
+                            </Button>
+                          )}
+                          {session.bill && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 text-xs"
+                              onClick={() =>
+                                setViewingBillSessionId(session.id)
+                              }
+                            >
+                              <Eye className="w-3 h-3 mr-1.5" />
+                              View Bill
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 text-xs"
+                            onClick={() => {
+                              setActiveTab("live");
+                              setExpandedSessions((prev) => {
+                                const next = new Set(prev);
+                                next.add(session.id);
+                                return next;
+                              });
+                            }}
+                          >
+                            <Receipt className="w-3 h-3 mr-1.5" />
+                            Open Session
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Payment Screenshot Inbox — every WhatsApp screenshot is retained here,
+            including unmatched/ambiguous screenshots that could not safely be
+            attached to a session bill. */}
+        {activeTab === "payment-inbox" && (
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <div className="px-4 py-3 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <Inbox className="w-4 h-4 text-violet-600 shrink-0" />
+                <h2 className="text-base font-semibold">
+                  Payment Screenshot Inbox
+                </h2>
+                <span className="text-xs bg-violet-100 text-violet-700 rounded-full px-2 py-0.5 font-semibold">
+                  {paymentInboxTotal}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={paymentInboxStatus}
+                  onChange={(e) =>
+                    setPaymentInboxStatus(
+                      e.target.value as typeof paymentInboxStatus,
+                    )
+                  }
+                  className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                >
+                  <option value="all">All screenshots</option>
+                  <option value="unmatched">Unmatched</option>
+                  <option value="ambiguous">Ambiguous</option>
+                  <option value="matched">Matched</option>
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => void fetchData()}
+                  disabled={paymentInboxLoading || loading}
+                >
+                  <RefreshCw
+                    className={cn(
+                      "w-3.5 h-3.5 mr-1.5",
+                      (paymentInboxLoading || loading) && "animate-spin",
+                    )}
+                  />
+                  Refresh
+                </Button>
+              </div>
+            </div>
+
+            {paymentInboxLoading ? (
+              <div className="py-12 flex justify-center">
+                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : paymentInbox.length === 0 ? (
+              <div className="py-14 text-center text-sm text-muted-foreground">
+                <ImageOff className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                No payment screenshots in this filter.
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {paymentInbox.map((entry) => {
+                  const matchedSession =
+                    entry.matchedSessionId !== null
+                      ? (sessions.find(
+                          (session) => session.id === entry.matchedSessionId,
+                        ) ?? null)
+                      : null;
+                  const statusClass =
+                    entry.matchStatus === "matched"
+                      ? "bg-green-50 text-green-700 border-green-200"
+                      : entry.matchStatus === "ambiguous"
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : "bg-red-50 text-red-700 border-red-200";
+                  const candidateBills = sessions
+                    .map((session) => session.bill)
+                    .filter(
+                      (bill): bill is NonNullable<SessionSummary["bill"]> =>
+                        !!bill &&
+                        bill.status !== "paid" &&
+                        bill.status !== "cancelled",
+                    );
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className="p-4 hover:bg-muted/20 transition-colors"
+                    >
+                      <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                            <span className="font-bold text-sm">
+                              Screenshot #{entry.id}
+                            </span>
+                            <span
+                              className={cn(
+                                "text-[11px] px-2 py-0.5 rounded-full border font-semibold capitalize",
+                                statusClass,
+                              )}
+                            >
+                              {entry.matchStatus}
+                            </span>
+                            {entry.isDuplicate && (
+                              <span className="text-[11px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200">
+                                Duplicate
+                              </span>
+                            )}
+                            {entry.matchingStrategy && (
+                              <span className="text-[11px] text-muted-foreground">
+                                via{" "}
+                                {entry.matchingStrategy.replaceAll("_", " ")}
+                              </span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                            <span>
+                              <strong className="text-foreground">
+                                Sender:
+                              </strong>{" "}
+                              {entry.senderPhone ??
+                                entry.senderJid ??
+                                "Unknown"}
+                            </span>
+                            <span>
+                              <strong className="text-foreground">
+                                Source:
+                              </strong>{" "}
+                              {entry.source}
+                            </span>
+                            <span>
+                              <strong className="text-foreground">
+                                Received:
+                              </strong>{" "}
+                              {new Date(entry.receivedAt).toLocaleString(
+                                "en-IN",
+                                { dateStyle: "medium", timeStyle: "short" },
+                              )}
+                            </span>
+                          </div>
+                          {matchedSession && (
+                            <p className="mt-1 text-xs text-green-700">
+                              Matched to{" "}
+                              {matchedSession.sessionType === "takeaway"
+                                ? "Takeaway"
+                                : `Table ${matchedSession.tableNumber ?? "?"}`}{" "}
+                              · Bill #{entry.matchedBillId ?? "?"}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 text-xs"
+                            onClick={() => void loadInboxImage(entry.id)}
+                            disabled={
+                              !entry.hasScreenshot ||
+                              loadingInboxImageId === entry.id
+                            }
+                          >
+                            {loadingInboxImageId === entry.id ? (
+                              <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                            ) : (
+                              <Eye className="w-3 h-3 mr-1.5" />
+                            )}
+                            View Screenshot
+                          </Button>
+
+                          {entry.matchStatus !== "matched" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 text-xs"
+                              onClick={() =>
+                                void handleRetryInboxMatch(entry.id)
+                              }
+                              disabled={retryingInboxId === entry.id}
+                            >
+                              {retryingInboxId === entry.id ? (
+                                <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                              ) : (
+                                <RotateCw className="w-3 h-3 mr-1.5" />
+                              )}
+                              Retry Match
+                            </Button>
+                          )}
+
+                          {entry.matchStatus !== "matched" && (
+                            <div className="flex items-center gap-1.5">
+                              <select
+                                value={selectedInboxBillId ?? ""}
+                                onChange={(e) =>
+                                  setSelectedInboxBillId(
+                                    e.target.value
+                                      ? Number(e.target.value)
+                                      : null,
+                                  )
+                                }
+                                className="h-8 max-w-[220px] rounded-md border border-border bg-background px-2 text-xs"
+                              >
+                                <option value="">Attach to bill…</option>
+                                {candidateBills.map((bill) => (
+                                  <option key={bill.id} value={bill.id}>
+                                    {bill.billNumber} · ₹{bill.total}
+                                  </option>
+                                ))}
+                              </select>
+                              <Button
+                                size="sm"
+                                className="h-8 text-xs"
+                                disabled={
+                                  !selectedInboxBillId ||
+                                  attachingInboxId === entry.id
+                                }
+                                onClick={() =>
+                                  selectedInboxBillId &&
+                                  void handleAttachInboxScreenshot(
+                                    entry.id,
+                                    selectedInboxBillId,
+                                  )
+                                }
+                              >
+                                {attachingInboxId === entry.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Link2 className="w-3 h-3 mr-1.5" />
+                                )}
+                                Attach
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* History tab */}
         {activeTab === "history" && <HistoryTab />}
 
         {/* Live tab content */}
-        {activeTab === "live" && <>
-
-        {/* Subscription banner */}
-        {subBanner && (
-          <div className={cn("flex items-start gap-3 border rounded-xl px-5 py-4", subBanner.color)}>
-            {subBanner.icon}
-            <div className="flex-1 min-w-0">
-              <p className="font-semibold text-sm">{subBanner.title}</p>
-              <p className="text-sm mt-0.5 opacity-80">{subBanner.body}</p>
-            </div>
-            {subBanner.action && (
-              <Button size="sm" className="shrink-0 bg-orange-500 hover:bg-orange-600 text-white" onClick={subBanner.action.onClick}>
-                {subBanner.action.label}
-              </Button>
-            )}
-          </div>
-        )}
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { label: "Today's Orders",  value: stats?.todayOrders ?? 0,        icon: ShoppingBag, color: "text-blue-600" },
-            { label: "Today's Revenue", value: `₹${stats?.todayRevenue ?? 0}`, icon: IndianRupee,  color: "text-green-600" },
-            { label: "Active Orders",   value: stats?.activeOrders ?? 0,       icon: ChefHat,     color: "text-purple-600" },
-            { label: "Pending",         value: stats?.pendingOrders ?? 0,      icon: Clock,       color: "text-orange-600" },
-          ].map((stat) => (
-            <div key={stat.label} className="bg-card rounded-xl border border-border p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <stat.icon className={cn("w-4 h-4", stat.color)} />
-                <span className="text-xs text-muted-foreground font-medium">{stat.label}</span>
+        {activeTab === "live" && (
+          <>
+            {/* Subscription banner */}
+            {subBanner && (
+              <div
+                className={cn(
+                  "flex items-start gap-3 border rounded-xl px-5 py-4",
+                  subBanner.color,
+                )}
+              >
+                {subBanner.icon}
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm">{subBanner.title}</p>
+                  <p className="text-sm mt-0.5 opacity-80">{subBanner.body}</p>
+                </div>
+                {subBanner.action && (
+                  <Button
+                    size="sm"
+                    className="shrink-0 bg-orange-500 hover:bg-orange-600 text-white"
+                    onClick={subBanner.action.onClick}
+                  >
+                    {subBanner.action.label}
+                  </Button>
+                )}
               </div>
-              <p className="text-2xl font-bold">{stat.value}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* UPI Status badge */}
-        {stats?.upiVerified && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-50 border border-green-200 text-sm w-fit">
-            <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
-            <span className="font-medium text-green-700">UPI Status:</span>
-            <span className="text-green-700">Verified ✓</span>
-            {stats.verifiedAt && (
-              <span className="text-[11px] text-green-500 ml-1">
-                {new Date(stats.verifiedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-              </span>
             )}
-          </div>
-        )}
 
-
-        {/* ── Table Sessions (active + awaiting payment) ─────────────────── */}
-        {loading ? null : displaySessions.length > 0 && (
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
-            <div className="px-4 py-3 border-b border-border flex items-center gap-2">
-              <UtensilsCrossed className="w-4 h-4 text-orange-500 shrink-0" />
-              <h2 className="text-base font-semibold">Table Sessions</h2>
-              <span className="ml-2 text-xs bg-orange-100 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
-                {displaySessions.length} {displaySessions.length === 1 ? "table" : "tables"}
-              </span>
-            </div>
-            <div className="divide-y divide-border">
-              {displaySessions.map((session) => {
-                const isExpanded = expandedSessions.has(session.id);
-
-                return (
-                  <div key={session.id}>
-                    {/* Session header: click left area to expand, Generate Bill on right */}
-                    <div className="flex items-stretch w-full hover:bg-muted/30 transition-colors">
-                      <button
-                        className="flex-1 p-4 flex items-center gap-3 text-left min-w-0"
-                        onClick={() =>
-                          setExpandedSessions((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(session.id)) next.delete(session.id);
-                            else next.add(session.id);
-                            return next;
-                          })
-                        }
-                      >
-                        <div className={cn(
-                          "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
-                          session.sessionType === "takeaway" ? "bg-blue-100" : "bg-orange-100",
-                        )}>
-                          {session.sessionType === "takeaway"
-                            ? <ShoppingBag className="w-5 h-5 text-blue-600" />
-                            : <UtensilsCrossed className="w-5 h-5 text-orange-600" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            {session.sessionType === "takeaway" ? (
-                              <span className="font-bold text-sm">Takeaway</span>
-                            ) : (
-                              <span className="font-bold text-sm">
-                                {(() => {
-                                  const { prefix, label } = deriveSessionTableLabel(session);
-                                  return `${prefix} ${label}`;
-                                })()}
-                              </span>
-                            )}
-                            {session.sessionType === "takeaway" && session.customerPhone && (
-                              <span className="text-xs text-muted-foreground font-mono">+{session.customerPhone}</span>
-                            )}
-                            {newOrderSessionIds.has(session.id) && (
-                              <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-bold animate-pulse">
-                                NEW
-                              </span>
-                            )}
-                            {session.bill && session.bill.status === "generated" && (
-                              <span className="text-xs bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-medium">
-                                Bill Ready
-                              </span>
-                            )}
-                            {session.bill && session.bill.status === "sent" && (
-                              <span className="text-xs bg-sky-100 text-sky-700 border border-sky-200 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
-                                <Send className="w-3 h-3" />
-                                Bill Sent
-                              </span>
-                            )}
-                            {session.bill && session.bill.hasScreenshot && session.bill.status !== "paid" && (
-                              <span className="text-xs bg-violet-100 text-violet-700 border border-violet-200 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
-                                <Camera className="w-3 h-3" />
-                                Proof Received
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                            <span>{session.orderCount} {session.orderCount === 1 ? "order" : "orders"}</span>
-                            <span>·</span>
-                            <span>{session.itemCount} {session.itemCount === 1 ? "item" : "items"}</span>
-                            <span>·</span>
-                            {session.bill ? (
-                              <>
-                                <span className="font-semibold text-foreground">₹{session.bill.total}</span>
-                                <span>·</span>
-                                <span className="font-mono text-[10px]">{session.bill.billNumber}</span>
-                                <span>·</span>
-                                <span>
-                                  {new Date(session.bill.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="font-semibold text-foreground">₹{session.totalAmount}</span>
-                                <span>·</span>
-                                <span>
-                                  Since {new Date(session.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        <div className="shrink-0 text-muted-foreground ml-2">
-                          {isExpanded
-                            ? <ChevronUp className="w-4 h-4" />
-                            : <ChevronDown className="w-4 h-4" />}
-                        </div>
-                      </button>
-
-                      {/* Right-side action panel */}
-                      <div className="flex items-center gap-2 px-4 shrink-0 border-l border-border/50">
-
-                        {/* Generate Bill — only for active sessions without a bill */}
-                        {session.status === "active" && !session.bill && (
-                          <Button
-                            size="sm"
-                            className="h-8 text-xs whitespace-nowrap"
-                            onClick={() => handleGenerateBill(session.id)}
-                            disabled={generatingBillId === session.id}
-                          >
-                            {generatingBillId === session.id
-                              ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                              : <Receipt className="w-3 h-3 mr-1.5" />}
-                            Generate Bill
-                          </Button>
-                        )}
-
-                        {/* View Bill — always shown once a bill exists */}
-                        {session.bill && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 text-xs whitespace-nowrap"
-                            onClick={() => setViewingBillSessionId(session.id)}
-                          >
-                            <Eye className="w-3 h-3 mr-1.5" />
-                            View Bill
-                          </Button>
-                        )}
-
-                        {/* Send Bill — bill is generated; Resend after already sent */}
-                        {session.bill && (session.bill.status === "generated" || session.bill.status === "sent") && (
-                          <Button
-                            size="sm"
-                            className="h-8 text-xs whitespace-nowrap bg-green-600 hover:bg-green-700 text-white"
-                            onClick={() => void handleSendSessionBill(session.id)}
-                            disabled={sendingBillSessionId === session.id}
-                          >
-                            {sendingBillSessionId === session.id
-                              ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                              : <Send className="w-3 h-3 mr-1.5" />}
-                            {session.bill.status === "sent" ? "Resend Bill" : "Send Bill"}
-                          </Button>
-                        )}
-
-                        {/* Verify Payment — screenshot received, awaiting staff review */}
-                        {session.bill?.status === "awaiting_verification" && (
-                          <Button
-                            size="sm"
-                            className="h-8 text-xs whitespace-nowrap bg-violet-600 hover:bg-violet-700 text-white"
-                            onClick={() => void loadSessionScreenshot(session.id)}
-                            disabled={loadingScreenshotSessionId === session.id}
-                          >
-                            {loadingScreenshotSessionId === session.id
-                              ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                              : <ShieldCheck className="w-3 h-3 mr-1.5" />}
-                            Verify Payment
-                          </Button>
-                        )}
-
-                        {/* Mark Paid — cash / manual payment confirmation */}
-                        {session.bill && (
-                          session.bill.status === "generated" ||
-                          session.bill.status === "sent" ||
-                          session.bill.status === "awaiting_verification"
-                        ) && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 text-xs whitespace-nowrap text-green-700 border-green-300 hover:bg-green-50"
-                            onClick={() => void handleMarkSessionPaid(session.id)}
-                            disabled={markingPaidSessionId === session.id}
-                          >
-                            {markingPaidSessionId === session.id
-                              ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                              : <CheckCircle2 className="w-3 h-3 mr-1.5" />}
-                            Mark Paid
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Expanded order list — payment actions handled at session level above */}
-                    {isExpanded && (
-                      <div className="border-t border-border">
-                        {session.orders.length === 0 ? (
-                          <div className="py-6 text-center text-xs text-muted-foreground">No orders in this session</div>
-                        ) : (
-                          <div className="divide-y divide-border">
-                            {session.orders.map((order, i) => renderOrderCard(order as Order, i))}
-                          </div>
-                        )}
-                      </div>
-                    )}
+            {/* Stats */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              {[
+                {
+                  label: "Today's Orders",
+                  value: stats?.todayOrders ?? 0,
+                  icon: ShoppingBag,
+                  color: "text-blue-600",
+                },
+                {
+                  label: "Today's Revenue",
+                  value: `₹${stats?.todayRevenue ?? 0}`,
+                  icon: IndianRupee,
+                  color: "text-green-600",
+                },
+                {
+                  label: "Active Orders",
+                  value: stats?.activeOrders ?? 0,
+                  icon: ChefHat,
+                  color: "text-purple-600",
+                },
+                {
+                  label: "Pending",
+                  value: stats?.pendingOrders ?? 0,
+                  icon: Clock,
+                  color: "text-orange-600",
+                },
+              ].map((stat) => (
+                <div
+                  key={stat.label}
+                  className="bg-card rounded-xl border border-border p-4"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <stat.icon className={cn("w-4 h-4", stat.color)} />
+                    <span className="text-xs text-muted-foreground font-medium">
+                      {stat.label}
+                    </span>
                   </div>
-                );
-              })}
+                  <p className="text-2xl font-bold">{stat.value}</p>
+                </div>
+              ))}
             </div>
-          </div>
-        )}
 
+        {/* ── Payment Screenshot Inbox ─────────────────────────────────── */}
         {/* ── Payment Screenshot Inbox ─────────────────────────────────── */}
         {activeTab === "live" && (
           <div className="bg-card rounded-xl border border-border overflow-hidden">
@@ -1208,29 +1861,432 @@ export default function Dashboard() {
           </div>
         )}
 
-        </>}
-      </div>
+            {/* UPI Status badge */}
+            {stats?.upiVerified && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-50 border border-green-200 text-sm w-fit">
+                <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
+                <span className="font-medium text-green-700">UPI Status:</span>
+                <span className="text-green-700">Verified ✓</span>
+                {stats.verifiedAt && (
+                  <span className="text-[11px] text-green-500 ml-1">
+                    {new Date(stats.verifiedAt).toLocaleDateString("en-IN", {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* ── Table Sessions (active + awaiting payment) ─────────────────── */}
+            {loading
+              ? null
+              : displaySessions.length > 0 && (
+                  <div className="bg-card rounded-xl border border-border overflow-hidden">
+                    <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+                      <UtensilsCrossed className="w-4 h-4 text-orange-500 shrink-0" />
+                      <h2 className="text-base font-semibold">
+                        Table Sessions
+                      </h2>
+                      <span className="ml-2 text-xs bg-orange-100 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
+                        {displaySessions.length}{" "}
+                        {displaySessions.length === 1 ? "table" : "tables"}
+                      </span>
+                    </div>
+                    <div className="divide-y divide-border">
+                      {displaySessions.map((session) => {
+                        const isExpanded = expandedSessions.has(session.id);
+
+                        return (
+                          <div key={session.id}>
+                            {/* Session header: click left area to expand, Generate Bill on right */}
+                            <div className="flex items-stretch w-full hover:bg-muted/30 transition-colors">
+                              <button
+                                className="flex-1 p-4 flex items-center gap-3 text-left min-w-0"
+                                onClick={() =>
+                                  setExpandedSessions((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(session.id))
+                                      next.delete(session.id);
+                                    else next.add(session.id);
+                                    return next;
+                                  })
+                                }
+                              >
+                                <div
+                                  className={cn(
+                                    "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+                                    session.sessionType === "takeaway"
+                                      ? "bg-blue-100"
+                                      : "bg-orange-100",
+                                  )}
+                                >
+                                  {session.sessionType === "takeaway" ? (
+                                    <ShoppingBag className="w-5 h-5 text-blue-600" />
+                                  ) : (
+                                    <UtensilsCrossed className="w-5 h-5 text-orange-600" />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                    {session.sessionType === "takeaway" ? (
+                                      <span className="font-bold text-sm">
+                                        Takeaway
+                                      </span>
+                                    ) : (
+                                      <span className="font-bold text-sm">
+                                        {(() => {
+                                          const { prefix, label } =
+                                            deriveSessionTableLabel(session);
+                                          return `${prefix} ${label}`;
+                                        })()}
+                                      </span>
+                                    )}
+                                    {session.sessionType === "takeaway" &&
+                                      session.customerPhone && (
+                                        <span className="text-xs text-muted-foreground font-mono">
+                                          +{session.customerPhone}
+                                        </span>
+                                      )}
+                                    {newOrderSessionIds.has(session.id) && (
+                                      <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-bold animate-pulse">
+                                        NEW
+                                      </span>
+                                    )}
+                                    {session.bill &&
+                                      session.bill.status === "generated" && (
+                                        <span className="text-xs bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-medium">
+                                          Bill Ready
+                                        </span>
+                                      )}
+                                    {session.bill &&
+                                      session.bill.status === "sent" && (
+                                        <span className="text-xs bg-sky-100 text-sky-700 border border-sky-200 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                                          <Send className="w-3 h-3" />
+                                          Bill Sent
+                                        </span>
+                                      )}
+                                    {session.bill &&
+                                      session.bill.hasScreenshot &&
+                                      session.bill.status !== "paid" && (
+                                        <span className="text-xs bg-violet-100 text-violet-700 border border-violet-200 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                                          <Camera className="w-3 h-3" />
+                                          Proof Received
+                                        </span>
+                                      )}
+                                  </div>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                                    <span>
+                                      {session.orderCount}{" "}
+                                      {session.orderCount === 1
+                                        ? "order"
+                                        : "orders"}
+                                    </span>
+                                    <span>·</span>
+                                    <span>
+                                      {session.itemCount}{" "}
+                                      {session.itemCount === 1
+                                        ? "item"
+                                        : "items"}
+                                    </span>
+                                    <span>·</span>
+                                    {session.bill ? (
+                                      <>
+                                        <span className="font-semibold text-foreground">
+                                          ₹{session.bill.total}
+                                        </span>
+                                        <span>·</span>
+                                        <span className="font-mono text-[10px]">
+                                          {session.bill.billNumber}
+                                        </span>
+                                        <span>·</span>
+                                        <span>
+                                          {new Date(
+                                            session.bill.createdAt,
+                                          ).toLocaleTimeString("en-IN", {
+                                            hour: "2-digit",
+                                            minute: "2-digit",
+                                          })}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="font-semibold text-foreground">
+                                          ₹{session.totalAmount}
+                                        </span>
+                                        <span>·</span>
+                                        <span>
+                                          Since{" "}
+                                          {new Date(
+                                            session.createdAt,
+                                          ).toLocaleTimeString("en-IN", {
+                                            hour: "2-digit",
+                                            minute: "2-digit",
+                                          })}
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="shrink-0 text-muted-foreground ml-2">
+                                  {isExpanded ? (
+                                    <ChevronUp className="w-4 h-4" />
+                                  ) : (
+                                    <ChevronDown className="w-4 h-4" />
+                                  )}
+                                </div>
+                              </button>
+
+                              {/* Right-side action panel */}
+                              <div className="flex items-center gap-2 px-4 shrink-0 border-l border-border/50">
+                                {/* Generate Bill — only for active sessions without a bill */}
+                                {session.status === "active" &&
+                                  !session.bill && (
+                                    <Button
+                                      size="sm"
+                                      className="h-8 text-xs whitespace-nowrap"
+                                      onClick={() =>
+                                        handleGenerateBill(session.id)
+                                      }
+                                      disabled={generatingBillId === session.id}
+                                    >
+                                      {generatingBillId === session.id ? (
+                                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                      ) : (
+                                        <Receipt className="w-3 h-3 mr-1.5" />
+                                      )}
+                                      Generate Bill
+                                    </Button>
+                                  )}
+
+                                {/* View Bill — always shown once a bill exists */}
+                                {session.bill && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 text-xs whitespace-nowrap"
+                                    onClick={() =>
+                                      setViewingBillSessionId(session.id)
+                                    }
+                                  >
+                                    <Eye className="w-3 h-3 mr-1.5" />
+                                    View Bill
+                                  </Button>
+                                )}
+
+                                {/* Send Bill — bill is generated; Resend after already sent */}
+                                {session.bill &&
+                                  (session.bill.status === "generated" ||
+                                    session.bill.status === "sent") && (
+                                    <Button
+                                      size="sm"
+                                      className="h-8 text-xs whitespace-nowrap bg-green-600 hover:bg-green-700 text-white"
+                                      onClick={() =>
+                                        void handleSendSessionBill(session.id)
+                                      }
+                                      disabled={
+                                        sendingBillSessionId === session.id
+                                      }
+                                    >
+                                      {sendingBillSessionId === session.id ? (
+                                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                      ) : (
+                                        <Send className="w-3 h-3 mr-1.5" />
+                                      )}
+                                      {session.bill.status === "sent"
+                                        ? "Resend Bill"
+                                        : "Send Bill"}
+                                    </Button>
+                                  )}
+
+                                {/* Verify Payment — screenshot received, awaiting staff review */}
+                                {session.bill?.status ===
+                                  "awaiting_verification" && (
+                                  <Button
+                                    size="sm"
+                                    className="h-8 text-xs whitespace-nowrap bg-violet-600 hover:bg-violet-700 text-white"
+                                    onClick={() =>
+                                      void loadSessionScreenshot(session.id)
+                                    }
+                                    disabled={
+                                      loadingScreenshotSessionId === session.id
+                                    }
+                                  >
+                                    {loadingScreenshotSessionId ===
+                                    session.id ? (
+                                      <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                    ) : (
+                                      <ShieldCheck className="w-3 h-3 mr-1.5" />
+                                    )}
+                                    Verify Payment
+                                  </Button>
+                                )}
+
+                                {/* Mark Paid — cash / manual payment confirmation */}
+                                {session.bill &&
+                                  (session.bill.status === "generated" ||
+                                    session.bill.status === "sent" ||
+                                    session.bill.status ===
+                                      "awaiting_verification") && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-8 text-xs whitespace-nowrap text-green-700 border-green-300 hover:bg-green-50"
+                                      onClick={() =>
+                                        void handleMarkSessionPaid(session.id)
+                                      }
+                                      disabled={
+                                        markingPaidSessionId === session.id
+                                      }
+                                    >
+                                      {markingPaidSessionId === session.id ? (
+                                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                      ) : (
+                                        <CheckCircle2 className="w-3 h-3 mr-1.5" />
+                                      )}
+                                      Mark Paid
+                                    </Button>
+                                  )}
+                              </div>
+                            </div>
+
+                            {/* Expanded order list — payment actions handled at session level above */}
+                            {isExpanded && (
+                              <div className="border-t border-border">
+                                {session.orders.length === 0 ? (
+                                  <div className="py-6 text-center text-xs text-muted-foreground">
+                                    No orders in this session
+                                  </div>
+                                ) : (
+                                  <div className="divide-y divide-border">
+                                    {session.orders.map((order, i) =>
+                                      renderOrderCard(order as Order, i),
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+            </>
+          )}
+      {/* ── Payment Inbox Screenshot Modal ───────────────────────────── */}
+      {(() => {
+        const inboxEntry =
+          viewingInboxId !== null
+            ? (paymentInbox.find((entry) => entry.id === viewingInboxId) ??
+              null)
+            : null;
+        const inboxSrc =
+          viewingInboxId !== null ? inboxImages.get(viewingInboxId) : undefined;
+        return (
+          <Dialog
+            open={viewingInboxId !== null}
+            onOpenChange={(open) => {
+              if (!open) setViewingInboxId(null);
+            }}
+          >
+            <DialogContent className="sm:max-w-[620px] max-h-[92vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Camera className="w-5 h-5 text-violet-600" />
+                  Payment Screenshot #{viewingInboxId ?? ""}
+                </DialogTitle>
+              </DialogHeader>
+              {inboxEntry && (
+                <div className="space-y-3 py-2">
+                  <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Sender</span>
+                      <span className="font-medium">
+                        {inboxEntry.senderPhone ??
+                          inboxEntry.senderJid ??
+                          "Unknown"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Received</span>
+                      <span className="font-medium">
+                        {new Date(inboxEntry.receivedAt).toLocaleString(
+                          "en-IN",
+                          { dateStyle: "medium", timeStyle: "short" },
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Match</span>
+                      <span className="font-medium capitalize">
+                        {inboxEntry.matchStatus}
+                      </span>
+                    </div>
+                  </div>
+                  {inboxSrc ? (
+                    <div className="rounded-lg border overflow-hidden bg-black">
+                      <img
+                        src={inboxSrc}
+                        alt="Payment screenshot from WhatsApp"
+                        className="w-full max-h-[65vh] object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="py-10 text-center text-sm text-muted-foreground">
+                      Screenshot data is unavailable.
+                    </div>
+                  )}
+                </div>
+              )}
+              <DialogFooter>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setViewingInboxId(null)}
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        );
+      })()}
 
       {/* ── Session Bill Payment Proof Modal ─────────────────────────── */}
       {(() => {
-        const activeSession = viewingScreenshotSessionId !== null
-          ? sessions.find((s) => s.id === viewingScreenshotSessionId) ?? null
-          : null;
+        const activeSession =
+          viewingScreenshotSessionId !== null
+            ? (sessions.find((s) => s.id === viewingScreenshotSessionId) ??
+              null)
+            : null;
         const activeBill = activeSession?.bill ?? null;
-        const sessionScreenshotSrc = viewingScreenshotSessionId !== null
-          ? sessionScreenshots.get(viewingScreenshotSessionId)
-          : undefined;
+        const sessionScreenshotSrc =
+          viewingScreenshotSessionId !== null
+            ? sessionScreenshots.get(viewingScreenshotSessionId)
+            : undefined;
 
         return (
           <Dialog
             open={viewingScreenshotSessionId !== null}
-            onOpenChange={(open) => { if (!open) setViewingScreenshotSessionId(null); }}
+            onOpenChange={(open) => {
+              if (!open) setViewingScreenshotSessionId(null);
+            }}
           >
             <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <Camera className="w-5 h-5 text-violet-600" />
-                  Payment Proof — {activeSession ? (() => { const { prefix, label } = deriveSessionTableLabel(activeSession); return `${prefix} ${label}`; })() : ""}
+                  Payment Proof —{" "}
+                  {activeSession
+                    ? (() => {
+                        const { prefix, label } =
+                          deriveSessionTableLabel(activeSession);
+                        return `${prefix} ${label}`;
+                      })()
+                    : ""}
                 </DialogTitle>
               </DialogHeader>
 
@@ -1240,27 +2296,47 @@ export default function Dashboard() {
                   <div className="rounded-lg border bg-muted/40 px-3 py-2.5 text-xs space-y-1">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Bill</span>
-                      <span className="font-mono font-bold">{activeBill.billNumber}</span>
+                      <span className="font-mono font-bold">
+                        {activeBill.billNumber}
+                      </span>
                     </div>
                     {activeBill.customerPhone && (
                       <div className="flex justify-between">
-                        <span className="text-muted-foreground">Customer Phone</span>
-                        <span className="font-medium">{activeBill.customerPhone}</span>
+                        <span className="text-muted-foreground">
+                          Customer Phone
+                        </span>
+                        <span className="font-medium">
+                          {activeBill.customerPhone}
+                        </span>
                       </div>
                     )}
                     {activeBill.screenshotReceivedAt && (
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Received</span>
                         <span className="font-medium">
-                          {new Date(activeBill.screenshotReceivedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                          {new Date(
+                            activeBill.screenshotReceivedAt,
+                          ).toLocaleTimeString("en-IN", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
                           {" · "}
-                          {new Date(activeBill.screenshotReceivedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                          {new Date(
+                            activeBill.screenshotReceivedAt,
+                          ).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                          })}
                         </span>
                       </div>
                     )}
                     <div className="flex justify-between border-t pt-1 mt-1">
-                      <span className="text-muted-foreground font-semibold">Total</span>
-                      <span className="font-bold text-foreground">₹{Number(activeBill.total).toFixed(2)}</span>
+                      <span className="text-muted-foreground font-semibold">
+                        Total
+                      </span>
+                      <span className="font-bold text-foreground">
+                        ₹{Number(activeBill.total).toFixed(2)}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -1275,15 +2351,22 @@ export default function Dashboard() {
                     <div className="space-y-1 text-amber-700">
                       <div className="flex justify-between">
                         <span className="text-amber-600">Order Phone</span>
-                        <span className="font-semibold font-mono">{activeBill.customerPhone ?? "—"}</span>
+                        <span className="font-semibold font-mono">
+                          {activeBill.customerPhone ?? "—"}
+                        </span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-amber-600">Screenshot Sender</span>
-                        <span className="font-semibold font-mono">{activeBill.senderPhone ?? "—"}</span>
+                        <span className="text-amber-600">
+                          Screenshot Sender
+                        </span>
+                        <span className="font-semibold font-mono">
+                          {activeBill.senderPhone ?? "—"}
+                        </span>
                       </div>
                     </div>
                     <p className="text-amber-700 leading-snug">
-                      Please ask the customer to resend the payment proof from the phone number used to place the order.
+                      Please ask the customer to resend the payment proof from
+                      the phone number used to place the order.
                     </p>
                   </div>
                 )}
@@ -1292,15 +2375,30 @@ export default function Dashboard() {
                 {sessionScreenshotSrc ? (
                   <div className="rounded-lg border overflow-hidden">
                     <div className="flex items-center justify-between px-3 py-2 bg-muted border-b">
-                      <p className="text-xs font-semibold text-muted-foreground">Payment Screenshot (via WhatsApp)</p>
+                      <p className="text-xs font-semibold text-muted-foreground">
+                        Payment Screenshot (via WhatsApp)
+                      </p>
                       <div className="flex items-center gap-1">
-                        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs gap-1"
-                          onClick={() => setSessionBillImageZoomed((z) => !z)}>
-                          {sessionBillImageZoomed
-                            ? <><ZoomOut className="w-3 h-3" /> Zoom Out</>
-                            : <><ZoomIn className="w-3 h-3" /> Zoom In</>}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-xs gap-1"
+                          onClick={() => setSessionBillImageZoomed((z) => !z)}
+                        >
+                          {sessionBillImageZoomed ? (
+                            <>
+                              <ZoomOut className="w-3 h-3" /> Zoom Out
+                            </>
+                          ) : (
+                            <>
+                              <ZoomIn className="w-3 h-3" /> Zoom In
+                            </>
+                          )}
                         </Button>
-                        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs gap-1"
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-xs gap-1"
                           onClick={() => {
                             const win = window.open("", "_blank");
                             if (win) {
@@ -1308,19 +2406,33 @@ export default function Dashboard() {
                                 `<!DOCTYPE html><html><body style="margin:0;background:#000;display:flex;justify-content:center"><img src="${sessionScreenshotSrc}" style="max-width:100%;height:auto"></body></html>`,
                               );
                             }
-                          }}>
+                          }}
+                        >
                           <ExternalLink className="w-3 h-3" /> Full Screen
                         </Button>
                       </div>
                     </div>
-                    <div className={sessionBillImageZoomed ? "overflow-auto cursor-zoom-out" : "overflow-hidden cursor-zoom-in"}>
+                    <div
+                      className={
+                        sessionBillImageZoomed
+                          ? "overflow-auto cursor-zoom-out"
+                          : "overflow-hidden cursor-zoom-in"
+                      }
+                    >
                       <img
                         src={sessionScreenshotSrc}
                         alt="Payment screenshot"
                         className="w-full object-contain transition-transform duration-200"
-                        style={sessionBillImageZoomed
-                          ? { maxHeight: "none", transform: "scale(2)", transformOrigin: "top center", marginBottom: "100%" }
-                          : { maxHeight: "320px" }}
+                        style={
+                          sessionBillImageZoomed
+                            ? {
+                                maxHeight: "none",
+                                transform: "scale(2)",
+                                transformOrigin: "top center",
+                                marginBottom: "100%",
+                              }
+                            : { maxHeight: "320px" }
+                        }
                         onClick={() => setSessionBillImageZoomed((z) => !z)}
                       />
                     </div>
@@ -1335,19 +2447,37 @@ export default function Dashboard() {
 
               <DialogFooter className="flex-col sm:flex-row gap-2">
                 <Button
-                  variant="outline" size="sm"
+                  variant="outline"
+                  size="sm"
                   className="text-red-600 border-red-300 hover:bg-red-50 sm:mr-auto"
-                  onClick={() => activeSession && void handleRejectSessionBill(activeSession.id)}
-                  disabled={approvingBillSessionId !== null || rejectingBillSessionId !== null}
+                  onClick={() =>
+                    activeSession &&
+                    void handleRejectSessionBill(activeSession.id)
+                  }
+                  disabled={
+                    approvingBillSessionId !== null ||
+                    rejectingBillSessionId !== null
+                  }
                 >
-                  {rejectingBillSessionId === viewingScreenshotSessionId
-                    ? <><Loader2 className="w-3 h-3 animate-spin mr-1" /> Rejecting...</>
-                    : <><XCircle className="w-3 h-3 mr-1" /> Reject</>}
+                  {rejectingBillSessionId === viewingScreenshotSessionId ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin mr-1" />{" "}
+                      Rejecting...
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="w-3 h-3 mr-1" /> Reject
+                    </>
+                  )}
                 </Button>
                 <Button
-                  variant="outline" size="sm"
+                  variant="outline"
+                  size="sm"
                   onClick={() => setViewingScreenshotSessionId(null)}
-                  disabled={approvingBillSessionId !== null || rejectingBillSessionId !== null}
+                  disabled={
+                    approvingBillSessionId !== null ||
+                    rejectingBillSessionId !== null
+                  }
                 >
                   Close
                 </Button>
@@ -1355,12 +2485,26 @@ export default function Dashboard() {
                   <Button
                     size="sm"
                     className="bg-green-600 hover:bg-green-700 text-white"
-                    onClick={() => activeSession && void handleApproveSessionBill(activeSession.id)}
-                    disabled={approvingBillSessionId !== null || rejectingBillSessionId !== null}
+                    onClick={() =>
+                      activeSession &&
+                      void handleApproveSessionBill(activeSession.id)
+                    }
+                    disabled={
+                      approvingBillSessionId !== null ||
+                      rejectingBillSessionId !== null
+                    }
                   >
-                    {approvingBillSessionId === viewingScreenshotSessionId
-                      ? <><Loader2 className="w-3 h-3 animate-spin mr-1" /> Approving...</>
-                      : <><CheckCircle2 className="w-3 h-3 mr-1" /> Approve Payment</>}
+                    {approvingBillSessionId === viewingScreenshotSessionId ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" />{" "}
+                        Approving...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-3 h-3 mr-1" /> Approve
+                        Payment
+                      </>
+                    )}
                   </Button>
                 )}
               </DialogFooter>
@@ -1369,29 +2513,51 @@ export default function Dashboard() {
         );
       })()}
 
-
       {/* ── View Bill Modal ────────────────────────────────────────────────── */}
       {(() => {
-        const billSession = viewingBillSessionId !== null
-          ? sessions.find((s) => s.id === viewingBillSessionId) ?? null
-          : null;
+        const billSession =
+          viewingBillSessionId !== null
+            ? (sessions.find((s) => s.id === viewingBillSessionId) ?? null)
+            : null;
         const bill = billSession?.bill ?? null;
 
         const allItems = (billSession?.orders ?? []).flatMap((o) =>
-          (o.items ?? []).map((item) => ({ ...item, orderId: o.id }))
+          (o.items ?? []).map((item) => ({ ...item, orderId: o.id })),
         );
 
         const statusLabel: Record<string, { label: string; color: string }> = {
-          generated:            { label: "Bill Ready",            color: "bg-emerald-100 text-emerald-700 border-emerald-200" },
-          sent:                 { label: "Bill Sent",             color: "bg-sky-100 text-sky-700 border-sky-200" },
-          awaiting_verification:{ label: "Awaiting Verification", color: "bg-violet-100 text-violet-700 border-violet-200" },
-          paid:                 { label: "Paid",                  color: "bg-green-100 text-green-700 border-green-200" },
-          cancelled:            { label: "Cancelled",             color: "bg-red-100 text-red-700 border-red-200" },
+          generated: {
+            label: "Bill Ready",
+            color: "bg-emerald-100 text-emerald-700 border-emerald-200",
+          },
+          sent: {
+            label: "Bill Sent",
+            color: "bg-sky-100 text-sky-700 border-sky-200",
+          },
+          awaiting_verification: {
+            label: "Awaiting Verification",
+            color: "bg-violet-100 text-violet-700 border-violet-200",
+          },
+          paid: {
+            label: "Paid",
+            color: "bg-green-100 text-green-700 border-green-200",
+          },
+          cancelled: {
+            label: "Cancelled",
+            color: "bg-red-100 text-red-700 border-red-200",
+          },
         };
-        const statusInfo = bill ? (statusLabel[bill.status] ?? statusLabel.generated) : null;
+        const statusInfo = bill
+          ? (statusLabel[bill.status] ?? statusLabel.generated)
+          : null;
 
         return (
-          <Dialog open={!!billSession} onOpenChange={(open) => { if (!open) setViewingBillSessionId(null); }}>
+          <Dialog
+            open={!!billSession}
+            onOpenChange={(open) => {
+              if (!open) setViewingBillSessionId(null);
+            }}
+          >
             <DialogContent className="max-w-md">
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
@@ -1402,7 +2568,6 @@ export default function Dashboard() {
 
               {billSession && bill && (
                 <div className="space-y-4 py-1">
-
                   {/* Session + status row */}
                   <div className="flex items-center justify-between">
                     <div className="text-sm text-muted-foreground">
@@ -1411,21 +2576,29 @@ export default function Dashboard() {
                           <ShoppingBag className="w-3.5 h-3.5" />
                           Takeaway
                           {billSession.customerPhone && (
-                            <span className="font-mono text-xs">· +{billSession.customerPhone}</span>
+                            <span className="font-mono text-xs">
+                              · +{billSession.customerPhone}
+                            </span>
                           )}
                         </span>
                       ) : (
                         <span className="flex items-center gap-1.5">
                           <UtensilsCrossed className="w-3.5 h-3.5" />
                           {(() => {
-                            const { prefix, label } = deriveSessionTableLabel(billSession);
+                            const { prefix, label } =
+                              deriveSessionTableLabel(billSession);
                             return `${prefix} ${label}`;
                           })()}
                         </span>
                       )}
                     </div>
                     {statusInfo && (
-                      <span className={cn("text-xs px-2 py-0.5 rounded-full border font-medium", statusInfo.color)}>
+                      <span
+                        className={cn(
+                          "text-xs px-2 py-0.5 rounded-full border font-medium",
+                          statusInfo.color,
+                        )}
+                      >
                         {statusInfo.label}
                       </span>
                     )}
@@ -1433,36 +2606,68 @@ export default function Dashboard() {
 
                   {/* Timestamps */}
                   <div className="text-xs text-muted-foreground space-y-0.5">
-                    <div>Generated: {new Date(bill.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</div>
+                    <div>
+                      Generated:{" "}
+                      {new Date(bill.createdAt).toLocaleString("en-IN", {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })}
+                    </div>
                     {bill.sentAt && (
-                      <div>Sent: {new Date(bill.sentAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</div>
+                      <div>
+                        Sent:{" "}
+                        {new Date(bill.sentAt).toLocaleString("en-IN", {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })}
+                      </div>
                     )}
                   </div>
 
                   {/* Itemized list */}
                   <div className="rounded-lg border border-border overflow-hidden">
                     <div className="bg-muted/40 px-3 py-2 flex items-center justify-between">
-                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Item</span>
-                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Amount</span>
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        Item
+                      </span>
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        Amount
+                      </span>
                     </div>
                     <div className="divide-y divide-border">
                       {allItems.length === 0 ? (
-                        <div className="px-3 py-3 text-xs text-muted-foreground text-center">No items found</div>
+                        <div className="px-3 py-3 text-xs text-muted-foreground text-center">
+                          No items found
+                        </div>
                       ) : (
                         allItems.map((item, i) => (
-                          <div key={i} className="px-3 py-2 flex items-center justify-between gap-2">
+                          <div
+                            key={i}
+                            className="px-3 py-2 flex items-center justify-between gap-2"
+                          >
                             <div className="flex items-center gap-2 min-w-0">
-                              <div className={cn(
-                                "w-2.5 h-2.5 rounded-sm border shrink-0",
-                                item.isVeg ? "border-green-600 bg-green-50" : "border-red-600 bg-red-50"
-                              )} />
-                              <span className="text-sm truncate">{item.name}</span>
+                              <div
+                                className={cn(
+                                  "w-2.5 h-2.5 rounded-sm border shrink-0",
+                                  item.isVeg
+                                    ? "border-green-600 bg-green-50"
+                                    : "border-red-600 bg-red-50",
+                                )}
+                              />
+                              <span className="text-sm truncate">
+                                {item.name}
+                              </span>
                               {item.quantity > 1 && (
-                                <span className="text-xs text-muted-foreground shrink-0">× {item.quantity}</span>
+                                <span className="text-xs text-muted-foreground shrink-0">
+                                  × {item.quantity}
+                                </span>
                               )}
                             </div>
                             <span className="text-sm font-medium shrink-0">
-                              ₹{(Number(item.unitPrice) * item.quantity).toFixed(2)}
+                              ₹
+                              {(Number(item.unitPrice) * item.quantity).toFixed(
+                                2,
+                              )}
                             </span>
                           </div>
                         ))
@@ -1487,40 +2692,50 @@ export default function Dashboard() {
                       </div>
                     </div>
                   </div>
-
                 </div>
               )}
 
               <DialogFooter>
-                <Button size="sm" variant="outline" onClick={() => setViewingBillSessionId(null)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setViewingBillSessionId(null)}
+                >
                   Close
                 </Button>
-                {bill && (bill.status === "generated" || bill.status === "sent") && (
-                  <Button
-                    size="sm"
-                    className="bg-green-600 hover:bg-green-700 text-white"
-                    onClick={() => {
-                      setViewingBillSessionId(null);
-                      void handleSendSessionBill(billSession!.id);
-                    }}
-                    disabled={sendingBillSessionId === billSession?.id}
-                  >
-                    {sendingBillSessionId === billSession?.id
-                      ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                      : <Send className="w-3 h-3 mr-1.5" />}
-                    {bill.status === "sent" ? "Resend Bill" : "Send Bill"}
-                  </Button>
-                )}
+                {bill &&
+                  (bill.status === "generated" || bill.status === "sent") && (
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                      onClick={() => {
+                        setViewingBillSessionId(null);
+                        void handleSendSessionBill(billSession!.id);
+                      }}
+                      disabled={sendingBillSessionId === billSession?.id}
+                    >
+                      {sendingBillSessionId === billSession?.id ? (
+                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3 h-3 mr-1.5" />
+                      )}
+                      {bill.status === "sent" ? "Resend Bill" : "Send Bill"}
+                    </Button>
+                  )}
               </DialogFooter>
             </DialogContent>
           </Dialog>
         );
       })()}
 
-
       {/* ── Incomplete Orders Modal ────────────────────────────────────────── */}
       {/* Shown when Generate Bill is clicked before all session orders are completed */}
-      <Dialog open={!!incompleteOrdersModal} onOpenChange={(open) => { if (!open) setIncompleteOrdersModal(null); }}>
+      <Dialog
+        open={!!incompleteOrdersModal}
+        onOpenChange={(open) => {
+          if (!open) setIncompleteOrdersModal(null);
+        }}
+      >
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-amber-700">
@@ -1530,19 +2745,33 @@ export default function Dashboard() {
           </DialogHeader>
           <div className="space-y-3 py-1">
             <p className="text-sm text-muted-foreground">
-              All orders in this session must be marked <span className="font-semibold text-foreground">Completed</span> before generating a bill.
+              All orders in this session must be marked{" "}
+              <span className="font-semibold text-foreground">Completed</span>{" "}
+              before generating a bill.
             </p>
             {incompleteOrdersModal && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 divide-y divide-amber-200">
                 <div className="px-3 py-2">
-                  <p className="text-xs font-semibold text-amber-800">Incomplete Orders</p>
+                  <p className="text-xs font-semibold text-amber-800">
+                    Incomplete Orders
+                  </p>
                 </div>
                 {incompleteOrdersModal.orders.map((o) => {
                   const cfg = STATUS_CONFIG[o.status] ?? STATUS_CONFIG.ordered;
                   return (
-                    <div key={o.id} className="px-3 py-2 flex items-center justify-between">
-                      <span className="text-sm font-medium text-amber-900">Order #{o.id}</span>
-                      <span className={cn("text-xs px-2 py-0.5 rounded-full border font-medium", cfg.color)}>
+                    <div
+                      key={o.id}
+                      className="px-3 py-2 flex items-center justify-between"
+                    >
+                      <span className="text-sm font-medium text-amber-900">
+                        Order #{o.id}
+                      </span>
+                      <span
+                        className={cn(
+                          "text-xs px-2 py-0.5 rounded-full border font-medium",
+                          cfg.color,
+                        )}
+                      >
                         {cfg.label}
                       </span>
                     </div>
@@ -1674,6 +2903,7 @@ export default function Dashboard() {
         </DialogContent>
       </Dialog>
 
+      </div>
     </AppShell>
   );
 }
