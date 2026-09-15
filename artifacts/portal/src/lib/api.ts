@@ -1,4 +1,5 @@
-const BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const rawBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const BASE = (rawBase.includes("railway.app") || rawBase.includes("bitebend.in")) ? "" : rawBase;
 
 export const API_BASE = `${BASE}/api`;
 
@@ -21,6 +22,26 @@ export function resolveImageUrl<T extends string | null | undefined>(url: T): T 
     return `${API_ORIGIN}${url}` as T;
   }
   return url;
+}
+
+const TOKEN_KEY = "bitebend_auth_token";
+
+export function getAuthToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthToken(token: string | null) {
+  try {
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {}
 }
 
 let onUnauthorized: (() => void) | null = null;
@@ -58,11 +79,20 @@ export async function apiFetch<T>(
 
   const { timeoutMs: _t, ...fetchInit } = init ?? {};
 
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...fetchInit.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+        ...fetchInit.headers,
+      },
       signal: controller.signal,
       ...fetchInit,
     });
@@ -78,8 +108,11 @@ export async function apiFetch<T>(
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: "Request failed" }));
     const message = (body as { error: string }).error ?? "Request failed";
-    if ((res.status === 401 || res.status === 403) && onUnauthorized) {
-      onUnauthorized();
+    if (res.status === 401) {
+      setAuthToken(null);
+      if (onUnauthorized) {
+        onUnauthorized();
+      }
     }
     throw new ApiError(res.status, message);
   }

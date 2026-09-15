@@ -2,8 +2,83 @@ export interface AuthUser {
   id: number;
   email: string;
   name: string;
-  role: "super_admin" | "owner";
+  role: "super_admin" | "owner" | "partner";
   restaurantId: number | null;
+}
+
+export interface PartnerProfile {
+  id: number;
+  userId: number;
+  name: string;
+  email: string;
+  phone: string;
+  referralCode: string;
+  commissionPercentage: number;
+  status: "active" | "suspended";
+  payoutDetails?: {
+    upiId?: string | null;
+    accountName?: string | null;
+    accountNumber?: string | null;
+    ifsc?: string | null;
+    bankName?: string | null;
+    updatedAt?: string;
+  } | null;
+  createdAt: string;
+  updatedAt?: string;
+  totalRestaurants?: number;
+  totalEarned?: number;
+  totalPending?: number;
+  totalApproved?: number;
+  totalPaid?: number;
+}
+
+export interface PartnerCommission {
+  id: number;
+  partnerId: number;
+  partnerName?: string;
+  partnerEmail?: string;
+  partnerReferralCode?: string;
+  partnerPayoutDetails?: any;
+  restaurantId: number;
+  restaurantName?: string;
+  restaurantCity?: string;
+  subscriptionTransactionId: number;
+  transactionAmount: number;
+  commissionRate: number;
+  commissionAmount: number;
+  currency: string;
+  status: "pending" | "approved" | "paid" | "cancelled";
+  payoutReference?: string | null;
+  paidAt?: string | null;
+  notes?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface PartnerDashboardData {
+  partner: PartnerProfile;
+  metrics: {
+    totalRestaurants: number;
+    activeRestaurants: number;
+    totalEarned: number;
+    pendingPayout: number;
+    approvedPayout: number;
+    paidPayout: number;
+  };
+  recentRestaurants: Array<{
+    id: number;
+    name: string;
+    slug: string;
+    phone: string;
+    email: string;
+    city: string;
+    subscriptionStatus: string;
+    subscriptionPlan: string;
+    planId: number | null;
+    isActive: boolean;
+    createdAt: string;
+  }>;
+  recentCommissions: PartnerCommission[];
 }
 
 export interface SubscriptionPlan {
@@ -83,6 +158,9 @@ export interface Restaurant {
   subscriptionStatus: "active" | "exhausted" | "suspended" | "expired";
   subscriptionExpiresAt: string | null;
   subscriptionStartedAt: string | null;
+  partnerId?: number | null;
+  partnerName?: string | null;
+  partnerCode?: string | null;
   createdAt: string;
 }
 
@@ -321,6 +399,15 @@ export interface RestaurantWithOwner extends Restaurant {
   totalRevenue: number;
   planName: string | null;
   subscriptionExpiresAt: string | null;
+  qrStandsCount?: number;
+  hardwareOrderId?: number | null;
+  hardwareQuantity?: number;
+  hardwareUnitPrice?: number;
+  hardwareTotalAmount?: number;
+  hardwareCollectionStatus?: string;
+  hardwareCollectedAt?: string | null;
+  hardwarePartnerId?: number | null;
+  hardwarePartnerName?: string | null;
 }
 
 export interface AdminStats {
@@ -372,3 +459,86 @@ export interface ScreenshotInboxPage {
   page: number;
   totalPages: number;
 }
+
+// ── Partner Channel Types ───────────────────────────────────────────────────
+
+export interface PartnerPayoutDetails {
+  upiId?: string | null;
+  accountName?: string | null;
+  accountNumber?: string | null;
+  ifsc?: string | null;
+  bankName?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface PartnerProfile {
+  id: number;
+  userId: number;
+  name: string;
+  email: string;
+  phone: string;
+  state?: string | null;
+  city?: string | null;
+  referralCode: string | null;
+  commissionPercentage: number;
+  status: "pending" | "active" | "suspended" | "rejected";
+  payoutDetails: PartnerPayoutDetails | null;
+  createdAt: string;
+  updatedAt: string;
+  tempPassword?: string | null;
+  loginPassword?: string | null;
+}
+
+export interface PartnerMetrics {
+  totalRestaurants: number;
+  activeRestaurants: number;
+  totalEarned: number;
+  pendingPayout: number;
+  approvedPayout: number;
+  paidPayout: number;
+}
+
+export interface PartnerRestaurantItem {
+  id: number;
+  name: string;
+  slug: string;
+  phone: string;
+  email: string;
+  city: string;
+  address?: string | null;
+  cuisineType?: string | null;
+  subscriptionStatus: string;
+  customerLimit?: number;
+  customersUsed?: number;
+  isActive: boolean;
+  planId?: number | null;
+  planName?: string | null;
+  createdAt: string;
+}
+
+export interface PartnerCommissionItem {
+  id: number;
+  partnerId: number;
+  restaurantId: number;
+  restaurantName?: string | null;
+  restaurantCity?: string | null;
+  subscriptionTransactionId: number;
+  transactionAmount: number;
+  commissionRate: number;
+  commissionAmount: number;
+  currency: string;
+  status: "pending" | "approved" | "paid" | "cancelled";
+  payoutReference: string | null;
+  paidAt: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface PartnerDashboardData {
+  partner: PartnerProfile;
+  metrics: PartnerMetrics;
+  recentRestaurants: PartnerRestaurantItem[];
+  recentCommissions: PartnerCommissionItem[];
+  isUnderReview?: boolean;
+}
+

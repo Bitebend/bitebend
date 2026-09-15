@@ -15,25 +15,26 @@ const app: Express = express();
 // Trust reverse proxy
 app.set("trust proxy", 1);
 
-// ── Force HTTPS in production ────────────────────────────────────────────────
-if (process.env.NODE_ENV === "production") {
-  app.use((req, res, next) => {
-    const proto = (req.headers["x-forwarded-proto"] as string | undefined)
-      ?.split(",")[0]
-      ?.trim();
-
-    if (proto === "http") {
-      const host = req.headers["host"] ?? "";
-      return res.redirect(301, `https://${host}${req.url}`);
-    }
-
-    next();
-  });
-}
-
 app.use(
   pinoHttp({
     logger,
+    autoLogging: {
+      ignore: (req) => {
+        const url = req.url?.split("?")[0];
+        return url === "/healthz" || url === "/api/healthz" || url === "/robots.txt";
+      },
+    },
+    customLogLevel(req, res, err) {
+      if (res.statusCode >= 500 || err) return "error";
+      if (res.statusCode >= 400) return "warn";
+      return "info";
+    },
+    customSuccessMessage(req, res) {
+      return `${req.method} ${req.url?.split("?")[0]} - ${res.statusCode}`;
+    },
+    customErrorMessage(req, res, err) {
+      return `${req.method} ${req.url?.split("?")[0]} - ${res.statusCode} ${err?.message ? `(${err.message})` : ""}`;
+    },
     serializers: {
       req(req) {
         return {
@@ -73,13 +74,11 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production" || !!process.env.REPL_ID,
+      secure: true,
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      sameSite:
-        process.env.NODE_ENV === "production" || !!process.env.REPL_ID
-          ? "none"
-          : "lax",
-    },
+      sameSite: "none",
+      partitioned: true,
+    } as any,
   }),
 );
 
@@ -97,60 +96,74 @@ app.use(
     pathRewrite: {
       "^/whatsapp-bridge": "",
     },
+    on: {
+      error: (_err, _req, res) => {
+        if (res && "status" in res && !(res as express.Response).headersSent) {
+          (res as express.Response).status(503).json({
+            status: "unavailable",
+            error: "WhatsApp Bridge service is not currently available",
+          });
+        }
+      },
+    },
   }),
 );
-// ── Frontend services routing ────────────────────────────────────────────────
-//
-// Development:
-//   Portal Vite → localhost:5000
-//   Menu Vite   → localhost:5173
-//
-// Production:
-//   Portal Service → separate Railway service
-//   Menu Service   → separate Railway service
-//   API Server     → API only
 
-if (process.env.NODE_ENV !== "production") {
-  // Menu development proxy
-  app.use(
-    createProxyMiddleware({
-      target: "http://localhost:5173",
-      changeOrigin: true,
-      ws: true,
-      pathFilter: (path) => path.startsWith("/menu"),
-    }),
-  );
+import path from "node:path";
+import fs from "node:fs";
+import { WORKSPACE_ROOT } from "./lib/workspace";
 
-  // Portal development proxy
-  app.use(
-    createProxyMiddleware({
-      target: "http://localhost:5000",
-      changeOrigin: true,
-      ws: true,
-      pathFilter: (path) =>
-        !path.startsWith("/api") &&
-        !path.startsWith("/menu") &&
-        !path.startsWith("/whatsapp-bridge"),
-    }),
-  );
-} else {
-  // Production:
-  // Frontend applications are hosted separately on Railway.
-  // This API server does not serve Portal or Menu files.
-
-  app.get("/robots.txt", (_req, res) => {
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    res.end("User-agent: *\nAllow: /\n");
-  });
-
-  // Any non-API route should not be handled by API server.
-  app.use((_req, res) => {
-    res.status(404).json({
-      error: "Route not found",
-    });
-  });
+// ── Frontend static assets & SPA routing ──────────────────────────────────────
+function getMenuDistPath(): string {
+  const p1 = path.join(WORKSPACE_ROOT, "artifacts/menu/dist/public");
+  if (fs.existsSync(p1)) return p1;
+  const p2 = path.join(WORKSPACE_ROOT, "artifacts/menu/dist");
+  if (fs.existsSync(p2)) return p2;
+  return p1;
 }
+
+function getPortalDistPath(): string {
+  const p = path.join(WORKSPACE_ROOT, "artifacts/portal/dist");
+  return p;
+}
+
+// Static assets
+app.use("/menu", express.static(path.join(WORKSPACE_ROOT, "artifacts/menu/dist/public"), { redirect: false }));
+app.use("/menu", express.static(path.join(WORKSPACE_ROOT, "artifacts/menu/dist"), { redirect: false }));
+app.use(express.static(path.join(WORKSPACE_ROOT, "artifacts/portal/dist")));
+
+// Menu SPA catch-all
+app.get(/^\/menu(\/.*)?$/, (_req, res) => {
+  const menuDist = getMenuDistPath();
+  const indexHtml = path.join(menuDist, "index.html");
+  if (fs.existsSync(indexHtml)) {
+    return res.sendFile(indexHtml);
+  }
+  res.status(503).send("Menu application is building. Please refresh in a moment.");
+});
+
+// Portal / Root SPA catch-all (handles all non-api, non-whatsapp-bridge routes)
+app.get(/^\/(?!api|whatsapp-bridge).*/, (_req, res) => {
+  const portalDist = getPortalDistPath();
+  const indexHtml = path.join(portalDist, "index.html");
+  if (fs.existsSync(indexHtml)) {
+    return res.sendFile(indexHtml);
+  }
+  res.status(503).send("Portal application is building. Please refresh in a moment.");
+});
+
+app.get("/robots.txt", (_req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.end("User-agent: *\nAllow: /\n");
+});
+
+// 404 for unhandled API endpoints or non-GET unhandled routes
+app.use((_req, res) => {
+  res.status(404).json({
+    error: "Route not found",
+  });
+});
 
 // ── JSON error handler ──────────────────────────────────────────────────────
 

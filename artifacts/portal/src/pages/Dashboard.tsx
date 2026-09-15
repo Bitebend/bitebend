@@ -175,7 +175,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState<
-    "live" | "orders" | "payment-inbox" | "history"
+    "live" | "payment-inbox" | "history"
   >("live");
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -1240,17 +1240,6 @@ export default function Dashboard() {
                 Live
               </button>
               <button
-                onClick={() => setActiveTab("orders")}
-                className={cn(
-                  "text-xs px-3 py-1.5 rounded-md font-medium transition-all",
-                  activeTab === "orders"
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                Orders
-              </button>
-              <button
                 onClick={() => setActiveTab("payment-inbox")}
                 className={cn(
                   "text-xs px-3 py-1.5 rounded-md font-medium transition-all flex items-center gap-1.5",
@@ -1261,16 +1250,20 @@ export default function Dashboard() {
               >
                 <Inbox className="w-3.5 h-3.5" />
                 Payment Inbox
-                {paymentInboxTotal > 0 && (
+                {(inboxTotal > 0 || paymentInboxTotal > 0) && (
                   <span
                     className={cn(
                       "min-w-4 h-4 px-1 rounded-full text-[10px] leading-4 text-center",
-                      paymentInbox.some((e) => e.matchStatus !== "matched")
+                      (screenshotInbox.length > 0
+                        ? screenshotInbox.some((e) => e.matchStatus !== "matched")
+                        : paymentInbox.some((e) => e.matchStatus !== "matched"))
                         ? "bg-red-500 text-white"
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {paymentInboxTotal > 99 ? "99+" : paymentInboxTotal}
+                    {(inboxTotal || paymentInboxTotal) > 99
+                      ? "99+"
+                      : (inboxTotal || paymentInboxTotal)}
                   </span>
                 )}
               </button>
@@ -1287,16 +1280,21 @@ export default function Dashboard() {
               </button>
             </div>
             {(activeTab === "live" ||
-              activeTab === "orders" ||
               activeTab === "payment-inbox") && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={fetchData}
-                disabled={loading}
+                onClick={() => {
+                  fetchData();
+                  fetchInbox();
+                }}
+                disabled={loading || inboxLoading}
               >
                 <RefreshCw
-                  className={cn("w-4 h-4 mr-2", loading && "animate-spin")}
+                  className={cn(
+                    "w-4 h-4 mr-2",
+                    (loading || inboxLoading) && "animate-spin",
+                  )}
                 />
                 Refresh
               </Button>
@@ -1304,145 +1302,48 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Orders tab — restored customer order management view.
-            Order status/payment actions reuse the same renderer and APIs used by
-            the current session-centric dashboard. Session billing remains the
-            source of truth for bills; the button below opens the owning session. */}
-        {activeTab === "orders" && (
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <ShoppingBag className="w-4 h-4 text-blue-600 shrink-0" />
-                <h2 className="text-base font-semibold">Customer Orders</h2>
-                <span className="text-xs bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 font-semibold">
-                  {orders.length}
-                </span>
-              </div>
-              <span className="text-xs text-muted-foreground hidden sm:block">
-                Session billing and payment verification remain unchanged
-              </span>
-            </div>
 
-            {loading ? (
-              <div className="py-12 flex justify-center">
-                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : orders.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                No customer orders found.
-              </div>
-            ) : (
-              <div className="divide-y divide-border">
-                {orders.map((order, i) => {
-                  const session =
-                    order.sessionId !== null
-                      ? (sessions.find(
-                          (candidate) => candidate.id === order.sessionId,
-                        ) ?? null)
-                      : null;
-
-                  return (
-                    <div key={order.id}>
-                      {renderOrderCard(order, i)}
-                      {session && (
-                        <div className="px-4 pb-3 -mt-1 flex justify-end gap-2 flex-wrap">
-                          {session.status === "active" && !session.bill && (
-                            <Button
-                              size="sm"
-                              className="h-8 text-xs"
-                              onClick={() =>
-                                void handleGenerateBill(session.id)
-                              }
-                              disabled={generatingBillId === session.id}
-                            >
-                              {generatingBillId === session.id ? (
-                                <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                              ) : (
-                                <Receipt className="w-3 h-3 mr-1.5" />
-                              )}
-                              Generate Bill
-                            </Button>
-                          )}
-                          {session.bill && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 text-xs"
-                              onClick={() =>
-                                setViewingBillSessionId(session.id)
-                              }
-                            >
-                              <Eye className="w-3 h-3 mr-1.5" />
-                              View Bill
-                            </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-8 text-xs"
-                            onClick={() => {
-                              setActiveTab("live");
-                              setExpandedSessions((prev) => {
-                                const next = new Set(prev);
-                                next.add(session.id);
-                                return next;
-                              });
-                            }}
-                          >
-                            <Receipt className="w-3 h-3 mr-1.5" />
-                            Open Session
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Payment Screenshot Inbox — every WhatsApp screenshot is retained here,
-            including unmatched/ambiguous screenshots that could not safely be
-            attached to a session bill. */}
+        {/* Payment Screenshots — WhatsApp payment screenshots, auto-matching, retry, and manual attach */}
         {activeTab === "payment-inbox" && (
           <div className="bg-card rounded-xl border border-border overflow-hidden">
-            <div className="px-4 py-3 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <Inbox className="w-4 h-4 text-violet-600 shrink-0" />
-                <h2 className="text-base font-semibold">
-                  Payment Screenshot Inbox
-                </h2>
-                <span className="text-xs bg-violet-100 text-violet-700 rounded-full px-2 py-0.5 font-semibold">
-                  {paymentInboxTotal}
+            {/* Header + filter tabs */}
+            <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
+              <Inbox className="w-4 h-4 text-violet-500 shrink-0" />
+              <h2 className="text-base font-semibold">Payment Screenshots</h2>
+              {inboxTotal > 0 && (
+                <span className="text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2 py-0.5 font-semibold">
+                  {inboxTotal}
                 </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={paymentInboxStatus}
-                  onChange={(e) =>
-                    setPaymentInboxStatus(
-                      e.target.value as typeof paymentInboxStatus,
-                    )
-                  }
-                  className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-                >
-                  <option value="all">All screenshots</option>
-                  <option value="unmatched">Unmatched</option>
-                  <option value="ambiguous">Ambiguous</option>
-                  <option value="matched">Matched</option>
-                </select>
+              )}
+              <div className="ml-auto flex gap-1 flex-wrap items-center">
+                {(["all", "unmatched", "ambiguous", "matched"] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => {
+                      setInboxFilter(f);
+                      setInboxPage(1);
+                    }}
+                    className={cn(
+                      "text-xs px-2.5 py-1 rounded-md font-medium transition-all capitalize",
+                      inboxFilter === f
+                        ? "bg-violet-100 text-violet-700"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
+                  </button>
+                ))}
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-8 text-xs"
-                  onClick={() => void fetchData()}
-                  disabled={paymentInboxLoading || loading}
+                  className="h-7 text-xs ml-1"
+                  onClick={() => void fetchInbox()}
+                  disabled={inboxLoading}
                 >
                   <RefreshCw
                     className={cn(
-                      "w-3.5 h-3.5 mr-1.5",
-                      (paymentInboxLoading || loading) && "animate-spin",
+                      "w-3 h-3 mr-1.5",
+                      inboxLoading && "animate-spin",
                     )}
                   />
                   Refresh
@@ -1450,193 +1351,204 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {paymentInboxLoading ? (
-              <div className="py-12 flex justify-center">
+            {inboxLoading ? (
+              <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
               </div>
-            ) : paymentInbox.length === 0 ? (
+            ) : screenshotInbox.length === 0 ? (
               <div className="py-14 text-center text-sm text-muted-foreground">
-                <ImageOff className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                No payment screenshots in this filter.
+                <Camera className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                {inboxFilter === "all"
+                  ? "No payment screenshots received yet"
+                  : `No ${inboxFilter} screenshots`}
               </div>
             ) : (
               <div className="divide-y divide-border">
-                {paymentInbox.map((entry) => {
+                {screenshotInbox.map((entry) => {
+                  const badge = {
+                    matched: {
+                      label: "Matched",
+                      cls: "bg-green-100 text-green-700 border-green-200",
+                      dot: "bg-green-500",
+                    },
+                    unmatched: {
+                      label: "Unmatched",
+                      cls: "bg-yellow-100 text-yellow-700 border-yellow-200",
+                      dot: "bg-yellow-500",
+                    },
+                    ambiguous: {
+                      label: "Ambiguous",
+                      cls: "bg-orange-100 text-orange-700 border-orange-200",
+                      dot: "bg-orange-500",
+                    },
+                  }[entry.matchStatus];
+                  const isRetrying = retryingInboxId === entry.id;
+                  const isLoadingImg = loadingInboxImageId === entry.id;
                   const matchedSession =
                     entry.matchedSessionId !== null
                       ? (sessions.find(
                           (session) => session.id === entry.matchedSessionId,
                         ) ?? null)
                       : null;
-                  const statusClass =
-                    entry.matchStatus === "matched"
-                      ? "bg-green-50 text-green-700 border-green-200"
-                      : entry.matchStatus === "ambiguous"
-                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : "bg-red-50 text-red-700 border-red-200";
-                  const candidateBills = sessions
-                    .map((session) => session.bill)
-                    .filter(
-                      (bill): bill is NonNullable<SessionSummary["bill"]> =>
-                        !!bill &&
-                        bill.status !== "paid" &&
-                        bill.status !== "cancelled",
-                    );
 
                   return (
                     <div
                       key={entry.id}
-                      className="p-4 hover:bg-muted/20 transition-colors"
+                      className="p-4 flex items-start gap-3 hover:bg-muted/20 transition-colors"
                     >
-                      <div className="flex flex-col lg:flex-row lg:items-center gap-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                            <span className="font-bold text-sm">
-                              Screenshot #{entry.id}
-                            </span>
+                      {/* Icon placeholder */}
+                      <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                        <Camera className="w-5 h-5 text-muted-foreground" />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="font-bold text-sm">
+                            Screenshot #{entry.id}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-xs px-2 py-0.5 rounded-full border font-medium flex items-center gap-1",
+                              badge.cls,
+                            )}
+                          >
                             <span
                               className={cn(
-                                "text-[11px] px-2 py-0.5 rounded-full border font-semibold capitalize",
-                                statusClass,
+                                "w-1.5 h-1.5 rounded-full shrink-0",
+                                badge.dot,
                               )}
-                            >
-                              {entry.matchStatus}
+                            />
+                            {badge.label}
+                          </span>
+                          {entry.isDuplicate && (
+                            <span className="text-xs px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200">
+                              Duplicate
                             </span>
-                            {entry.isDuplicate && (
-                              <span className="text-[11px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200">
-                                Duplicate
-                              </span>
-                            )}
-                            {entry.matchingStrategy && (
-                              <span className="text-[11px] text-muted-foreground">
-                                via{" "}
-                                {entry.matchingStrategy.replaceAll("_", " ")}
-                              </span>
-                            )}
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                            <span>
-                              <strong className="text-foreground">
-                                Sender:
-                              </strong>{" "}
-                              {entry.senderPhone ??
-                                entry.senderJid ??
-                                "Unknown"}
+                          )}
+                          {entry.matchingStrategy && (
+                            <span className="text-xs text-muted-foreground font-mono">
+                              via {entry.matchingStrategy.replace(/_/g, " ")}
                             </span>
-                            <span>
-                              <strong className="text-foreground">
-                                Source:
-                              </strong>{" "}
-                              {entry.source}
-                            </span>
-                            <span>
-                              <strong className="text-foreground">
-                                Received:
-                              </strong>{" "}
-                              {new Date(entry.receivedAt).toLocaleString(
-                                "en-IN",
-                                { dateStyle: "medium", timeStyle: "short" },
-                              )}
-                            </span>
-                          </div>
-                          {matchedSession && (
-                            <p className="mt-1 text-xs text-green-700">
-                              Matched to{" "}
-                              {matchedSession.sessionType === "takeaway"
-                                ? "Takeaway"
-                                : `Table ${matchedSession.tableNumber ?? "?"}`}{" "}
-                              · Bill #{entry.matchedBillId ?? "?"}
-                            </p>
                           )}
                         </div>
-
-                        <div className="flex flex-wrap items-center gap-2 shrink-0">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 text-xs"
-                            onClick={() => void loadInboxImage(entry.id)}
-                            disabled={
-                              !entry.hasScreenshot ||
-                              loadingInboxImageId === entry.id
-                            }
-                          >
-                            {loadingInboxImageId === entry.id ? (
-                              <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                            ) : (
-                              <Eye className="w-3 h-3 mr-1.5" />
-                            )}
-                            View Screenshot
-                          </Button>
-
-                          {entry.matchStatus !== "matched" && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 text-xs"
-                              onClick={() =>
-                                void handleRetryInboxMatch(entry.id)
-                              }
-                              disabled={retryingInboxId === entry.id}
-                            >
-                              {retryingInboxId === entry.id ? (
-                                <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                              ) : (
-                                <RotateCw className="w-3 h-3 mr-1.5" />
-                              )}
-                              Retry Match
-                            </Button>
+                        <div className="text-xs text-muted-foreground space-y-0.5">
+                          <div>
+                            <strong className="text-foreground">Received:</strong>{" "}
+                            {new Date(entry.receivedAt).toLocaleString("en-IN", {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </div>
+                          {entry.senderPhone && (
+                            <div>
+                              <strong className="text-foreground">Sender:</strong>{" "}
+                              <span className="font-mono">+{entry.senderPhone}</span>
+                            </div>
                           )}
-
-                          {entry.matchStatus !== "matched" && (
-                            <div className="flex items-center gap-1.5">
-                              <select
-                                value={selectedInboxBillId ?? ""}
-                                onChange={(e) =>
-                                  setSelectedInboxBillId(
-                                    e.target.value
-                                      ? Number(e.target.value)
-                                      : null,
-                                  )
-                                }
-                                className="h-8 max-w-[220px] rounded-md border border-border bg-background px-2 text-xs"
-                              >
-                                <option value="">Attach to bill…</option>
-                                {candidateBills.map((bill) => (
-                                  <option key={bill.id} value={bill.id}>
-                                    {bill.billNumber} · ₹{bill.total}
-                                  </option>
-                                ))}
-                              </select>
-                              <Button
-                                size="sm"
-                                className="h-8 text-xs"
-                                disabled={
-                                  !selectedInboxBillId ||
-                                  attachingInboxId === entry.id
-                                }
-                                onClick={() =>
-                                  selectedInboxBillId &&
-                                  void handleAttachInboxScreenshot(
-                                    entry.id,
-                                    selectedInboxBillId,
-                                  )
-                                }
-                              >
-                                {attachingInboxId === entry.id ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <Link2 className="w-3 h-3 mr-1.5" />
-                                )}
-                                Attach
-                              </Button>
+                          {entry.senderJid && (
+                            <div className="font-mono text-[10px] text-muted-foreground/60 truncate">
+                              JID: {entry.senderJid}
+                            </div>
+                          )}
+                          {entry.matchStatus === "matched" && (
+                            <div className="text-green-600 font-medium mt-0.5">
+                              → {matchedSession
+                                ? matchedSession.sessionType === "takeaway"
+                                  ? "Takeaway"
+                                  : `Table ${matchedSession.tableNumber ?? "?"}`
+                                : `Session #${entry.matchedSessionId}`}
+                              {entry.matchedBillId && ` · Bill #${entry.matchedBillId}`}
                             </div>
                           )}
                         </div>
                       </div>
+
+                      {/* Actions */}
+                      <div className="flex flex-col sm:flex-row gap-1.5 shrink-0 items-end sm:items-center">
+                        {entry.hasScreenshot && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-2.5 text-xs"
+                            onClick={() => void loadInboxImage(entry.id)}
+                            disabled={isLoadingImg}
+                          >
+                            {isLoadingImg ? (
+                              <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                            ) : (
+                              <Eye className="w-3 h-3 mr-1" />
+                            )}
+                            View
+                          </Button>
+                        )}
+                        {(entry.matchStatus === "unmatched" ||
+                          entry.matchStatus === "ambiguous") && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 px-2.5 text-xs text-violet-700 border-violet-300 hover:bg-violet-50"
+                              onClick={() => {
+                                setAttachEntry(entry);
+                                setAttachBillId(null);
+                                setAttachConfirmReplace(false);
+                              }}
+                            >
+                              <Link2 className="w-3 h-3 mr-1" />
+                              Attach
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 px-2.5 text-xs"
+                              onClick={() => void handleRetryMatch(entry.id)}
+                              disabled={isRetrying}
+                            >
+                              {isRetrying ? (
+                                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                              ) : (
+                                <RotateCcw className="w-3 h-3 mr-1" />
+                              )}
+                              Retry
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Pagination */}
+            {inboxTotal > 50 && (
+              <div className="px-4 py-3 border-t border-border flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">
+                  Page {inboxPage} of {Math.ceil(inboxTotal / 50)}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => setInboxPage((p) => Math.max(1, p - 1))}
+                    disabled={inboxPage === 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => setInboxPage((p) => p + 1)}
+                    disabled={inboxPage >= Math.ceil(inboxTotal / 50)}
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -1715,151 +1627,6 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
-
-        {/* ── Payment Screenshot Inbox ─────────────────────────────────── */}
-        {/* ── Payment Screenshot Inbox ─────────────────────────────────── */}
-        {activeTab === "live" && (
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
-            {/* Header + filter tabs */}
-            <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
-              <Inbox className="w-4 h-4 text-violet-500 shrink-0" />
-              <h2 className="text-base font-semibold">Payment Screenshots</h2>
-              {inboxTotal > 0 && (
-                <span className="text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2 py-0.5 font-semibold">
-                  {inboxTotal}
-                </span>
-              )}
-              <div className="ml-auto flex gap-1 flex-wrap">
-                {(["all", "unmatched", "ambiguous", "matched"] as const).map((f) => (
-                  <button
-                    key={f}
-                    onClick={() => { setInboxFilter(f); setInboxPage(1); }}
-                    className={cn(
-                      "text-xs px-2.5 py-1 rounded-md font-medium transition-all capitalize",
-                      inboxFilter === f
-                        ? "bg-violet-100 text-violet-700"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {inboxLoading ? (
-              <div className="flex items-center justify-center py-10">
-                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : screenshotInbox.length === 0 ? (
-              <div className="py-10 text-center text-sm text-muted-foreground">
-                <Camera className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                {inboxFilter === "all"
-                  ? "No payment screenshots received yet"
-                  : `No ${inboxFilter} screenshots`}
-              </div>
-            ) : (
-              <div className="divide-y divide-border">
-                {screenshotInbox.map((entry) => {
-                  const badge = {
-                    matched:   { label: "Matched",   cls: "bg-green-100 text-green-700 border-green-200",   dot: "bg-green-500"  },
-                    unmatched: { label: "Unmatched", cls: "bg-yellow-100 text-yellow-700 border-yellow-200", dot: "bg-yellow-500" },
-                    ambiguous: { label: "Ambiguous", cls: "bg-orange-100 text-orange-700 border-orange-200", dot: "bg-orange-500" },
-                  }[entry.matchStatus];
-                  const isRetrying = retryingInboxId === entry.id;
-                  const isLoadingImg = loadingInboxImageId === entry.id;
-                  return (
-                    <div key={entry.id} className="p-3 flex items-start gap-3">
-                      {/* Icon placeholder */}
-                      <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                        <Camera className="w-5 h-5 text-muted-foreground" />
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap mb-1">
-                          <span className={cn("text-xs px-2 py-0.5 rounded-full border font-medium flex items-center gap-1", badge.cls)}>
-                            <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", badge.dot)} />
-                            {badge.label}
-                          </span>
-                          {entry.matchingStrategy && (
-                            <span className="text-xs text-muted-foreground font-mono">
-                              via {entry.matchingStrategy.replace(/_/g, " ")}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-muted-foreground space-y-0.5">
-                          <div>
-                            {new Date(entry.receivedAt).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                          </div>
-                          {entry.senderPhone && <div>Phone: <span className="font-mono">{entry.senderPhone}</span></div>}
-                          {entry.senderJid && (
-                            <div className="font-mono text-[10px] text-muted-foreground/60 truncate">JID: {entry.senderJid}</div>
-                          )}
-                          {entry.matchStatus === "matched" && entry.matchedSessionId && (
-                            <div className="text-green-600 font-medium">→ Session #{entry.matchedSessionId}</div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="flex flex-col gap-1.5 shrink-0 items-end">
-                        {entry.hasScreenshot && (
-                          <Button
-                            size="sm" variant="outline" className="h-7 px-2 text-xs"
-                            onClick={() => void loadInboxImage(entry.id)}
-                            disabled={isLoadingImg}
-                          >
-                            {isLoadingImg ? <Loader2 className="w-3 h-3 animate-spin" /> : <Eye className="w-3 h-3 mr-1" />}
-                            View
-                          </Button>
-                        )}
-                        {(entry.matchStatus === "unmatched" || entry.matchStatus === "ambiguous") && (<>
-                          <Button
-                            size="sm" variant="outline"
-                            className="h-7 px-2 text-xs text-violet-700 border-violet-300 hover:bg-violet-50"
-                            onClick={() => { setAttachEntry(entry); setAttachBillId(null); setAttachConfirmReplace(false); }}
-                          >
-                            <Link2 className="w-3 h-3 mr-1" />
-                            Attach
-                          </Button>
-                          <Button
-                            size="sm" variant="outline" className="h-7 px-2 text-xs"
-                            onClick={() => void handleRetryMatch(entry.id)}
-                            disabled={isRetrying}
-                          >
-                            {isRetrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3 mr-1" />}
-                            Retry
-                          </Button>
-                        </>)}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Pagination */}
-            {inboxTotal > 50 && (
-              <div className="px-4 py-3 border-t border-border flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">
-                  Page {inboxPage} of {Math.ceil(inboxTotal / 50)}
-                </span>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" className="h-7 text-xs"
-                    onClick={() => setInboxPage((p) => Math.max(1, p - 1))}
-                    disabled={inboxPage === 1}>
-                    Previous
-                  </Button>
-                  <Button size="sm" variant="outline" className="h-7 text-xs"
-                    onClick={() => setInboxPage((p) => p + 1)}
-                    disabled={inboxPage >= Math.ceil(inboxTotal / 50)}>
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
 
             {/* UPI Status badge */}
             {stats?.upiVerified && (
@@ -2174,7 +1941,98 @@ export default function Dashboard() {
                   </div>
                 )}
 
-            </>
+            {/* ── Customer Orders ────────────────────────────────────────── */}
+            <div className="bg-card rounded-xl border border-border overflow-hidden">
+              <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <ShoppingBag className="w-4 h-4 text-blue-600 shrink-0" />
+                  <h2 className="text-base font-semibold">Customer Orders</h2>
+                  <span className="text-xs bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 font-semibold">
+                    {orders.length}
+                  </span>
+                </div>
+                <span className="text-xs text-muted-foreground hidden sm:block">
+                  Live customer order queue & status
+                </span>
+              </div>
+
+              {loading ? (
+                <div className="py-12 flex justify-center">
+                  <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : orders.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">
+                  No customer orders found today.
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {orders.map((order, i) => {
+                    const session =
+                      order.sessionId !== null
+                        ? (sessions.find(
+                            (candidate) => candidate.id === order.sessionId,
+                          ) ?? null)
+                        : null;
+
+                    return (
+                      <div key={order.id}>
+                        {renderOrderCard(order, i)}
+                        {session && (
+                          <div className="px-4 pb-3 -mt-1 flex justify-end gap-2 flex-wrap">
+                            {session.status === "active" && !session.bill && (
+                              <Button
+                                size="sm"
+                                className="h-8 text-xs"
+                                onClick={() =>
+                                  void handleGenerateBill(session.id)
+                                }
+                                disabled={generatingBillId === session.id}
+                              >
+                                {generatingBillId === session.id ? (
+                                  <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                ) : (
+                                  <Receipt className="w-3 h-3 mr-1.5" />
+                                )}
+                                Generate Bill
+                              </Button>
+                            )}
+                            {session.bill && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 text-xs"
+                                onClick={() =>
+                                  setViewingBillSessionId(session.id)
+                                }
+                              >
+                                <Eye className="w-3 h-3 mr-1.5" />
+                                View Bill
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 text-xs"
+                              onClick={() => {
+                                setExpandedSessions((prev) => {
+                                  const next = new Set(prev);
+                                  next.add(session.id);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <Receipt className="w-3 h-3 mr-1.5" />
+                              Expand Table
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </>
           )}
       {/* ── Payment Inbox Screenshot Modal ───────────────────────────── */}
       {(() => {

@@ -1,0 +1,6 @@
+{
+  "name": "Bitebend Restaurant Platform",
+  "description": "Full-stack restaurant operations, digital menu ordering, billing, and management platform",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

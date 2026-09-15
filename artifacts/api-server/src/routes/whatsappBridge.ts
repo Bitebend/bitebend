@@ -10,9 +10,25 @@ import type { RequestHandler } from "express";
 
 const router = Router();
 
-const BRIDGE_URL = process.env.BRIDGE_URL ?? "http://localhost:3001";
-const BRIDGE_API_SECRET = process.env.BRIDGE_API_SECRET ?? "";
-const BITEBEND_WEBHOOK_SECRET = process.env.BITEBEND_WEBHOOK_SECRET ?? "";
+import { getWhatsAppBridgeConfig, validateWhatsAppConfig } from "../lib/whatsappConfig";
+export { getWhatsAppBridgeConfig, validateWhatsAppConfig };
+
+const {
+  bridgeUrl: BRIDGE_URL,
+  bridgeApiSecret: BRIDGE_API_SECRET,
+  webhookSecret: BITEBEND_WEBHOOK_SECRET,
+} = getWhatsAppBridgeConfig();
+
+function isWebhookAuthorized(reqSecret: string | undefined): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return Boolean(reqSecret && BITEBEND_WEBHOOK_SECRET && reqSecret === BITEBEND_WEBHOOK_SECRET);
+  }
+  // In development, require secret only if configured
+  if (BITEBEND_WEBHOOK_SECRET) {
+    return reqSecret === BITEBEND_WEBHOOK_SECRET;
+  }
+  return true;
+}
 
 function bridgeHeaders() {
   return {
@@ -95,7 +111,7 @@ router.get("/owner/whatsapp/status",      requireOwner, statusHandler);
 // ── Incoming webhook from the bridge (general messages) ───────────────────────
 router.post("/whatsapp/incoming", ((req, res) => {
   const secret = req.headers["x-webhook-secret"];
-  if (BITEBEND_WEBHOOK_SECRET && secret !== BITEBEND_WEBHOOK_SECRET) {
+  if (!isWebhookAuthorized(typeof secret === "string" ? secret : undefined)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -125,7 +141,7 @@ router.post("/whatsapp/incoming", ((req, res) => {
 // the owner's Payment Screenshot Inbox instead of being discarded.
 router.post("/whatsapp/payment-screenshot", (async (req, res) => {
   const secret = req.headers["x-webhook-secret"];
-  if (BITEBEND_WEBHOOK_SECRET && secret !== BITEBEND_WEBHOOK_SECRET) {
+  if (!isWebhookAuthorized(typeof secret === "string" ? secret : undefined)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }

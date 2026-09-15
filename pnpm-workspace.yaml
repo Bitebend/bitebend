@@ -5,6 +5,17 @@ packages:
   - scripts
   - services/*
 
+allowBuilds:
+  '@electric-sql/pglite': true
+  '@swc/core': true
+  bcrypt: true
+  core-js: true
+  esbuild: true
+  msw: true
+  puppeteer: true
+  sharp: true
+  unrs-resolver: true
+
 autoInstallPeers: false
 
 catalog:
@@ -36,15 +47,6 @@ minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - '@replit/*'
   - stripe-replit-sync
-
-onlyBuiltDependencies:
-  - '@swc/core'
-  - bcrypt
-  - esbuild
-  - msw
-  - puppeteer
-  - sharp
-  - unrs-resolver
 
 overrides:
   '@esbuild-kit/esm-loader': npm:tsx@^4.21.0

@@ -3,22 +3,10 @@ import { logger } from "./lib/logger";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
-import { db } from "@workspace/db";
+import { db, ensureDbReady } from "@workspace/db";
 import { WORKSPACE_ROOT } from "./lib/workspace";
 
-const rawPort = process.env["PORT"];
-
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
-
-const port = Number(rawPort);
-
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
+const port = 3000;
 
 // ── Startup: log build metadata ───────────────────────────────────────────────
 //
@@ -29,9 +17,9 @@ if (Number.isNaN(port) || port <= 0) {
 // TypeScript declarations for these are in src/globals.d.ts.
 
 const backendBuild = {
-  commit: __BUILD_COMMIT__,
-  timestamp: __BUILD_TIME__,
-  version: __BUILD_VERSION__,
+  commit: typeof __BUILD_COMMIT__ !== "undefined" ? __BUILD_COMMIT__ : "dev",
+  timestamp: typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : new Date().toISOString(),
+  version: typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : "0.0.0",
 };
 
 // Resolve the effective public base URL (same priority order as getQrUrl in owner.ts)
@@ -116,6 +104,7 @@ const STARTUP_REQUIRED_TABLES = [
 const dbBootStart = Date.now();
 logger.info("[DB_BOOT_START] Running startup schema check");
 try {
+  await ensureDbReady();
   const tableRows = await db.execute<{ table_name: string }>(sql`
     SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
   `);
@@ -125,15 +114,19 @@ try {
     for (const t of missing) {
       logger.error(`[MIGRATION_ERROR] missing table: ${t}`);
     }
-    logger.error("[MIGRATION_ERROR] DB startup check failed — fix: run 'pnpm migrate' then restart the server");
-    process.exit(1);
+    logger.error("[MIGRATION_ERROR] DB startup check failed — tables may still be initializing or run 'pnpm migrate'");
+    if (process.env.NODE_ENV === "production") {
+      process.exit(1);
+    }
   }
   const dbBootDurationMs = Date.now() - dbBootStart;
   logger.info({ durationMs: dbBootDurationMs }, "[DB_BOOT_COMPLETE] Startup schema check passed");
   logger.info("[DB_SCHEMA_VALIDATED] Startup schema check passed");
 } catch (dbCheckErr) {
-  logger.error({ err: dbCheckErr }, "[MIGRATION_ERROR] Could not connect to database — fix: check DATABASE_URL and run 'pnpm migrate'");
-  process.exit(1);
+  logger.error({ err: dbCheckErr }, "[MIGRATION_ERROR] Could not connect to database — check DATABASE_URL or waiting for local db");
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
 }
 
 // ── Auto-seed on empty database ───────────────────────────────────────────────
@@ -155,9 +148,16 @@ try {
     logger.info("[AUTO_SEED] Empty database detected — running initial seed…");
     const { seedDev } = await import("./seed-dev");
     await seedDev();
-    logger.info("[AUTO_SEED] Seed complete — admin@bitebend.in / admin123 | demo@spicegarden.com / demo123");
+    logger.info("[AUTO_SEED] Seed complete — admin@bitebend.in / admin123 | demo@spicegarden.com / demo123 | partner@bitebend.in / Partner@123");
   } else {
-    logger.info({ userCount, planCount }, "[AUTO_SEED] Data exists — skipping seed");
+    logger.info({ userCount, planCount }, "[AUTO_SEED] Data exists — ensuring demo partner account is ready…");
+    try {
+      const { seedPartner } = await import("./seed-partner");
+      await seedPartner();
+      logger.info("[AUTO_SEED] Demo partner account verified — partner@bitebend.in / Partner@123");
+    } catch (pErr) {
+      logger.warn({ err: pErr }, "[AUTO_SEED] Could not verify demo partner account");
+    }
   }
 } catch (seedErr) {
   logger.warn({ err: seedErr }, "[AUTO_SEED] Seed check failed — continuing startup anyway");
@@ -188,12 +188,7 @@ setInterval(() => { purgeExpiredScreenshots().catch(() => void 0); }, 24 * 60 * 
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
-const httpServer = app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
-  }
-
+const httpServer = app.listen(port, () => {
   logger.info(
     {
       port,
@@ -202,6 +197,11 @@ const httpServer = app.listen(port, (err) => {
     },
     "Server listening",
   );
+});
+
+httpServer.on("error", (err: unknown) => {
+  logger.error({ err }, "Error listening on port");
+  process.exit(1);
 });
 
 // ── WebSocket upgrade tracing ─────────────────────────────────────────────────

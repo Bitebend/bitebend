@@ -62,3 +62,9 @@ services/whatsapp-bridge/uploads/*
 
 # WhatsApp Web cache
 services/whatsapp-bridge/.wwebjs_cache/
+
+# Local database storage & runtime artifacts
+.data/
+pgdata/
+*.sql
+!lib/db/drizzle/*.sql

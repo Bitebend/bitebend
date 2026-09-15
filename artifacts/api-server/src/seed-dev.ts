@@ -8,7 +8,7 @@
  * Safe to re-run — uses upserts throughout.
  */
 import bcrypt from "bcrypt";
-import { db } from "@workspace/db";
+import { db, ensureDbReady } from "@workspace/db";
 import {
   subscriptionPlans,
   users,
@@ -17,11 +17,14 @@ import {
   menuItems,
   restaurantTables,
   platformSettings,
+  adminSensitiveAuth,
+  partners,
 } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 
 export async function seedDev(): Promise<void> {
   console.log("[seed-dev] starting…");
+  await ensureDbReady();
 
   // ── Subscription plans ────────────────────────────────────────────────────
   const plans = [
@@ -55,6 +58,12 @@ export async function seedDev(): Promise<void> {
     .returning({ id: users.id });
   console.log(`[seed-dev] admin user ✓ (id=${admin.id})`);
 
+  await db
+    .insert(adminSensitiveAuth)
+    .values({ userId: admin.id, passwordHash: adminHash })
+    .onConflictDoUpdate({ target: adminSensitiveAuth.userId, set: { passwordHash: adminHash, updatedAt: new Date() } })
+    .catch(() => {});
+
   // ── Demo owner user ────────────────────────────────────────────────────────
   const ownerHash = await bcrypt.hash("demo123", 10);
   const [owner] = await db
@@ -63,6 +72,52 @@ export async function seedDev(): Promise<void> {
     .onConflictDoUpdate({ target: users.email, set: { passwordHash: ownerHash } })
     .returning({ id: users.id });
   console.log(`[seed-dev] demo owner ✓ (id=${owner.id})`);
+
+  // ── Demo partner user ──────────────────────────────────────────────────────
+  const partnerHash = await bcrypt.hash("Partner@123", 10);
+  const [partnerUser] = await db
+    .insert(users)
+    .values({
+      email: "partner@bitebend.in",
+      passwordHash: partnerHash,
+      name: "Bitebend Demo Partner",
+      role: "partner",
+    })
+    .onConflictDoUpdate({
+      target: users.email,
+      set: { passwordHash: partnerHash, name: "Bitebend Demo Partner", role: "partner" },
+    })
+    .returning({ id: users.id });
+
+  await db
+    .insert(partners)
+    .values({
+      userId: partnerUser.id,
+      name: "Bitebend Demo Partner",
+      email: "partner@bitebend.in",
+      phone: "9876543210",
+      referralCode: "BBDEMO",
+      commissionPercentage: 10.0,
+      status: "active",
+      payoutDetails: {
+        upiId: "demopartner@upi",
+        accountName: "Bitebend Demo Partner",
+        accountNumber: "919876543210",
+        ifsc: "HDFC0001234",
+        bankName: "HDFC Bank",
+      },
+    })
+    .onConflictDoUpdate({
+      target: partners.userId,
+      set: {
+        name: "Bitebend Demo Partner",
+        referralCode: "BBDEMO",
+        commissionPercentage: 10.0,
+        status: "active",
+        phone: "9876543210",
+      },
+    });
+  console.log(`[seed-dev] demo partner ✓ (${partnerUser.id})`);
 
   // ── Demo restaurant ────────────────────────────────────────────────────────
   const [starterPlan] = await db
@@ -214,6 +269,7 @@ export async function seedDev(): Promise<void> {
   console.log("\n[seed-dev] done!");
   console.log("  Admin:   admin@bitebend.in     / admin123");
   console.log("  Owner:   demo@spicegarden.com  / demo123");
+  console.log("  Partner: partner@bitebend.in   / Partner@123 (Code: BBDEMO)");
   console.log(`  Menu:    /menu/${restaurant.id}/table/1`);
 }
 

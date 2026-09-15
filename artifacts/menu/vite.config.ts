@@ -99,11 +99,6 @@ export default defineConfig({
 
     // ✅ ADDED FIX (SAFE, NON-BREAKING)
     netlifyRedirectsPlugin(),
-
-    legacy({
-      targets: ["Android >= 7", "iOS >= 12", "Samsung >= 8", "Chrome >= 67"],
-      additionalLegacyPolyfills: ["regenerator-runtime/runtime"],
-    }),
   ],
 
   resolve: {

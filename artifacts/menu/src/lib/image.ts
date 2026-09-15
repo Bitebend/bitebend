@@ -14,7 +14,8 @@
  * keep using `value ?? fallback` patterns.
  */
 
-const BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const rawBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const BASE = (rawBase.includes("railway.app") || rawBase.includes("bitebend.in")) ? "" : rawBase;
 
 // Origin only (no /api suffix) — used to resolve relative /api/... media URLs
 // (e.g. /api/images/<uuid>) to an absolute URL when the frontend is deployed

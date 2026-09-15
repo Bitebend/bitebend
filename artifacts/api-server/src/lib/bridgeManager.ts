@@ -126,8 +126,8 @@ function _spawnBridge(): void {
   );
 
   _process = spawn(
-    "pnpm",
-    ["--filter", "@workspace/whatsapp-bridge", "run", "dev"],
+    process.execPath,
+    ["--import", "tsx", "services/whatsapp-bridge/src/index.ts"],
     { cwd: WORKSPACE_ROOT, env, stdio: ["ignore", "pipe", "pipe"] },
   );
 

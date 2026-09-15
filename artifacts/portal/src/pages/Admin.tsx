@@ -23,11 +23,14 @@ import {
   Filter, ChevronDown, Smartphone, ShieldCheck, Pencil, Clock,
   FileText, ScrollText, ExternalLink, Download, FileSpreadsheet,
   Receipt, BookOpen, Database, Lock, PowerOff, LineChart,
+  Handshake, DollarSign,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { STATE_NAMES, getDistricts } from "@/data/india-states-districts";
 import * as XLSX from "xlsx";
 import { VisitorAnalyticsDashboard } from "./VisitorAnalytics";
+import { AdminPartnersTab } from "./admin/AdminPartnersTab";
+import { AdminCommissionsTab } from "./admin/AdminCommissionsTab";
 
 const STATUS_SUB_COLORS: Record<string, string> = {
   active: "bg-emerald-100 text-emerald-700",
@@ -339,6 +342,13 @@ export default function Admin() {
   const [exportingXLSX, setExportingXLSX] = useState(false);
   const [exportingRestCSV, setExportingRestCSV] = useState(false);
   const [exportingRestXLSX, setExportingRestXLSX] = useState(false);
+
+  // Partner attribution management
+  const [assignPartnerModal, setAssignPartnerModal] = useState<RestaurantWithOwner | null>(null);
+  const [assignPartnerId, setAssignPartnerId] = useState<string>("");
+  const [assignPartnerSaving, setAssignPartnerSaving] = useState(false);
+  const [partnersList, setPartnersList] = useState<{ id: number; name: string; referralCode: string; email: string }[]>([]);
+  const [pendingCommissionsCount, setPendingCommissionsCount] = useState<number>(0);
 
   interface PaymentSettings {
     upiId: string;
@@ -759,6 +769,28 @@ export default function Admin() {
     finally { setResActionId(null); }
   }, [handleAuthError]);
 
+  const handleHardwareAction = useCallback(async (orderId: number, action: "collected" | "waived" | "collect" | "waive", amount?: number) => {
+    const status: "collected" | "waived" = action === "waive" || action === "waived" ? "waived" : "collected";
+    const confirmMsg = status === "collected"
+      ? `Mark ₹${amount} hardware payment as collected offline?`
+      : `Waive hardware fee of ₹${amount} for this order?`;
+    if (!window.confirm(confirmMsg)) return;
+    try {
+      await apiFetch(`/admin/hardware-orders/${orderId}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status,
+          notes: "Action performed by Super Admin.",
+          waiveReason: status === "waived" ? "Waived by Super Admin" : undefined,
+        }),
+      });
+      const rests = await apiFetch<RestaurantWithOwner[]>("/admin/restaurants");
+      setRestaurants(rests);
+    } catch (e: any) {
+      alert(e.message || "Hardware action failed");
+    }
+  }, []);
+
   const availableDistricts = useMemo(
     () => (filterState === "all" ? [] : getDistricts(filterState)),
     [filterState]
@@ -1013,6 +1045,8 @@ export default function Admin() {
   const PAGE_TITLES: Record<AdminSection, { title: string; desc: string; icon: React.ElementType }> = {
     overview: { title: "Overview", desc: "Platform-wide summary and alerts", icon: LayoutDashboard },
     restaurants: { title: "Restaurants", desc: `${activeRestsArr.length} active`, icon: Store },
+    partners: { title: "Partner Network", desc: "Manage field partners & affiliate onboarding", icon: Handshake },
+    commissions: { title: "Commission Ledger", desc: "Partner earnings, payouts & approvals", icon: DollarSign },
     plans: { title: "Subscription Plans", desc: "Manage pricing tiers", icon: BarChart3 },
     payments: { title: "Payments", desc: `${pendingPayments} pending approval`, icon: CreditCard },
     customers: { title: "Customers", desc: `${customers.length} unique`, icon: Users },
@@ -1396,6 +1430,7 @@ export default function Admin() {
                       <th className="text-left px-4 py-3 font-medium text-slate-500">Restaurant</th>
                       <th className="text-left px-4 py-3 font-medium text-slate-500">Login Credentials</th>
                       <th className="text-center px-4 py-3 font-medium text-slate-500">Plan</th>
+                      <th className="text-center px-4 py-3 font-medium text-slate-500">QR Stands</th>
                       <th className="text-center px-4 py-3 font-medium text-slate-500">Quota</th>
                       <th className="text-right px-4 py-3 font-medium text-slate-500">Revenue</th>
                       <th className="text-center px-4 py-3 font-medium text-slate-500">Status</th>
@@ -1473,6 +1508,55 @@ export default function Admin() {
                           </td>
                           <td className="px-4 py-3 text-center">
                             <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{r.planName ?? "No plan"}</span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            {(r.hardwareQuantity ?? (r.qrStandsCount ?? 0)) > 0 ? (
+                              <div className="space-y-1 inline-block text-left">
+                                <div className="flex items-center gap-1">
+                                  <span className="font-bold text-slate-800 text-xs">{r.hardwareQuantity ?? r.qrStandsCount} stands</span>
+                                  <span className="text-[11px] text-slate-500 font-medium">(₹{r.hardwareTotalAmount ?? ((r.qrStandsCount ?? 0) * 30)})</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {r.hardwareCollectionStatus === "collected" ? (
+                                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                      ✓ Collected
+                                    </span>
+                                  ) : r.hardwareCollectionStatus === "waived" ? (
+                                    <span className="text-[10px] font-medium text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                                      Waived
+                                    </span>
+                                  ) : (
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                        Pending
+                                      </span>
+                                      {r.hardwareOrderId && (
+                                        <div className="flex items-center gap-1 text-[10px]">
+                                          <button
+                                            onClick={() => handleHardwareAction(r.hardwareOrderId!, "collected", r.hardwareTotalAmount ?? ((r.qrStandsCount ?? 0) * 30))}
+                                            className="text-emerald-600 hover:underline font-semibold"
+                                          >
+                                            Collect
+                                          </button>
+                                          <span className="text-slate-300">·</span>
+                                          <button
+                                            onClick={() => handleHardwareAction(r.hardwareOrderId!, "waived", r.hardwareTotalAmount ?? ((r.qrStandsCount ?? 0) * 30))}
+                                            className="text-slate-500 hover:underline"
+                                          >
+                                            Waive
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                                {r.hardwarePartnerName && (
+                                  <p className="text-[10px] text-slate-400 truncate max-w-[120px]">Partner: {r.hardwarePartnerName}</p>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             {r.customerLimit > 0 ? (
@@ -3022,6 +3106,16 @@ export default function Admin() {
       {/* ── Visitor Analytics ── */}
       {tab === "analytics" && (
         <VisitorAnalyticsDashboard />
+      )}
+
+      {/* ── Partner Network ── */}
+      {tab === "partners" && (
+        <AdminPartnersTab />
+      )}
+
+      {/* ── Commission Ledger ── */}
+      {tab === "commissions" && (
+        <AdminCommissionsTab />
       )}
 
       {/* ── Sensitive Action Auth Dialog ── */}

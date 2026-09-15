@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
-import { apiFetch, setUnauthorizedHandler } from "@/lib/api";
+import { apiFetch, setUnauthorizedHandler, setAuthToken } from "@/lib/api";
 import type { AuthUser } from "@/lib/types";
 
 interface AuthContextValue {
@@ -26,7 +26,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
+    setUnauthorizedHandler(() => {
+      setAuthToken(null);
+      setUser(null);
+    });
     return () => setUnauthorizedHandler(() => {});
   }, []);
 
@@ -35,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await apiFetch<{ user: AuthUser }>("/auth/me");
       setUser(data.user);
     } catch {
+      setAuthToken(null);
       setUser(null);
     }
   };
@@ -66,16 +70,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string): Promise<AuthUser> => {
-    const data = await apiFetch<{ user: AuthUser }>("/auth/login", {
+    const data = await apiFetch<{ user: AuthUser; token?: string }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+    if (data.token) {
+      setAuthToken(data.token);
+    }
     setUser(data.user);
     return data.user;
   };
 
   const logout = useCallback(async () => {
-    await apiFetch("/auth/logout", { method: "POST" });
+    try {
+      await apiFetch("/auth/logout", { method: "POST" });
+    } catch {}
+    setAuthToken(null);
     setUser(null);
   }, []);
 

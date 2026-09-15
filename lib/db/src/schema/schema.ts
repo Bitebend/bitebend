@@ -57,7 +57,7 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull(),
-  role: text("role", { enum: ["super_admin", "owner"] })
+  role: text("role", { enum: ["super_admin", "owner", "partner"] })
     .notNull()
     .default("owner"),
   restaurantId: integer("restaurant_id"),
@@ -79,6 +79,8 @@ export const restaurants = pgTable("restaurants", {
   phone: text("phone").notNull(),
   email: text("email").notNull(),
   ownerId: integer("owner_id"),
+  partnerId: integer("partner_id").references(() => partners.id, { onDelete: "set null" }),
+  qrStandsCount: integer("qr_stands_count").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   upiId: text("upi_id"),
   upiName: text("upi_name"),
@@ -122,6 +124,9 @@ export const subscriptionTransactions = pgTable("subscription_transactions", {
   restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
   planId: integer("plan_id").notNull().references(() => subscriptionPlans.id),
   amount: doublePrecision("amount").notNull(),
+  originalAmount: doublePrecision("original_amount"),
+  discountAmount: doublePrecision("discount_amount").notNull().default(0),
+  discountReason: text("discount_reason"),
   paymentMethod: text("payment_method").notNull().default("razorpay"),
   razorpayOrderId: text("razorpay_order_id"),
   razorpayPaymentId: text("razorpay_payment_id"),
@@ -573,3 +578,106 @@ export const resources = pgTable("resources", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// ── Partner System (migration 0031, 0032, 0033) ──────────────────────────────
+export const partners = pgTable("partners", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  phone: text("phone").notNull(),
+  state: text("state"),
+  city: text("city"),
+  referralCode: text("referral_code").unique(), // nullable for pending applicants until approved
+  commissionPercentage: doublePrecision("commission_percentage").notNull().default(10.0),
+  status: text("status", { enum: ["pending", "active", "suspended", "rejected"] }).notNull().default("pending"),
+  payoutDetails: jsonb("payout_details"), // e.g. { upiId, accountName, accountNumber, ifsc, bankName }
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const partnerCommissions = pgTable(
+  "partner_commissions",
+  {
+    id: serial("id").primaryKey(),
+    partnerId: integer("partner_id")
+      .notNull()
+      .references(() => partners.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    subscriptionTransactionId: integer("subscription_transaction_id")
+      .notNull()
+      .unique()
+      .references(() => subscriptionTransactions.id, { onDelete: "cascade" }),
+    transactionAmount: doublePrecision("transaction_amount").notNull(),
+    commissionRate: doublePrecision("commission_rate").notNull(), // Snapshot percentage at time of transaction
+    commissionAmount: doublePrecision("commission_amount").notNull(),
+    currency: text("currency").notNull().default("INR"),
+    status: text("status", { enum: ["pending", "approved", "paid", "cancelled"] })
+      .notNull()
+      .default("pending"),
+    payoutReference: text("payout_reference"),
+    paidAt: timestamp("paid_at"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_partner_commissions_partner_id").on(t.partnerId),
+    index("idx_partner_commissions_restaurant_id").on(t.restaurantId),
+  ],
+);
+
+export const partnerAuditLogs = pgTable("partner_audit_logs", {
+  id: serial("id").primaryKey(),
+  partnerId: integer("partner_id").references(() => partners.id, { onDelete: "set null" }),
+  restaurantId: integer("restaurant_id").references(() => restaurants.id, { onDelete: "set null" }),
+  action: text("action").notNull(),
+  performedBy: integer("performed_by")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  details: jsonb("details"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const restaurantHardwareOrders = pgTable(
+  "restaurant_hardware_orders",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    partnerId: integer("partner_id").references(() => partners.id, { onDelete: "set null" }),
+    standQuantity: integer("stand_quantity").notNull(),
+    unitPrice: doublePrecision("unit_price").notNull(),
+    totalAmount: doublePrecision("total_amount").notNull(),
+    collectionStatus: text("collection_status", {
+      enum: ["pending", "collected", "waived", "not_applicable"],
+    })
+      .notNull()
+      .default("pending"),
+    collectedAt: timestamp("collected_at"),
+    collectedByPartnerId: integer("collected_by_partner_id").references(() => partners.id, {
+      onDelete: "set null",
+    }),
+    waivedAt: timestamp("waived_at"),
+    waivedByUserId: integer("waived_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    waiveReason: text("waive_reason"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_hardware_orders_restaurant").on(t.restaurantId),
+    index("idx_hardware_orders_partner").on(t.partnerId),
+    index("idx_hardware_orders_status").on(t.collectionStatus),
+  ],
+);
+
+

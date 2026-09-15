@@ -37,6 +37,9 @@ const REQUIRED_TABLES = [
   "table_sessions",
   "session_bills",
   "payment_screenshot_inbox",
+  "partners",
+  "partner_commissions",
+  "partner_audit_logs",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
@@ -46,6 +49,7 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "owner_password_reset_tokens",   column: "token"            },
   { table: "bill_links",                    column: "short_id"         },
   { table: "restaurants",                   column: "razorpay_webhook_secret" },
+  { table: "restaurants",                   column: "partner_id"       },
   { table: "orders",                        column: "verification_method" },
   { table: "orders",                        column: "verified_by"      },
   { table: "orders",                        column: "verified_at"      },
@@ -73,6 +77,9 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "payment_screenshot_inbox",     column: "received_at"      },
   { table: "payment_screenshot_inbox",     column: "match_status"     },
   { table: "payment_screenshot_inbox",     column: "image_hash"       },
+  // 0031_partner_system
+  { table: "partners",                     column: "referral_code"    },
+  { table: "partner_commissions",          column: "subscription_transaction_id" },
 ];
 
 /**

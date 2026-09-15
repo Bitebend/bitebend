@@ -32,6 +32,9 @@ const REQUIRED_TABLES = [
   "table_sessions",
   "session_bills",
   "payment_screenshot_inbox",
+  "partners",
+  "partner_commissions",
+  "partner_audit_logs",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> = [
@@ -46,6 +49,7 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> 
   { table: "restaurants",                 column: "razorpay_webhook_secret", note: "added in migration 0008"       },
   { table: "restaurants",                 column: "approval_status"                                                },
   { table: "restaurants",                 column: "subscription_plan"                                              },
+  { table: "restaurants",                 column: "partner_id",              note: "added in migration 0031"       },
   { table: "orders",                      column: "razorpay_order_id",       note: "added in migration 0007"       },
   { table: "orders",                      column: "payment_screenshot_url",  note: "added in migration 0006"       },
   { table: "orders",                      column: "verification_method",     note: "added in migration 0014"       },
@@ -65,6 +69,9 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> 
   { table: "session_bills",              column: "screenshot_url",          note: "added in migration 0017"       },
   { table: "session_bills",              column: "resent_at",               note: "added in migration 0018"       },
   { table: "session_bills",              column: "resent_count",            note: "added in migration 0018"       },
+  // 0031_partner_system
+  { table: "partners",                   column: "referral_code",           note: "added in migration 0031"       },
+  { table: "partner_commissions",        column: "subscription_transaction_id", note: "added in migration 0031" },
 ];
 
 const REQUIRED_INDEXES: Array<{ indexName: string; tableName: string }> = [

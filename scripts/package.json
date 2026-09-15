@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@types/node": "catalog:",
+    "@types/node": "^25.3.3",
     "@types/pg": "^8.11.6",
     "@types/qrcode": "^1.5.6",
     "@workspace/url-utils": "workspace:*",
@@ -26,6 +26,6 @@
     "pg": "^8.13.3",
     "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
-    "tsx": "catalog:"
+    "tsx": "4.21.0"
   }
 }

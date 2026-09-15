@@ -45,10 +45,12 @@ async function buildAll() {
     entryPoints: [
       { in: path.resolve(artifactDir, "src/index.ts"),          out: "index" },
       { in: path.resolve(artifactDir, "src/seed-admin.ts"),     out: "seed-admin" },
+      { in: path.resolve(artifactDir, "src/seed-partner.ts"),   out: "seed-partner" },
       { in: path.resolve(artifactDir, "src/seed-dev-entry.ts"), out: "seed-dev" },
       { in: path.resolve(artifactDir, "src/reset-db.ts"),       out: "reset-db" },
       { in: path.resolve(artifactDir, "src/migrate.ts"),        out: "migrate" },
       { in: path.resolve(artifactDir, "src/validate-db.ts"),    out: "validate-db" },
+      { in: path.resolve(artifactDir, "src/e2e-partner-test.ts"), out: "e2e-partner-test" },
     ],
     platform: "node",
     bundle: true,
@@ -71,6 +73,8 @@ async function buildAll() {
     // - use path traversal to read files (e.g. @google-cloud/secret-manager loads sibling .proto files)
     external: [
       "*.node",
+      "@electric-sql/*",
+      "@electric-sql/pglite",
       "sharp",
       "better-sqlite3",
       "sqlite3",

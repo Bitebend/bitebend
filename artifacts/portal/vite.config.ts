@@ -28,12 +28,6 @@ export default defineConfig({
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
-
-    legacy({
-      targets: ["Android >= 7", "iOS >= 12", "Chrome >= 67"],
-      additionalLegacyPolyfills: ["regenerator-runtime/runtime"],
-      renderLegacyChunks: true,
-    }),
   ],
 
   resolve: {

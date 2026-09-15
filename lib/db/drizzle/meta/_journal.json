@@ -218,6 +218,34 @@
       "when": 1785744000000,
       "tag": "0030_analytics_enhancements",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785830400000,
+      "tag": "0031_partner_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785916800000,
+      "tag": "0032_partner_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786003200000,
+      "tag": "0033_partner_location",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786089600000,
+      "tag": "0034_qr_stands_and_hardware",
+      "breakpoints": true
     }
   ]
 }

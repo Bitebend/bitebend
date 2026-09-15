@@ -15,6 +15,9 @@ import resourcesRouter from "./resources";
 import whatsappBridgeRouter from "./whatsappBridge";
 import screenshotInboxRouter from "./screenshotInbox";
 import platformAnalyticsRouter from "./platformAnalytics";
+import adminPartnersRouter from "./adminPartners";
+import partnerPortalRouter from "./partnerPortal";
+import adminHardwareRouter from "./adminHardware";
 
 const router: IRouter = Router();
 
@@ -34,5 +37,8 @@ router.use(resourcesRouter);
 router.use(whatsappBridgeRouter);
 router.use(screenshotInboxRouter);
 router.use(platformAnalyticsRouter);
+router.use(adminPartnersRouter);
+router.use(partnerPortalRouter);
+router.use(adminHardwareRouter);
 
 export default router;

@@ -13,6 +13,12 @@ import { SessionWarningDialog } from "@/components/SessionWarningDialog";
 // network error on mobile never blocks the login screen from appearing.
 import RestaurantAuth    from "@/pages/RestaurantAuth";
 import AdminLogin        from "@/pages/AdminLogin";
+import PartnerAuth        from "@/pages/partner/PartnerAuth";
+import PartnerRegister    from "@/pages/partner/PartnerRegister";
+import PartnerDashboard   from "@/pages/partner/PartnerDashboard";
+import PartnerRestaurants from "@/pages/partner/PartnerRestaurants";
+import PartnerCommissions from "@/pages/partner/PartnerCommissions";
+import PartnerProfile     from "@/pages/partner/PartnerProfile";
 
 // ── lazyWithRetry — retry failed chunk loads once before giving up ────────────
 // On mobile networks a dynamic import can fail transiently. One retry is
@@ -99,6 +105,7 @@ class ChunkErrorBoundary extends Component<{ children: ReactNode }, ChunkEBState
  * Public route for restaurant owners.
  * - Loading → null (HTML spinner still visible; React hasn't dismissed it yet)
  * - Logged in as admin → /admin/dashboard
+ * - Logged in as partner → /partner/dashboard
  * - Logged in as owner → /restaurant/dashboard
  * - Not logged in → show component
  */
@@ -106,6 +113,7 @@ function RestaurantPublicRoute({ component: Component }: { component: React.Comp
   const { user, loading } = useAuth();
   if (loading) return null;
   if (user?.role === "super_admin") return <Redirect to="/admin/dashboard" />;
+  if (user?.role === "partner") return <Redirect to="/partner/dashboard" />;
   if (user) return <Redirect to="/restaurant/dashboard" />;
   return <Component />;
 }
@@ -114,11 +122,30 @@ function RestaurantPublicRoute({ component: Component }: { component: React.Comp
  * Public route for admin.
  * - Loading → null (HTML spinner still visible)
  * - Logged in as admin → /admin/dashboard
+ * - Logged in as partner → /partner/dashboard
  */
 function AdminPublicRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, loading } = useAuth();
   if (loading) return null;
   if (user?.role === "super_admin") return <Redirect to="/admin/dashboard" />;
+  if (user?.role === "partner") return <Redirect to="/partner/dashboard" />;
+  return <Component />;
+}
+
+/**
+ * Public route for partners.
+ * - Loading → null
+ * - Logged in as partner → /partner/dashboard
+ * - Logged in as admin → /admin/dashboard
+ * - Logged in as owner → /restaurant/dashboard
+ * - Not logged in → show component
+ */
+function PartnerPublicRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (user?.role === "super_admin") return <Redirect to="/admin/dashboard" />;
+  if (user?.role === "owner") return <Redirect to="/restaurant/dashboard" />;
+  if (user?.role === "partner") return <Redirect to="/partner/dashboard" />;
   return <Component />;
 }
 
@@ -127,6 +154,7 @@ function AdminPublicRoute({ component: Component }: { component: React.Component
  * - Loading → null (HTML spinner still visible)
  * - Not logged in → /restaurant/auth
  * - Logged in as admin → /admin/dashboard
+ * - Logged in as partner → /partner/dashboard
  * - Logged in as owner → show component
  */
 function RestaurantRoute({ component: Component }: { component: React.ComponentType }) {
@@ -134,6 +162,7 @@ function RestaurantRoute({ component: Component }: { component: React.ComponentT
   if (loading) return null;
   if (!user) return <Redirect to="/restaurant/auth" />;
   if (user.role === "super_admin") return <Redirect to="/admin/dashboard" />;
+  if (user.role === "partner") return <Redirect to="/partner/dashboard" />;
   return <Component />;
 }
 
@@ -141,6 +170,7 @@ function RestaurantRoute({ component: Component }: { component: React.ComponentT
  * Protected route — admin only.
  * - Loading → null (HTML spinner still visible)
  * - Not logged in → /admin/login
+ * - Logged in as partner → /partner/dashboard
  * - Logged in as owner → /restaurant/dashboard
  * - Logged in as admin → show component
  */
@@ -148,14 +178,35 @@ function AdminRoute({ component: Component }: { component: React.ComponentType }
   const { user, loading } = useAuth();
   if (loading) return null;
   if (!user) return <Redirect to="/admin/login" />;
+  if (user.role === "partner") return <Redirect to="/partner/dashboard" />;
   if (user.role !== "super_admin") return <Redirect to="/restaurant/dashboard" />;
+  return <Component />;
+}
+
+/**
+ * Protected route — partner only.
+ * - Loading → null
+ * - Not logged in → /partner/login
+ * - Logged in as admin → /admin/dashboard
+ * - Logged in as owner → /restaurant/dashboard
+ * - Logged in as partner → show component
+ */
+function PartnerRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (!user) return <Redirect to="/partner/login" />;
+  if (user.role === "super_admin") return <Redirect to="/admin/dashboard" />;
+  if (user.role === "owner") return <Redirect to="/restaurant/dashboard" />;
+  if (user.role !== "partner") return <Redirect to="/partner/login" />;
   return <Component />;
 }
 
 function RootRedirect() {
   const { user, loading } = useAuth();
   if (loading) return null;
-  return <Redirect to={user?.role === "super_admin" ? "/admin/dashboard" : "/restaurant/auth"} />;
+  if (user?.role === "super_admin") return <Redirect to="/admin/dashboard" />;
+  if (user?.role === "partner") return <Redirect to="/partner/dashboard" />;
+  return <Redirect to="/restaurant/auth" />;
 }
 
 // ── Session auto-logout ───────────────────────────────────────────────────────
@@ -165,7 +216,7 @@ const WARNING_LEAD_MS   = 2  * 60 * 1000;       // show warning 2 minutes before
 
 /**
  * Renders the session-expiry warning dialog inside the AuthProvider tree.
- * Owner logins expire after 2 h of inactivity; admin logins after 30 min.
+ * Owner and partner logins expire after 2 h of inactivity; admin logins after 30 min.
  * A "Stay Logged In" button resets the timer and pings /auth/me so the
  * server session cookie is refreshed.
  */
@@ -236,27 +287,47 @@ function SessionGuard() {
 // ── Stable route wrappers ────────────────────────────────────────────────────
 // Defined ONCE at module level so Route never sees a new component reference
 // on re-render, preventing unexpected unmount/remount cycles.
-const RestaurantToDashboard = () => <Redirect to="/restaurant/dashboard" />;
-const AdminToDashboard      = () => <Redirect to="/admin/dashboard" />;
+const RestaurantToDashboard   = () => <Redirect to="/restaurant/dashboard" />;
+const AdminToDashboard        = () => <Redirect to="/admin/dashboard" />;
+const PartnerToDashboard      = () => <Redirect to="/partner/dashboard" />;
 
-const RestaurantAuthPage    = () => <RestaurantPublicRoute component={RestaurantAuth} />;
-const RegisterPage_         = () => <RestaurantPublicRoute component={RegisterPage} />;
-const DashboardPage         = () => <RestaurantRoute component={Dashboard} />;
-const MenuManagementPage    = () => <RestaurantRoute component={MenuManagement} />;
-const TablesManagementPage  = () => <RestaurantRoute component={TablesManagement} />;
-const ProfilePage           = () => <RestaurantRoute component={Profile} />;
-const SubscriptionPage         = () => <RestaurantRoute component={Subscription} />;
-const CustomerAnalyticsPage    = () => <RestaurantRoute component={CustomerAnalytics} />;
-const WhatsAppConnectPage      = () => <RestaurantRoute component={WhatsAppConnect} />;
-const ResourcesCenterPage      = () => <ResourcesCenter />;
-const ResourcesManagePage      = () => <AdminRoute component={ResourcesManage} />;
-const RestaurantCatchAll       = () => <RestaurantRoute component={RestaurantToDashboard} />;
-const AdminLoginPage           = () => <AdminPublicRoute component={AdminLogin} />;
-const AdminForgotPasswordPage  = () => <AdminForgotPassword />;
-const AdminResetPasswordPage   = () => <AdminResetPassword />;
-const ResetPasswordPage        = () => <ResetPassword />;
-const AdminDashboardPage       = () => <AdminRoute component={Admin} />;
-const AdminCatchAll            = () => <AdminRoute component={AdminToDashboard} />;
+const RestaurantAuthPage      = () => <RestaurantPublicRoute component={RestaurantAuth} />;
+const RegisterPage_           = () => <RestaurantPublicRoute component={RegisterPage} />;
+const DashboardPage           = () => <RestaurantRoute component={Dashboard} />;
+const MenuManagementPage      = () => <RestaurantRoute component={MenuManagement} />;
+const TablesManagementPage    = () => <RestaurantRoute component={TablesManagement} />;
+const ProfilePage             = () => <RestaurantRoute component={Profile} />;
+const SubscriptionPage        = () => <RestaurantRoute component={Subscription} />;
+const CustomerAnalyticsPage   = () => <RestaurantRoute component={CustomerAnalytics} />;
+const WhatsAppConnectPage     = () => <RestaurantRoute component={WhatsAppConnect} />;
+const ResourcesCenterPage     = () => <ResourcesCenter />;
+const ResourcesManagePage     = () => <AdminRoute component={ResourcesManage} />;
+const RestaurantCatchAll      = () => <RestaurantRoute component={RestaurantToDashboard} />;
+const AdminLoginPage          = () => <AdminPublicRoute component={AdminLogin} />;
+const AdminForgotPasswordPage = () => <AdminForgotPassword />;
+const AdminResetPasswordPage  = () => <AdminResetPassword />;
+const ResetPasswordPage       = () => <ResetPassword />;
+const AdminDashboardPage      = () => <AdminRoute component={Admin} />;
+const AdminCatchAll           = () => <AdminRoute component={AdminToDashboard} />;
+
+// Partner route wrappers
+const PartnerAuthPage         = () => <PartnerPublicRoute component={PartnerAuth} />;
+const PartnerRegisterPage     = () => <PartnerPublicRoute component={PartnerRegister} />;
+const PartnerDashboardPage    = () => <PartnerRoute component={PartnerDashboard} />;
+const PartnerRestaurantsPage  = () => <PartnerRoute component={PartnerRestaurants} />;
+const PartnerCommissionsPage  = () => <PartnerRoute component={PartnerCommissions} />;
+const PartnerProfilePage      = () => <PartnerRoute component={PartnerProfile} />;
+const PartnerCatchAll         = () => <PartnerRoute component={PartnerToDashboard} />;
+
+// Dedicated Partner Referral Link Component (e.g. /partner/BBP-8K4M2X -> /restaurant/register?ref=BBP-8K4M2X)
+function PartnerReferralRedirect({ params }: { params: { code: string } }) {
+  const code = params.code;
+  const reservedWords = ["login", "auth", "register", "dashboard", "restaurants", "commissions", "profile"];
+  if (reservedWords.includes(code.toLowerCase())) {
+    return <Redirect to="/partner/login" />;
+  }
+  return <Redirect to={`/restaurant/register?ref=${encodeURIComponent(code)}`} />;
+}
 
 // Legacy redirect pages
 const ToRestaurantAuth     = () => <Redirect to="/restaurant/auth" />;
@@ -268,12 +339,31 @@ const ToTables             = () => <Redirect to="/restaurant/tables" />;
 const ToProfile            = () => <Redirect to="/restaurant/profile" />;
 const ToSubscription       = () => <Redirect to="/restaurant/subscription" />;
 const ToAdminDashboard     = () => <Redirect to="/admin/dashboard" />;
+const ToPartnerDashboard   = () => <Redirect to="/partner/dashboard" />;
 
 function Router() {
   return (
     <Switch>
       {/* Root — redirect based on role */}
       <Route path="/" component={RootRedirect} />
+
+      {/* ── Partner auth & registration (public) ───────────────────────── */}
+      <Route path="/partner/register"        component={PartnerRegisterPage} />
+      <Route path="/partner/login"           component={PartnerAuthPage} />
+      <Route path="/partner/auth"            component={PartnerAuthPage} />
+
+      {/* ── Partner protected (partner only) ───────────────────────────── */}
+      <Route path="/partner/dashboard"       component={PartnerDashboardPage} />
+      <Route path="/partner/restaurants"     component={PartnerRestaurantsPage} />
+      <Route path="/partner/commissions"     component={PartnerCommissionsPage} />
+      <Route path="/partner/profile"         component={PartnerProfilePage} />
+
+      {/* ── Partner Referral link: /partner/:code -> /restaurant/register?ref=:code ── */}
+      <Route path="/partner/:code"           component={PartnerReferralRedirect} />
+
+      {/* ── Catch-all for any unknown /partner/* path ───────────────────── */}
+      <Route path="/partner/:rest*"          component={PartnerCatchAll} />
+      <Route path="/partner"                 component={PartnerToDashboard} />
 
       {/* ── Restaurant auth (public) ──────────────────────────────────── */}
       <Route path="/restaurant/auth"         component={RestaurantAuthPage} />

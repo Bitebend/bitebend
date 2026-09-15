@@ -9,11 +9,16 @@ import {
   subscriptionTransactions,
   notifications,
   ownerPasswordResetTokens,
+  partners,
 } from "@workspace/db";
-import { eq, sql, and, gt, isNull } from "drizzle-orm";
+import { eq, sql, and, gt, isNull, ilike } from "drizzle-orm";
 import type { RequestHandler } from "express";
 import { createRateLimiter } from "../lib/rateLimiter";
 import { sendEmail } from "../lib/email";
+import { generateToken } from "../lib/token";
+import { resolveUserFromRequest } from "../middlewares/auth";
+import { recordPartnerCommission } from "../lib/commission";
+import { createHardwareOrder } from "../lib/hardware";
 
 const router = Router();
 
@@ -145,6 +150,55 @@ const register: RequestHandler = async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 10);
 
+  // ── Partner referral attribution ──────────────────────────────────────────
+  let attributedPartnerId: number | null = null;
+  const rawCode = ((req.body as any).partnerCode || (req.body as any).ref)?.toString()?.trim();
+  if (rawCode) {
+    const [matchedPartner] = await db
+      .select()
+      .from(partners)
+      .where(
+        and(
+          eq(sql`UPPER(${partners.referralCode})`, rawCode.toUpperCase()),
+          eq(partners.status, "active")
+        )
+      )
+      .limit(1);
+    if (matchedPartner) {
+      attributedPartnerId = matchedPartner.id;
+    }
+  }
+
+  // ── QR Display Stands handling ─────────────────────────────────────────────
+  const rawStandQty = (req.body as any).standQuantity;
+  let standQuantity = 0;
+  if (rawStandQty !== undefined && rawStandQty !== null && rawStandQty !== "") {
+    const parsed = Number(rawStandQty);
+    if (isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
+      res.status(400).json({ error: "Invalid QR display stand quantity. Must be a non-negative integer." });
+      return;
+    }
+    standQuantity = parsed;
+  }
+
+  // ── Subscription Discount handling ─────────────────────────────────────────
+  const rawDiscount = (req.body as any).discountAmount;
+  const discountAmount =
+    typeof rawDiscount === "number" && rawDiscount > 0
+      ? Math.min(plan ? plan.price : 0, rawDiscount)
+      : 0;
+  const discountReason = (req.body as any).discountReason?.toString()?.trim() || null;
+  const originalPlanPrice = plan?.price ?? null;
+  const netPlanPrice = originalPlanPrice !== null ? Math.max(0, originalPlanPrice - discountAmount) : 0;
+
+  // ── Restaurant Activation Independence ─────────────────────────────────────
+  // Activation depends ONLY on verified software subscription payment.
+  // UPI or unpaid registrations start INACTIVE (is_active = false, subscription_status = 'expired').
+  const isPaidOnline = Boolean(plan && razorpayPaymentId);
+  const initialIsActive = isPaidOnline;
+  const initialSubStatus = isPaidOnline ? "active" : "expired";
+  const initialCustomerLimit = isPaidOnline ? (plan?.customerLimit ?? 0) : 0;
+
   let slug = slugify(restaurantName);
   const existing2 = await db
     .select()
@@ -165,17 +219,27 @@ const register: RequestHandler = async (req, res) => {
       state: restaurantState ?? null,
       district: restaurantDistrict ?? null,
       cuisineType,
-      isActive: true,
+      isActive: initialIsActive,
+      partnerId: attributedPartnerId,
+      qrStandsCount: 0,
       taxPercent: 5,
       planId: plan?.id ?? null,
-      customerLimit: plan?.customerLimit ?? 0,
+      customerLimit: initialCustomerLimit,
       customersUsed: 0,
-      subscriptionStatus: "active",
+      subscriptionStatus: initialSubStatus,
       termsAccepted: true,
       privacyAccepted: true,
       acceptedAt: new Date(),
     })
     .returning();
+
+  // Create hardware order record if stands were requested (offline collection by partner)
+  await createHardwareOrder({
+    restaurantId: restaurant.id,
+    partnerId: attributedPartnerId,
+    standQuantity,
+    notes: (req.body as any).standNotes || null,
+  });
 
   const [user] = await db
     .insert(users)
@@ -200,7 +264,10 @@ const register: RequestHandler = async (req, res) => {
       .values({
         restaurantId: restaurant.id,
         planId: plan.id,
-        amount: plan.price,
+        amount: netPlanPrice,
+        originalAmount: originalPlanPrice,
+        discountAmount,
+        discountReason,
         paymentMethod: "razorpay",
         razorpayOrderId: razorpayOrderId ?? null,
         razorpayPaymentId,
@@ -208,6 +275,13 @@ const register: RequestHandler = async (req, res) => {
         customersAdded: plan.customerLimit,
       })
       .returning();
+
+    // Trigger partner commission calculation if attributed (calculated on netPlanPrice)
+    if (txn?.id) {
+      await recordPartnerCommission(txn.id).catch((err) =>
+        console.error("[AuthRegister] Partner commission error:", err)
+      );
+    }
 
     await db.insert(notifications).values({
       restaurantId: restaurant.id,
@@ -220,7 +294,10 @@ const register: RequestHandler = async (req, res) => {
     await db.insert(subscriptionTransactions).values({
       restaurantId: restaurant.id,
       planId: plan.id,
-      amount: plan.price,
+      amount: netPlanPrice,
+      originalAmount: originalPlanPrice,
+      discountAmount,
+      discountReason,
       paymentMethod: "upi",
       status: "pending",
       customersAdded: plan.customerLimit,
@@ -228,7 +305,7 @@ const register: RequestHandler = async (req, res) => {
     await db.insert(notifications).values({
       restaurantId: restaurant.id,
       title: "Welcome to Bitebend!",
-      message: `Your UPI payment is pending. Once confirmed by admin, your ${plan.name} plan will be fully activated.`,
+      message: `Your UPI payment of ₹${netPlanPrice} is pending. Once confirmed by admin, your ${plan.name} plan will be fully activated.`,
       type: "info",
     });
   } else {
@@ -242,6 +319,7 @@ const register: RequestHandler = async (req, res) => {
   }
 
   req.session.userId = user.id;
+  const token = generateToken({ userId: user.id, role: user.role, email: user.email });
 
   res.status(201).json({
     user: {
@@ -251,6 +329,7 @@ const register: RequestHandler = async (req, res) => {
       role: user.role,
       restaurantId: user.restaurantId,
     },
+    token,
   });
 };
 
@@ -262,10 +341,11 @@ const login: RequestHandler = async (req, res) => {
     return;
   }
 
+  const normalizedEmail = email.trim();
   const [user] = await db
     .select()
     .from(users)
-    .where(eq(users.email, email))
+    .where(ilike(users.email, normalizedEmail))
     .limit(1);
   if (!user) {
     res.status(401).json({ error: "Invalid credentials" });
@@ -279,11 +359,14 @@ const login: RequestHandler = async (req, res) => {
   }
 
   // Regenerate session ID to prevent session fixation attacks
-  await new Promise<void>((resolve, reject) => {
-    req.session.regenerate((err) => (err ? reject(err) : resolve()));
-  });
+  if (req.session) {
+    await new Promise<void>((resolve, reject) => {
+      req.session.regenerate((err) => (err ? reject(err) : resolve()));
+    });
+    req.session.userId = user.id;
+  }
 
-  req.session.userId = user.id;
+  const token = generateToken({ userId: user.id, role: user.role, email: user.email });
 
   res.json({
     user: {
@@ -293,32 +376,77 @@ const login: RequestHandler = async (req, res) => {
       role: user.role,
       restaurantId: user.restaurantId,
     },
+    token,
   });
 };
 
 const logout: RequestHandler = (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("connect.sid");
+  if (req.session) {
+    req.session.destroy(() => {
+      res.clearCookie("connect.sid", {
+        path: "/",
+        httpOnly: true,
+        secure: true,
+        sameSite: "none",
+        partitioned: true,
+      } as any);
+      res.json({ ok: true });
+    });
+  } else {
     res.json({ ok: true });
-  });
+  }
 };
 
 const me: RequestHandler = async (req, res) => {
-  if (!req.session.userId) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
-  const [user] = await db
-    .select()
-    .from(users)
-    .where(eq(users.id, req.session.userId))
-    .limit(1);
+  const user = await resolveUserFromRequest(req);
   if (!user) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
+  let partnerData: any = null;
+  if (user.role === "partner") {
+    const [partner] = await db
+      .select()
+      .from(partners)
+      .where(eq(partners.userId, user.id))
+      .limit(1);
+    if (partner) {
+      partnerData = {
+        id: partner.id,
+        name: partner.name,
+        email: partner.email,
+        phone: partner.phone,
+        referralCode: partner.referralCode,
+        commissionPercentage: partner.commissionPercentage,
+        status: partner.status,
+        payoutDetails: partner.payoutDetails,
+      };
+    }
+  }
+
+  let partnerAttribution: { partnerName: string; referralCode: string } | null = null;
+  if (user.role === "owner" && user.restaurantId) {
+    const [rest] = await db
+      .select({ partnerId: restaurants.partnerId })
+      .from(restaurants)
+      .where(eq(restaurants.id, user.restaurantId))
+      .limit(1);
+    if (rest?.partnerId) {
+      const [part] = await db
+        .select({ name: partners.name, referralCode: partners.referralCode })
+        .from(partners)
+        .where(eq(partners.id, rest.partnerId))
+        .limit(1);
+      if (part) {
+        partnerAttribution = {
+          partnerName: part.name,
+          referralCode: part.referralCode,
+        };
+      }
+    }
+  }
+
   res.json({
     user: {
       id: user.id,
@@ -327,6 +455,8 @@ const me: RequestHandler = async (req, res) => {
       role: user.role,
       restaurantId: user.restaurantId,
     },
+    partner: partnerData,
+    partnerAttribution,
   });
 };
 
@@ -337,7 +467,10 @@ const getPlatformKey: RequestHandler = (_req, res) => {
 
 // Create Razorpay order for registration plan payment (before account created)
 const createRegistrationOrder: RequestHandler = async (req, res) => {
-  const { planId } = req.body as { planId: number };
+  const { planId, discountAmount } = req.body as {
+    planId: number;
+    discountAmount?: number;
+  };
   const [plan] = await db
     .select()
     .from(subscriptionPlans)
@@ -348,6 +481,13 @@ const createRegistrationOrder: RequestHandler = async (req, res) => {
     return;
   }
 
+  const rawDiscount =
+    typeof discountAmount === "number" && discountAmount > 0 ? discountAmount : 0;
+  const safeDiscount = Math.min(plan.price, rawDiscount);
+  // Razorpay order amount is strictly the software subscription amount minus any discount
+  // Physical QR display stands are collected offline by partners and NEVER charged via online order
+  const payableAmount = Math.max(0, plan.price - safeDiscount);
+
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
 
@@ -355,7 +495,9 @@ const createRegistrationOrder: RequestHandler = async (req, res) => {
     res.json({
       razorpayOrderId: null,
       keyId: null,
-      amount: plan.price,
+      amount: payableAmount,
+      originalAmount: plan.price,
+      discountAmount: safeDiscount,
       planName: plan.name,
     });
     return;
@@ -364,7 +506,7 @@ const createRegistrationOrder: RequestHandler = async (req, res) => {
   const Razorpay = (await import("razorpay")).default;
   const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
   const order = await razorpay.orders.create({
-    amount: Math.round(plan.price * 100), // Razorpay requires paise; plan.price is stored in rupees
+    amount: Math.round(payableAmount * 100), // Razorpay requires paise; software subscription only
     currency: "INR",
     receipt: `reg_plan_${planId}_${Date.now()}`,
   });
@@ -372,7 +514,9 @@ const createRegistrationOrder: RequestHandler = async (req, res) => {
   res.json({
     razorpayOrderId: order.id,
     keyId,
-    amount: plan.price,
+    amount: payableAmount,
+    originalAmount: plan.price,
+    discountAmount: safeDiscount,
     planName: plan.name,
   });
 };

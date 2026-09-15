@@ -19,12 +19,17 @@ import {
   billLinks,
   resources,
   imageBlobs,
+  partners,
+  partnerAuditLogs,
+  partnerCommissions,
+  restaurantHardwareOrders,
 } from "@workspace/db";
-import { eq, sql, inArray, gte, lt, and, isNotNull, isNull } from "drizzle-orm";
+import { eq, sql, inArray, gte, lt, and, isNotNull, isNull, desc } from "drizzle-orm";
 import { requireAdmin } from "../middlewares/auth";
 import { invalidatePlansCache } from "./subscriptions";
 import type { RequestHandler } from "express";
 import multer from "multer";
+import { recordPartnerCommission } from "../lib/commission";
 
 const router = Router();
 
@@ -55,18 +60,110 @@ const listRestaurants: RequestHandler = async (_req, res) => {
     .groupBy(orders.restaurantId);
   const statsMap = new Map(stats.map((s) => [s.restaurantId, s]));
 
-  const result = allRestaurants.map((r) => ({
-    ...r,
-    ownerName: r.ownerId ? ownerMap.get(r.ownerId)?.name ?? null : null,
-    ownerEmail: r.ownerId ? ownerMap.get(r.ownerId)?.email ?? null : null,
-    ownerTempPassword: r.ownerId ? ownerMap.get(r.ownerId)?.tempPassword ?? null : null,
-    ownerPhone: r.phone ?? null,
-    totalOrders: statsMap.get(r.id)?.count ?? 0,
-    totalRevenue: statsMap.get(r.id)?.revenue ?? 0,
-    planName: r.planId ? planMap.get(r.planId) ?? null : null,
-  }));
+  const allPartnersList = await db
+    .select({ id: partners.id, name: partners.name, referralCode: partners.referralCode })
+    .from(partners);
+  const partnerMap = new Map(allPartnersList.map((p) => [p.id, p]));
+
+  const hardwareOrdersList = await db
+    .select({
+      id: restaurantHardwareOrders.id,
+      restaurantId: restaurantHardwareOrders.restaurantId,
+      partnerId: restaurantHardwareOrders.partnerId,
+      standQuantity: restaurantHardwareOrders.standQuantity,
+      unitPrice: restaurantHardwareOrders.unitPrice,
+      totalAmount: restaurantHardwareOrders.totalAmount,
+      collectionStatus: restaurantHardwareOrders.collectionStatus,
+      collectedAt: restaurantHardwareOrders.collectedAt,
+    })
+    .from(restaurantHardwareOrders)
+    .orderBy(desc(restaurantHardwareOrders.id));
+
+  const hwMap = new Map<number, (typeof hardwareOrdersList)[0]>();
+  for (const h of hardwareOrdersList) {
+    if (!hwMap.has(h.restaurantId)) {
+      hwMap.set(h.restaurantId, h);
+    }
+  }
+
+  const result = allRestaurants.map((r) => {
+    const hw = hwMap.get(r.id);
+    return {
+      ...r,
+      ownerName: r.ownerId ? ownerMap.get(r.ownerId)?.name ?? null : null,
+      ownerEmail: r.ownerId ? ownerMap.get(r.ownerId)?.email ?? null : null,
+      ownerTempPassword: r.ownerId ? ownerMap.get(r.ownerId)?.tempPassword ?? null : null,
+      ownerPhone: r.phone ?? null,
+      totalOrders: statsMap.get(r.id)?.count ?? 0,
+      totalRevenue: statsMap.get(r.id)?.revenue ?? 0,
+      planName: r.planId ? planMap.get(r.planId) ?? null : null,
+      partnerName: r.partnerId ? partnerMap.get(r.partnerId)?.name ?? null : null,
+      partnerCode: r.partnerId ? partnerMap.get(r.partnerId)?.referralCode ?? null : null,
+      hardwareOrder: hw ?? null,
+      hardwareOrderId: hw?.id ?? null,
+      hardwareQuantity: hw?.standQuantity ?? null,
+      hardwareUnitPrice: hw?.unitPrice ?? null,
+      hardwareTotalAmount: hw?.totalAmount ?? null,
+      hardwareCollectionStatus: hw?.collectionStatus ?? (r.qrStandsCount > 0 ? "pending" : "none"),
+      hardwareCollectedAt: hw?.collectedAt ?? null,
+      hardwarePartnerId: hw?.partnerId ?? null,
+      hardwarePartnerName: hw?.partnerId ? partnerMap.get(hw.partnerId)?.name ?? null : null,
+    };
+  });
 
   res.json(result);
+};
+
+const assignRestaurantPartner: RequestHandler = async (req, res) => {
+  const restaurantId = parseInt(String(req.params.restaurantId));
+  const { partnerId } = req.body as { partnerId?: number | null };
+  const adminUser = req.user!;
+
+  const [restaurant] = await db
+    .select()
+    .from(restaurants)
+    .where(eq(restaurants.id, restaurantId))
+    .limit(1);
+
+  if (!restaurant) {
+    res.status(404).json({ error: "Restaurant not found" });
+    return;
+  }
+
+  let validPartnerId: number | null = null;
+  if (partnerId) {
+    const [partner] = await db
+      .select()
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1);
+    if (!partner) {
+      res.status(400).json({ error: "Partner not found" });
+      return;
+    }
+    validPartnerId = partner.id;
+  }
+
+  const previousPartnerId = restaurant.partnerId;
+  const [updated] = await db
+    .update(restaurants)
+    .set({ partnerId: validPartnerId })
+    .where(eq(restaurants.id, restaurantId))
+    .returning();
+
+  // Audit log
+  await db.insert(partnerAuditLogs).values({
+    partnerId: validPartnerId,
+    restaurantId,
+    action: validPartnerId ? (previousPartnerId ? "reassigned_partner" : "assigned_partner") : "removed_partner",
+    performedBy: adminUser.id,
+    details: {
+      previousPartnerId,
+      newPartnerId: validPartnerId,
+    },
+  });
+
+  res.json(updated);
 };
 
 const toggleRestaurant: RequestHandler = async (req, res) => {
@@ -367,6 +464,11 @@ const markTransactionPaid: RequestHandler = async (req, res) => {
     message: `Your payment for ${plan?.name ?? "plan"} has been confirmed. ${txn.customersAdded.toLocaleString()} customers added. Valid till ${expiryLabel}.`,
     type: "success",
   });
+
+  // Calculate & record partner commission if restaurant is attributed
+  await recordPartnerCommission(txnId).catch((err) =>
+    console.error("[AdminMarkPaid] Partner commission error:", err)
+  );
 
   res.json({ ok: true });
 };
@@ -708,6 +810,7 @@ const resetOwnerPassword: RequestHandler = async (req, res) => {
 
 router.get("/admin/restaurants", requireAdmin, listRestaurants);
 router.put("/admin/restaurants/:restaurantId", requireAdmin, updateRestaurantAdmin);
+router.patch("/admin/restaurants/:restaurantId/partner", requireAdmin, assignRestaurantPartner);
 router.post("/admin/restaurants/:restaurantId/toggle", requireAdmin, toggleRestaurant);
 router.post("/admin/restaurants/:restaurantId/suspend", requireAdmin, suspendRestaurant);
 router.post("/admin/restaurants/:restaurantId/activate", requireAdmin, activateRestaurant);

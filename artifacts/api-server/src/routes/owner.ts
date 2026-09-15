@@ -34,9 +34,11 @@ import {
   BillCooldownError,
   type BillResult,
 } from "../lib/billService";
+import { getWhatsAppBridgeConfig } from "../lib/whatsappConfig";
 
-const BRIDGE_URL = process.env.BRIDGE_URL ?? "http://localhost:3001";
-const BRIDGE_API_SECRET = process.env.BRIDGE_API_SECRET ?? "";
+function getBridgeSettings() {
+  return getWhatsAppBridgeConfig();
+}
 
 async function tryBridgeSend(
   restaurantId: number,
@@ -44,10 +46,11 @@ async function tryBridgeSend(
   message: string,
 ): Promise<boolean> {
   try {
+    const { bridgeUrl, bridgeApiSecret } = getBridgeSettings();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (BRIDGE_API_SECRET) headers["x-bridge-secret"] = BRIDGE_API_SECRET;
+    if (bridgeApiSecret) headers["x-bridge-secret"] = bridgeApiSecret;
 
-    const statusRes = await fetch(`${BRIDGE_URL}/api/whatsapp/status/${restaurantId}`, {
+    const statusRes = await fetch(`${bridgeUrl}/api/whatsapp/status/${restaurantId}`, {
       method: "GET",
       headers,
       signal: AbortSignal.timeout(3000),
@@ -60,7 +63,7 @@ async function tryBridgeSend(
       return false;
     }
 
-    const sendRes = await fetch(`${BRIDGE_URL}/api/send-message`, {
+    const sendRes = await fetch(`${bridgeUrl}/api/send-message`, {
       method: "POST",
       headers,
       body: JSON.stringify({ restaurantId, phone, message }),
@@ -1800,11 +1803,9 @@ const sendSessionBill: RequestHandler = async (req, res) => {
   // (payment screenshot) can be received and matched to this bill.
   // If the bridge is disconnected, we block the action and keep bill.status
   // as 'generated' so staff can retry once WhatsApp is reconnected.
+  const { bridgeUrl, bridgeApiSecret } = getBridgeSettings();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const bridgeSecret = process.env.BRIDGE_API_SECRET ?? "";
-  if (bridgeSecret) headers["x-bridge-secret"] = bridgeSecret;
-
-  const bridgeUrl = process.env.BRIDGE_URL ?? "http://localhost:3001";
+  if (bridgeApiSecret) headers["x-bridge-secret"] = bridgeApiSecret;
 
   let bridgeConnected = false;
   try {
@@ -2099,6 +2100,10 @@ const markSessionBillPaid: RequestHandler = async (req, res) => {
 
   const ALLOWED_STATUSES = ["generated", "sent", "awaiting_verification"];
   if (!ALLOWED_STATUSES.includes(bill.status)) {
+    if (bill.status === "paid") {
+      res.json({ ok: true, sessionId, billId: bill.id, alreadyPaid: true });
+      return;
+    }
     res.status(400).json({
       error: `Bill cannot be manually marked paid from status: ${bill.status}`,
     });
@@ -2120,11 +2125,21 @@ const markSessionBillPaid: RequestHandler = async (req, res) => {
     ),
   ];
 
+  let actuallyUpdated = false;
+
   await db.transaction(async (tx) => {
-    await tx
+    const [updatedBill] = await tx
       .update(sessionBills)
       .set({ status: "paid", verifiedAt: now, verifiedBy: user.id, updatedAt: now })
-      .where(eq(sessionBills.id, bill.id));
+      .where(and(eq(sessionBills.id, bill.id), inArray(sessionBills.status, ALLOWED_STATUSES)))
+      .returning();
+
+    if (!updatedBill) {
+      // Bill was already transitioned or marked paid by another concurrent request
+      return;
+    }
+
+    actuallyUpdated = true;
 
     await tx
       .update(tableSessions)
@@ -2145,11 +2160,11 @@ const markSessionBillPaid: RequestHandler = async (req, res) => {
   });
 
   logger.info(
-    { sessionId, billId: bill.id, billNumber: bill.billNumber, markedBy: user.id, tableIds },
+    { sessionId, billId: bill.id, billNumber: bill.billNumber, markedBy: user.id, tableIds, actuallyUpdated },
     "[markSessionBillPaid] bill manually marked paid — session closed, tables released",
   );
 
-  res.json({ ok: true, sessionId, billId: bill.id });
+  res.json({ ok: true, sessionId, billId: bill.id, ...(!actuallyUpdated ? { alreadyPaid: true } : {}) });
 };
 
 // ─── Stats ────────────────────────────────────────────────────────────────────

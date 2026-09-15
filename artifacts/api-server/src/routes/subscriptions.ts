@@ -11,6 +11,8 @@ import { eq, sql, inArray } from "drizzle-orm";
 import { requireOwner } from "../middlewares/auth";
 import Razorpay from "razorpay";
 import type { RequestHandler } from "express";
+import { recordPartnerCommission } from "../lib/commission";
+import { getDefaultQrStandPrice } from "../lib/hardware";
 
 async function getPlatformUpiId(): Promise<string> {
   const [row] = await db.select().from(platformSettings).where(eq(platformSettings.key, "platform_upi_id")).limit(1);
@@ -74,7 +76,8 @@ const getPaymentConfig: RequestHandler = async (_req, res) => {
   const { keyId, keySecret } = await getRazorpayKeys();
   const razorpayAvailable = !!(keyId && keySecret);
   const upiId = await getPlatformUpiId();
-  res.json({ razorpayAvailable, upiId });
+  const qrStandPrice = await getDefaultQrStandPrice();
+  res.json({ razorpayAvailable, upiId, qrStandPrice });
 };
 
 // ── Owner: create order for a plan ─────────────────────────────────────────
@@ -238,8 +241,9 @@ const verifyPayment: RequestHandler = async (req, res) => {
     // even if two verify requests race past the SELECT check above at the
     // same instant. If this insert loses that race, treat it exactly like
     // the "already exists" branch above instead of surfacing a 500.
+    let insertedTxnId: number | null = null;
     try {
-      await db.insert(subscriptionTransactions).values({
+      const [insertedTxn] = await db.insert(subscriptionTransactions).values({
         restaurantId: user.restaurantId!,
         planId: plan.id,
         amount: plan.price,
@@ -248,7 +252,8 @@ const verifyPayment: RequestHandler = async (req, res) => {
         razorpayPaymentId,
         status: "paid",
         customersAdded: plan.customerLimit,
-      });
+      }).returning();
+      insertedTxnId = insertedTxn?.id ?? null;
     } catch (err) {
       // node-postgres sets `code` directly on the thrown error, but
       // drizzle-orm wraps driver errors in a DrizzleQueryError whose
@@ -267,6 +272,12 @@ const verifyPayment: RequestHandler = async (req, res) => {
       return;
     }
 
+    if (insertedTxnId) {
+      await recordPartnerCommission(insertedTxnId).catch((err) =>
+        console.error("[SubscriptionVerify] Partner commission recording error:", err)
+      );
+    }
+
     await db
       .update(restaurants)
       .set({
@@ -276,6 +287,7 @@ const verifyPayment: RequestHandler = async (req, res) => {
         subscriptionStatus: "active",
         subscriptionExpiresAt: expiry,
         subscriptionStartedAt: now,
+        isActive: true,
       })
       .where(eq(restaurants.id, user.restaurantId!));
 
@@ -399,6 +411,10 @@ const markNotificationRead: RequestHandler = async (req, res) => {
 
 router.get("/subscription/plans", listPlans);
 router.get("/subscription/payment-config", getPaymentConfig);
+router.get("/subscription/stand-price", async (_req, res) => {
+  const price = await getDefaultQrStandPrice();
+  res.json({ defaultQrStandPrice: price });
+});
 router.post("/subscription/plans/:planId/order", requireOwner, createPlanOrder);
 router.post("/subscription/verify", requireOwner, verifyPayment);
 router.get("/subscription/transactions", requireOwner, getMyTransactions);

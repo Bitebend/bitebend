@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { useVisitorTracking } from "@/hooks/useVisitorTracking";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, setAuthToken } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { STATE_NAMES, getDistricts } from "@/data/india-states-districts";
@@ -251,7 +251,7 @@ function RegisterForm() {
     if (!form.city.trim()) { setError("Please enter your city."); return; }
     setLoading(true);
     try {
-      await apiFetch("/auth/register", {
+      const regRes = await apiFetch<{ user: any; token?: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           name: form.ownerName,
@@ -268,6 +268,9 @@ function RegisterForm() {
           privacyAccepted: true,
         }),
       });
+      if (regRes?.token) {
+        setAuthToken(regRes.token);
+      }
       setDone(true);
       await refresh();
       setTimeout(() => navigate("/restaurant/dashboard"), 1200);

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { STATE_NAMES, getDistricts } from "@/data/india-states-districts";
 import { Link, useLocation } from "wouter";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, setAuthToken } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,6 +79,15 @@ export default function RegisterPage() {
     razorpaySignature: string;
   } | null>(null);
 
+  // Partner Referral Code handling
+  const [partnerCode, setPartnerCode] = useState("");
+  const [partnerInfo, setPartnerInfo] = useState<{ name: string; referralCode: string } | null>(null);
+  const [validatingPartner, setValidatingPartner] = useState(false);
+
+  // QR Display Stands
+  const [standQuantity, setStandQuantity] = useState<number>(0);
+  const [standPrice, setStandPrice] = useState<number>(30);
+
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -98,8 +107,47 @@ export default function RegisterPage() {
     setForm((f) => ({ ...f, restaurantState: e.target.value, restaurantDistrict: "" }));
   };
 
+  // Check URL params for referral code
+  useEffect(() => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get("ref") || urlParams.get("partnerCode") || urlParams.get("partner") || urlParams.get("code") || "";
+      if (code) {
+        setPartnerCode(code.trim().toUpperCase());
+        validateCode(code.trim().toUpperCase());
+      }
+    } catch {}
+  }, []);
+
+  const validateCode = async (code: string) => {
+    if (!code) {
+      setPartnerInfo(null);
+      return;
+    }
+    setValidatingPartner(true);
+    try {
+      const res = await apiFetch<{ valid: boolean; partner?: { name: string; referralCode: string } }>(
+        `/partners/validate-code/${encodeURIComponent(code)}`
+      );
+      if (res.valid && res.partner) {
+        setPartnerInfo(res.partner);
+      } else {
+        setPartnerInfo(null);
+      }
+    } catch {
+      setPartnerInfo(null);
+    } finally {
+      setValidatingPartner(false);
+    }
+  };
+
   useEffect(() => {
     apiFetch<SubscriptionPlan[]>("/subscription/plans").then(setPlans).catch(() => {});
+    apiFetch<{ qrStandPrice?: number }>("/subscription/payment-config")
+      .then((cfg) => {
+        if (cfg.qrStandPrice) setStandPrice(cfg.qrStandPrice);
+      })
+      .catch(() => {});
   }, []);
 
   const set = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -225,14 +273,19 @@ export default function RegisterPage() {
     setError("");
     setLoading(true);
     try {
-      await apiFetch("/auth/register", {
+      const regRes = await apiFetch<{ user: any; token?: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           ...form,
+          partnerCode: partnerCode.trim().toUpperCase() || undefined,
           planId: selectedPlan?.id ?? undefined,
+          standQuantity: Number(standQuantity) || 0,
           ...(razorpayMeta ?? {}),
         }),
       });
+      if (regRes?.token) {
+        setAuthToken(regRes.token);
+      }
       await refresh();
       navigate("/restaurant/dashboard");
     } catch (err) {
@@ -464,6 +517,99 @@ export default function RegisterPage() {
                         ))}
                       </select>
                     </div>
+
+                    {/* Partner Referral Code */}
+                    <div className="pt-2">
+                      <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                            <span>🤝 Partner Referral Code</span>
+                            <span className="text-[10px] font-normal text-amber-700">(Optional)</span>
+                          </Label>
+                          {partnerInfo && (
+                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
+                              ✓ Verified Partner
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            placeholder="e.g. PARTNER123"
+                            value={partnerCode}
+                            onChange={(e) => {
+                              const val = e.target.value.toUpperCase();
+                              setPartnerCode(val);
+                              validateCode(val);
+                            }}
+                            className="bg-white font-mono text-xs uppercase"
+                          />
+                        </div>
+                        {partnerInfo ? (
+                          <p className="text-xs text-emerald-800 font-medium">
+                            Onboarding via: <span className="font-bold">{partnerInfo.name}</span> ({partnerInfo.referralCode})
+                          </p>
+                        ) : partnerCode ? (
+                          <p className="text-[11px] text-amber-700">
+                            {validatingPartner ? "Checking referral code..." : "Unverified or custom code will be verified on submission."}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-amber-700/80">
+                            If a Channel Partner introduced you to Bitebend, enter their code here.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* QR Display Stands Selection */}
+                    <div className="pt-2">
+                      <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                            <QrCode className="w-4 h-4 text-orange-500" />
+                            <span>Physical QR Display Stands</span>
+                            <span className="text-[10px] font-normal text-slate-500">(Optional)</span>
+                          </Label>
+                          <span className="text-xs font-semibold text-orange-700 bg-orange-100/70 border border-orange-200 px-2 py-0.5 rounded-full">
+                            ₹{standPrice} / stand
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          Physical acrylic stands for your tables with custom QR codes. Handled & supplied by your channel partner.
+                        </p>
+                        <div className="grid grid-cols-2 gap-3 items-center">
+                          <div>
+                            <Label className="text-[11px] text-slate-600 mb-1 block">Number of Stands</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={500}
+                              placeholder="e.g. 10"
+                              value={standQuantity === 0 ? "" : standQuantity}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                setStandQuantity(isNaN(v) || v < 0 ? 0 : v);
+                              }}
+                              className="bg-white text-sm"
+                            />
+                          </div>
+                          <div className="bg-white border border-slate-200 rounded-lg p-2.5 text-center">
+                            <p className="text-[10px] text-slate-400">One-time Stand Fee</p>
+                            <p className="text-base font-bold text-slate-800">
+                              ₹{(standQuantity * standPrice).toLocaleString("en-IN")}
+                            </p>
+                            <p className="text-[9px] text-amber-700 font-medium">Collected offline by partner</p>
+                          </div>
+                        </div>
+                        {standQuantity > 0 && (
+                          <div className="text-[11px] text-slate-600 bg-blue-50/70 border border-blue-200/80 rounded-lg p-2.5 flex items-start gap-2">
+                            <AlertCircle className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
+                            <span>
+                              <strong>Hardware note:</strong> QR stand fee (₹{(standQuantity * standPrice).toLocaleString("en-IN")}) is collected offline directly by your partner. Your online payment in the next step is strictly for your Bitebend cloud software subscription.
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
                 <Button
@@ -543,6 +689,25 @@ export default function RegisterPage() {
 
                   {selectedPlan && (
                     <div className="space-y-3">
+                      {standQuantity > 0 && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs space-y-2">
+                          <div className="flex justify-between text-slate-600">
+                            <span>Bitebend Cloud Subscription ({selectedPlan.name}):</span>
+                            <span className="font-semibold text-slate-800">₹{Number(selectedPlan.price).toLocaleString("en-IN")}</span>
+                          </div>
+                          <div className="flex justify-between text-slate-600">
+                            <span>Physical QR Display Stands ({standQuantity} × ₹{standPrice}):</span>
+                            <span className="font-semibold text-slate-800">₹{(standQuantity * standPrice).toLocaleString("en-IN")} <span className="text-[10px] text-amber-600 font-normal">(offline)</span></span>
+                          </div>
+                          <div className="border-t border-slate-200 pt-1.5 flex justify-between font-bold text-slate-900">
+                            <span>Pay Online Now:</span>
+                            <span className="text-orange-600 text-sm">₹{Number(selectedPlan.price).toLocaleString("en-IN")}</span>
+                          </div>
+                          <p className="text-[10px] text-slate-500">
+                            Only the software subscription is charged online. The QR stand charge is collected offline by your onboarding partner.
+                          </p>
+                        </div>
+                      )}
                       <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
                         How would you like to pay?
                       </p>
@@ -789,6 +954,14 @@ export default function RegisterPage() {
                         {razorpayMeta
                           ? `✓ Paid via Razorpay (${razorpayMeta.razorpayPaymentId})`
                           : "⏳ UPI transfer — pending admin confirmation"}
+                      </span>
+                    </div>
+                  )}
+                  {standQuantity > 0 && (
+                    <div className="flex justify-between border-t border-slate-200 pt-2">
+                      <span className="text-slate-500">QR Display Stands</span>
+                      <span className="font-semibold text-slate-700">
+                        {standQuantity} stands (₹{(standQuantity * standPrice).toLocaleString("en-IN")} offline)
                       </span>
                     </div>
                   )}
