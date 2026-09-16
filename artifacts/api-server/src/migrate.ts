@@ -106,10 +106,24 @@ async function stampPushInitialisedDb(folder: string) {
 
   const journal: Journal = JSON.parse(readFileSync(journalPath, "utf-8"));
 
+  const tableRows = await db.execute<{ table_name: string }>(sql`
+    SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
+  `);
+  const existingTables = new Set(tableRows.rows.map((r) => r.table_name));
+
   for (const entry of journal.entries) {
     const sqlPath = path.join(folder, `${entry.tag}.sql`);
     if (!existsSync(sqlPath)) continue;
     const sqlContent = readFileSync(sqlPath, "utf-8");
+
+    // Only stamp this migration as already applied if every table it
+    // creates already exists. Otherwise leave it un-stamped so the
+    // upcoming migrate() retry actually creates the missing tables/columns
+    // instead of silently skipping them.
+    const createdTables = [...sqlContent.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?"?(\w+)"?/gi)].map((m) => m[1]);
+    const allTablesExist = createdTables.length === 0 || createdTables.every((t) => existingTables.has(t));
+    if (!allTablesExist) continue;
+
     const hash = createHash("sha256").update(sqlContent).digest("hex");
     const createdAt = entry.when;
     await db.execute(
