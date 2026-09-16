@@ -17,7 +17,7 @@ import { eq, and, gte, lte, sql, desc, inArray, ne } from "drizzle-orm";
 import { requireOwner } from "../middlewares/auth";
 import { logger } from "../lib/logger";
 import QRCode from "qrcode";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import type { RequestHandler, Request, Response } from "express";
 import multer from "multer";
 import { extname } from "path";

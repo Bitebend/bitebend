@@ -7,7 +7,7 @@
  *
  * Safe to re-run — uses upserts throughout.
  */
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { db, ensureDbReady } from "@workspace/db";
 import {
   subscriptionPlans,

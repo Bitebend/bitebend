@@ -1,4 +1,4 @@
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { db, users } from "@workspace/db";
 import { eq } from "drizzle-orm";
 

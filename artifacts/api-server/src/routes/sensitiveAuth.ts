@@ -1,5 +1,5 @@
 import { Router } from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { db } from "@workspace/db";
 import { adminSensitiveAuth } from "@workspace/db";
 import { eq } from "drizzle-orm";
