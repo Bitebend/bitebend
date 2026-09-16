@@ -317,15 +317,60 @@ const PartnerDashboardPage    = () => <PartnerRoute component={PartnerDashboard}
 const PartnerRestaurantsPage  = () => <PartnerRoute component={PartnerRestaurants} />;
 const PartnerCommissionsPage  = () => <PartnerRoute component={PartnerCommissions} />;
 const PartnerProfilePage      = () => <PartnerRoute component={PartnerProfile} />;
-const PartnerCatchAll         = () => <PartnerRoute component={PartnerToDashboard} />;
+
+// Catch-all for any unknown /partner/* path
+function PartnerCatchAll({ params }: { params?: { rest?: string } }) {
+  const rest = (params?.rest || "").toLowerCase().replace(/^\/+|\/+$/g, "");
+  const segment = rest.split("/")[0] || "";
+
+  // Guard reserved partner routes from ever being swallowed by catch-all
+  if (segment === "login" || segment === "auth") {
+    return <PartnerAuthPage />;
+  }
+  if (segment === "register") {
+    return <PartnerRegisterPage />;
+  }
+  if (segment === "dashboard") {
+    return <PartnerDashboardPage />;
+  }
+  if (segment === "restaurants") {
+    return <PartnerRestaurantsPage />;
+  }
+  if (segment === "commissions") {
+    return <PartnerCommissionsPage />;
+  }
+  if (segment === "profile") {
+    return <PartnerProfilePage />;
+  }
+
+  return <PartnerRoute component={PartnerToDashboard} />;
+}
 
 // Dedicated Partner Referral Link Component (e.g. /partner/BBP-8K4M2X -> /restaurant/register?ref=BBP-8K4M2X)
 function PartnerReferralRedirect({ params }: { params: { code: string } }) {
-  const code = params.code;
-  const reservedWords = ["login", "auth", "register", "dashboard", "restaurants", "commissions", "profile"];
-  if (reservedWords.includes(code.toLowerCase())) {
-    return <Redirect to="/partner/login" />;
+  const code = (params?.code || "").trim();
+  const lower = code.toLowerCase();
+
+  // Guard reserved partner routes from ever being captured as referral codes
+  if (lower === "login" || lower === "auth") {
+    return <PartnerAuthPage />;
   }
+  if (lower === "register") {
+    return <PartnerRegisterPage />;
+  }
+  if (lower === "dashboard") {
+    return <PartnerDashboardPage />;
+  }
+  if (lower === "restaurants") {
+    return <PartnerRestaurantsPage />;
+  }
+  if (lower === "commissions") {
+    return <PartnerCommissionsPage />;
+  }
+  if (lower === "profile") {
+    return <PartnerProfilePage />;
+  }
+
   return <Redirect to={`/restaurant/register?ref=${encodeURIComponent(code)}`} />;
 }
 
@@ -351,6 +396,11 @@ function Router() {
       <Route path="/partner/register"        component={PartnerRegisterPage} />
       <Route path="/partner/login"           component={PartnerAuthPage} />
       <Route path="/partner/auth"            component={PartnerAuthPage} />
+
+      {/* Direct /portal subpath support for partner auth (safe iframe/artifact compatibility) */}
+      <Route path="/portal/partner/register" component={PartnerRegisterPage} />
+      <Route path="/portal/partner/login"    component={PartnerAuthPage} />
+      <Route path="/portal/partner/auth"     component={PartnerAuthPage} />
 
       {/* ── Partner protected (partner only) ───────────────────────────── */}
       <Route path="/partner/dashboard"       component={PartnerDashboardPage} />
