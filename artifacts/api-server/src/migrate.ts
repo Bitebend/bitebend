@@ -199,6 +199,29 @@ async function validateSchema(): Promise<void> {
   console.log("[DB_SCHEMA_VALIDATED] Schema validation passed");
 }
 
+function logDatabaseError(err: unknown) {
+  const e = err as any;
+  const target = e?.cause ?? e;
+  console.error("[MIGRATION_ERROR] Underlying PostgreSQL/database error details:");
+  console.error(`  message: ${e?.message ?? String(e)}`);
+  console.error(`  code: ${target?.code ?? e?.code ?? "none"}`);
+  console.error(`  detail: ${target?.detail ?? e?.detail ?? "none"}`);
+  console.error(`  hint: ${target?.hint ?? e?.hint ?? "none"}`);
+  console.error(`  position: ${target?.position ?? e?.position ?? "none"}`);
+  console.error(`  table: ${target?.table ?? e?.table ?? "none"}`);
+  console.error(`  column: ${target?.column ?? e?.column ?? "none"}`);
+  console.error(`  constraint: ${target?.constraint ?? e?.constraint ?? "none"}`);
+  console.error(`  schema: ${target?.schema ?? e?.schema ?? "none"}`);
+  if (e?.cause) {
+    console.error(`  cause: ${e.cause?.message ?? String(e.cause)}`);
+    if (e.cause?.code) console.error(`  cause.code: ${e.cause.code}`);
+    if (e.cause?.detail) console.error(`  cause.detail: ${e.cause.detail}`);
+    if (e.cause?.hint) console.error(`  cause.hint: ${e.cause.hint}`);
+    if (e.cause?.position) console.error(`  cause.position: ${e.cause.position}`);
+  }
+  console.error(`  stack: ${e?.stack ?? "none"}`);
+}
+
 async function main() {
   const mainStart = Date.now();
   console.log("[DB_BOOT] Starting database bootstrap");
@@ -237,6 +260,7 @@ async function main() {
       console.log("[DB_MIGRATIONS_OK] All migrations applied (after stamp)");
     } else {
       console.error("[MIGRATION_ERROR] Migration failed:", msg);
+      logDatabaseError(err);
       console.error("[MIGRATION_ERROR] Fix: run 'pnpm migrate' again — if it persists, check docs/database-lifecycle.md");
       throw err;
     }
@@ -250,12 +274,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[MIGRATION_ERROR] Bootstrap failed:", err.message ?? err);
-  const cause = (err as any)?.cause;
-  if (cause) {
-    console.error("[MIGRATION_ERROR] Caused by:", cause.message ?? cause);
-    if (cause.code) console.error("[MIGRATION_ERROR] Postgres error code:", cause.code);
-    if (cause.detail) console.error("[MIGRATION_ERROR] Detail:", cause.detail);
-  }
+  console.error("[MIGRATION_ERROR] Bootstrap failed:", err instanceof Error ? err.message : err);
+  logDatabaseError(err);
   process.exit(1);
 });
