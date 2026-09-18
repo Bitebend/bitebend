@@ -251,5 +251,11 @@ async function main() {
 
 main().catch((err) => {
   console.error("[MIGRATION_ERROR] Bootstrap failed:", err.message ?? err);
+  const cause = (err as any)?.cause;
+  if (cause) {
+    console.error("[MIGRATION_ERROR] Caused by:", cause.message ?? cause);
+    if (cause.code) console.error("[MIGRATION_ERROR] Postgres error code:", cause.code);
+    if (cause.detail) console.error("[MIGRATION_ERROR] Detail:", cause.detail);
+  }
   process.exit(1);
 });
