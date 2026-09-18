@@ -1,0 +1,1 @@
+{"allowedDeprecatedVersions":{},"allowedBuildScripts":{"core-js":"*","esbuild":"*","puppeteer":"*","sharp":"*","@electric-sql/pglite":"*"}}

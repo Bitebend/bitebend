@@ -15,6 +15,8 @@
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { logger } from "./logger";
 import { WORKSPACE_ROOT } from "./workspace";
 
@@ -125,9 +127,14 @@ function _spawnBridge(): void {
     "[bridge-manager] Spawning WhatsApp bridge",
   );
 
+  const distFile = join(WORKSPACE_ROOT, "services/whatsapp-bridge/dist/index.js");
+  const spawnArgs = existsSync(distFile)
+    ? [distFile]
+    : ["--import", "tsx", "services/whatsapp-bridge/src/index.ts"];
+
   _process = spawn(
     process.execPath,
-    ["--import", "tsx", "services/whatsapp-bridge/src/index.ts"],
+    spawnArgs,
     { cwd: WORKSPACE_ROOT, env, stdio: ["ignore", "pipe", "pipe"] },
   );
 

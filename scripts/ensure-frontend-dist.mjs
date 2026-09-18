@@ -13,10 +13,12 @@ const menuIndex2 = path.resolve(rootDir, "artifacts/menu/dist/index.html");
 const isPortalBuilt = existsSync(portalIndex);
 const isMenuBuilt = existsSync(menuIndex1) || existsSync(menuIndex2);
 
+const pmCmd = existsSync(path.resolve(rootDir, "pnpm-lock.yaml")) ? "pnpm --filter " : "npm --workspace=";
+
 if (!isPortalBuilt) {
   console.log("[ensure-frontend-dist] Building portal application...");
   try {
-    execSync("npm --workspace=@workspace/portal run build", {
+    execSync(`${pmCmd}@workspace/portal run build`, {
       cwd: rootDir,
       stdio: "inherit",
     });
@@ -29,7 +31,7 @@ if (!isPortalBuilt) {
 if (!isMenuBuilt) {
   console.log("[ensure-frontend-dist] Building menu application...");
   try {
-    execSync("BASE_PATH=/menu/ npm --workspace=@workspace/menu run build", {
+    execSync(`${pmCmd}@workspace/menu run build`, {
       cwd: rootDir,
       stdio: "inherit",
     });

@@ -14,7 +14,6 @@ interface WebhookPayload {
 interface PaymentScreenshotPayload {
   restaurantId: number;
   customerPhone: string;
-  senderJid?: string;
   imageUrl: string;
   timestamp: string;
   /**
