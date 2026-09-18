@@ -23,6 +23,6 @@ CREATE TABLE IF NOT EXISTS "rate_limit_windows" (
   "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
   "count"      INTEGER                  NOT NULL DEFAULT 1
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_rate_limit_windows_expires"
   ON "rate_limit_windows" ("expires_at");

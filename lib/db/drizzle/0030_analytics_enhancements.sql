@@ -28,23 +28,23 @@
 
 ALTER TABLE "visitor_sessions"
   ADD COLUMN IF NOT EXISTS "is_bot" boolean NOT NULL DEFAULT false;
-
+--> statement-breakpoint
 ALTER TABLE "page_views"
   ADD COLUMN IF NOT EXISTS "is_bot" boolean NOT NULL DEFAULT false;
-
+--> statement-breakpoint
 -- ── 2. Session duration ───────────────────────────────────────────────────────
 
 ALTER TABLE "page_views"
   ADD COLUMN IF NOT EXISTS "duration_seconds" integer;
-
+--> statement-breakpoint
 -- ── 3. Pre-computed referrer domain + traffic source ─────────────────────────
 
 ALTER TABLE "page_views"
   ADD COLUMN IF NOT EXISTS "referrer_domain" text;
-
+--> statement-breakpoint
 ALTER TABLE "page_views"
   ADD COLUMN IF NOT EXISTS "traffic_source" text;
-
+--> statement-breakpoint
 -- ── 4. Generic event tracking ─────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS "analytics_events" (
@@ -57,30 +57,30 @@ CREATE TABLE IF NOT EXISTS "analytics_events" (
   "is_bot"              boolean     NOT NULL DEFAULT false,
   "created_at"          timestamp   NOT NULL DEFAULT now()
 );
-
+--> statement-breakpoint
 -- ── Indexes ───────────────────────────────────────────────────────────────────
 
 -- Partial indexes on is_bot=false are the fast path for all reporting queries
 CREATE INDEX IF NOT EXISTS "idx_vs_is_bot"
   ON "visitor_sessions" ("is_bot") WHERE "is_bot" = false;
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_is_bot"
   ON "page_views" ("is_bot") WHERE "is_bot" = false;
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_traffic_source"
   ON "page_views" ("traffic_source") WHERE "traffic_source" IS NOT NULL;
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_referrer_domain"
   ON "page_views" ("referrer_domain") WHERE "referrer_domain" IS NOT NULL;
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_ae_event_name"
   ON "analytics_events" ("event_name");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_ae_session_id"
   ON "analytics_events" ("session_id");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_ae_created_at"
   ON "analytics_events" ("created_at" DESC);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_ae_visitor_session"
   ON "analytics_events" ("visitor_session_id");

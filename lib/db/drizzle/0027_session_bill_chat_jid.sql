@@ -21,7 +21,7 @@
 -- existing phone-match + LID-fallback strategies are unchanged for them.
 
 ALTER TABLE "session_bills" ADD COLUMN IF NOT EXISTS "chat_jid" text;
-
+--> statement-breakpoint
 -- Partial index: only index rows that could be matched by Priority 0.
 -- WHERE status='sent' keeps the index tiny (most bills progress quickly).
 CREATE INDEX IF NOT EXISTS "idx_session_bills_chat_jid"

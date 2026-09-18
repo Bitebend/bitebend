@@ -13,25 +13,25 @@
 
 ALTER TABLE "subscription_plans"
   ALTER COLUMN "price" TYPE double precision USING price / 100.0;
-
+--> statement-breakpoint
 ALTER TABLE "subscription_transactions"
   ALTER COLUMN "amount" TYPE double precision USING amount / 100.0;
-
+--> statement-breakpoint
 ALTER TABLE "restaurants"
   ALTER COLUMN "subscription_fee" TYPE double precision USING subscription_fee / 100.0;
-
+--> statement-breakpoint
 -- Menu / order columns — data already in rupees, type change only.
 ALTER TABLE "menu_items"
   ALTER COLUMN "price" TYPE double precision USING price::double precision;
-
+--> statement-breakpoint
 ALTER TABLE "order_items"
   ALTER COLUMN "unit_price" TYPE double precision USING unit_price::double precision;
-
+--> statement-breakpoint
 ALTER TABLE "orders"
   ALTER COLUMN "subtotal" TYPE double precision USING subtotal::double precision,
   ALTER COLUMN "tax"      TYPE double precision USING tax::double precision,
   ALTER COLUMN "total"    TYPE double precision USING total::double precision;
-
+--> statement-breakpoint
 ALTER TABLE "session_bills"
   ALTER COLUMN "subtotal" TYPE double precision USING subtotal::double precision,
   ALTER COLUMN "tax"      TYPE double precision USING tax::double precision,

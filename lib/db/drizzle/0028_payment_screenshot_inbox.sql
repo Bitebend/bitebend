@@ -43,13 +43,13 @@ CREATE TABLE IF NOT EXISTS "payment_screenshot_inbox" (
   CONSTRAINT "psi_match_status_check"
     CHECK (match_status IN ('matched', 'unmatched', 'ambiguous'))
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_psi_restaurant_status"
   ON "payment_screenshot_inbox" ("restaurant_id", "match_status");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_psi_restaurant_received"
   ON "payment_screenshot_inbox" ("restaurant_id", "received_at" DESC);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_psi_image_hash"
   ON "payment_screenshot_inbox" ("restaurant_id", "image_hash")
   WHERE "image_hash" IS NOT NULL;

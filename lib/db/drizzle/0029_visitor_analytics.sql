@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS "visitor_sessions" (
   "created_at"  timestamp  NOT NULL DEFAULT now(),
   "updated_at"  timestamp  NOT NULL DEFAULT now()
 );
-
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "page_views" (
   "id"                  serial     PRIMARY KEY NOT NULL,
   "visitor_session_id"  integer    NOT NULL,
@@ -61,35 +61,35 @@ CREATE TABLE IF NOT EXISTS "page_views" (
   CONSTRAINT "page_views_visitor_session_fk"
     FOREIGN KEY ("visitor_session_id") REFERENCES "visitor_sessions"("id") ON DELETE CASCADE
 );
-
+--> statement-breakpoint
 -- visitor_sessions indexes
 CREATE UNIQUE INDEX IF NOT EXISTS "idx_vs_visitor_id"
   ON "visitor_sessions" ("visitor_id");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_vs_last_visit"
   ON "visitor_sessions" ("last_visit" DESC);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_vs_is_new"
   ON "visitor_sessions" ("is_new");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_vs_hashed_ip"
   ON "visitor_sessions" ("hashed_ip")
   WHERE "hashed_ip" IS NOT NULL;
-
+--> statement-breakpoint
 -- page_views indexes
 CREATE INDEX IF NOT EXISTS "idx_pv_visitor_session_id"
   ON "page_views" ("visitor_session_id");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_created_at"
   ON "page_views" ("created_at" DESC);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_utm_source"
   ON "page_views" ("utm_source")
   WHERE "utm_source" IS NOT NULL;
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_utm_campaign"
   ON "page_views" ("utm_campaign")
   WHERE "utm_campaign" IS NOT NULL;
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_pv_page"
   ON "page_views" ("page");

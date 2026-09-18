@@ -40,6 +40,7 @@ const REQUIRED_TABLES = [
   "partners",
   "partner_commissions",
   "partner_audit_logs",
+  "restaurant_hardware_orders",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
@@ -80,6 +81,10 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   // 0031_partner_system
   { table: "partners",                     column: "referral_code"    },
   { table: "partner_commissions",          column: "subscription_transaction_id" },
+  // 0034_qr_stands_and_hardware
+  { table: "restaurant_hardware_orders",   column: "restaurant_id"    },
+  { table: "restaurant_hardware_orders",   column: "stand_quantity"   },
+  { table: "restaurant_hardware_orders",   column: "collection_status"},
 ];
 
 /**
@@ -113,16 +118,24 @@ async function stampPushInitialisedDb(folder: string) {
 
   for (const entry of journal.entries) {
     const sqlPath = path.join(folder, `${entry.tag}.sql`);
-    if (!existsSync(sqlPath)) continue;
+    if (!existsSync(sqlPath)) break;
     const sqlContent = readFileSync(sqlPath, "utf-8");
 
     // Only stamp this migration as already applied if every table it
-    // creates already exists. Otherwise leave it un-stamped so the
-    // upcoming migrate() retry actually creates the missing tables/columns
-    // instead of silently skipping them.
+    // creates or alters already exists in the database.
+    // Because migrations form a strict dependency sequence, stop stamping
+    // immediately at the first unapplied migration so subsequent migrations
+    // are executed by migrate() in order rather than falsely stamped.
     const createdTables = [...sqlContent.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?"?(\w+)"?/gi)].map((m) => m[1]);
-    const allTablesExist = createdTables.length === 0 || createdTables.every((t) => existingTables.has(t));
-    if (!allTablesExist) continue;
+    const alteredTables = [...sqlContent.matchAll(/ALTER TABLE (?:ONLY )?"?(\w+)"?/gi)].map((m) => m[1]);
+
+    const allCreatedExist = createdTables.every((t) => existingTables.has(t));
+    const allAlteredExist = alteredTables.every((t) => existingTables.has(t));
+
+    if (!allCreatedExist || !allAlteredExist) {
+      console.log(`[DB_BOOT] Stopping stamping at ${entry.tag} (schema prerequisites not met)`);
+      break;
+    }
 
     const hash = createHash("sha256").update(sqlContent).digest("hex");
     const createdAt = entry.when;
@@ -130,6 +143,73 @@ async function stampPushInitialisedDb(folder: string) {
       sql`INSERT INTO drizzle."__drizzle_migrations" (hash, created_at) VALUES (${hash}, ${createdAt})`
     );
     console.log(`[DB_BOOT] stamped ${entry.tag} (when=${createdAt})`);
+  }
+}
+
+/**
+ * Detects and removes invalid migration stamps in drizzle.__drizzle_migrations.
+ * If a prior failed deployment or flawed bootstrap stamped future migrations
+ * while their prerequisite tables (e.g., 'partners' from 0031) were never created,
+ * Drizzle will erroneously skip the missing migration and fail on later ones
+ * (e.g., 0034 failing with "relation 'partners' does not exist").
+ *
+ * This function finds the earliest migration whose created tables do NOT exist,
+ * and clears any __drizzle_migrations records with created_at >= that migration's timestamp,
+ * ensuring Drizzle applies the migration chain sequentially from that point forward.
+ */
+async function cleanupCorruptMigrationStamps(folder: string) {
+  try {
+    const schemaCheck = await db.execute<{ exists: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'drizzle' AND table_name = '__drizzle_migrations'
+      ) as exists
+    `);
+    if (!schemaCheck.rows[0]?.exists) return;
+
+    const journalPath = path.join(folder, "meta/_journal.json");
+    if (!existsSync(journalPath)) return;
+
+    const journal: Journal = JSON.parse(readFileSync(journalPath, "utf-8"));
+
+    const tableRows = await db.execute<{ table_name: string }>(sql`
+      SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
+    `);
+    const existingTables = new Set(tableRows.rows.map((r) => r.table_name));
+
+    let earliestMissingTimestamp: number | null = null;
+    let earliestMissingTag: string | null = null;
+
+    for (const entry of journal.entries) {
+      const sqlPath = path.join(folder, `${entry.tag}.sql`);
+      if (!existsSync(sqlPath)) continue;
+      const sqlContent = readFileSync(sqlPath, "utf-8");
+      const createdTables = [...sqlContent.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?"?(\w+)"?/gi)].map((m) => m[1]);
+      const missingTable = createdTables.find((t) => !existingTables.has(t));
+      if (missingTable) {
+        earliestMissingTimestamp = entry.when;
+        earliestMissingTag = entry.tag;
+        break;
+      }
+    }
+
+    if (earliestMissingTimestamp != null) {
+      const stampCheck = await db.execute<{ count: string }>(sql`
+        SELECT COUNT(*)::text as count FROM drizzle."__drizzle_migrations" 
+        WHERE created_at >= ${earliestMissingTimestamp}
+      `);
+      const count = Number(stampCheck.rows[0]?.count ?? 0);
+      if (count > 0) {
+        console.warn(
+          `[DB_BOOT] Detected ${count} premature/corrupt migration stamp(s) >= ${earliestMissingTimestamp} (${earliestMissingTag}). Required table(s) not found in database. Cleaning up stamps so migration can run sequentially.`
+        );
+        await db.execute(sql`
+          DELETE FROM drizzle."__drizzle_migrations" WHERE created_at >= ${earliestMissingTimestamp}
+        `);
+      }
+    }
+  } catch (err) {
+    console.warn("[DB_BOOT] Warning during migration stamp cleanup check:", err);
   }
 }
 
@@ -235,6 +315,7 @@ async function main() {
   console.log(`[DB_BOOT] migrations folder: ${migrationsFolder}`);
 
   await ensureSessionsTable();
+  await cleanupCorruptMigrationStamps(migrationsFolder);
 
   const migrationStart = Date.now();
   console.log("[MIGRATION_START] Applying migrations...");
