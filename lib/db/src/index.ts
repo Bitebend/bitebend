@@ -49,6 +49,13 @@ let dbInstance: any;
 let pgliteInstance: PGlite | null = null;
 
 const dbUrl = process.env.DATABASE_URL?.trim();
+const isValidPostgresUrl = Boolean(
+  dbUrl && (
+    dbUrl.startsWith("postgres://") ||
+    dbUrl.startsWith("postgresql://")
+  )
+);
+
 const isRailwayUrl = Boolean(
   dbUrl && (
     dbUrl.includes("railway") ||
@@ -58,7 +65,7 @@ const isRailwayUrl = Boolean(
   )
 );
 const useExternalPg = Boolean(
-  dbUrl &&
+  isValidPostgresUrl &&
   process.env.USE_LOCAL_DB !== "true" &&
   !isRailwayUrl &&
   process.env.NODE_ENV === "production" &&
