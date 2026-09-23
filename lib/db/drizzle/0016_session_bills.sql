@@ -1,4 +1,4 @@
-CREATE TABLE "session_bills" (
+CREATE TABLE IF NOT EXISTS "session_bills" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"session_id" integer NOT NULL,
 	"restaurant_id" integer NOT NULL,
