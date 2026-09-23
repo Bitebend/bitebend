@@ -1,0 +1,14 @@
+node_modules/
+.pnpm-store/
+.local/
+.cache/
+.git/
+.github/
+.vscode/
+.idea/
+*.log
+screenshots/
+docs/
+services/whatsapp-bridge/.wwebjs_auth/
+services/whatsapp-bridge/sessions/
+services/whatsapp-bridge/uploads/*

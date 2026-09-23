@@ -6,6 +6,8 @@ import { sql } from "drizzle-orm";
 import { db, ensureDbReady } from "@workspace/db";
 import { WORKSPACE_ROOT } from "./lib/workspace";
 
+// The AI Studio environment runs Nginx on PORT 8080 and proxies traffic to 3000.
+// Dev servers MUST run on port 3000.
 const port = 3000;
 
 // ── Startup: log build metadata ───────────────────────────────────────────────
