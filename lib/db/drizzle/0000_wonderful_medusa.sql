@@ -1,4 +1,4 @@
-CREATE TABLE "admin_password_reset_tokens" (
+CREATE TABLE IF NOT EXISTS "admin_password_reset_tokens" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"token" text NOT NULL,
@@ -8,14 +8,14 @@ CREATE TABLE "admin_password_reset_tokens" (
 	CONSTRAINT "admin_password_reset_tokens_token_unique" UNIQUE("token")
 );
 --> statement-breakpoint
-CREATE TABLE "image_blobs" (
+CREATE TABLE IF NOT EXISTS "image_blobs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"data" text NOT NULL,
 	"content_type" text NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "menu_categories" (
+CREATE TABLE IF NOT EXISTS "menu_categories" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"restaurant_id" integer NOT NULL,
 	"name" text NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE "menu_categories" (
 	"is_active" boolean DEFAULT true NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "menu_items" (
+CREATE TABLE IF NOT EXISTS "menu_items" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"restaurant_id" integer NOT NULL,
 	"category_id" integer NOT NULL,
@@ -36,7 +36,7 @@ CREATE TABLE "menu_items" (
 	"display_order" integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "notifications" (
+CREATE TABLE IF NOT EXISTS "notifications" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"restaurant_id" integer,
 	"title" text NOT NULL,
@@ -46,7 +46,7 @@ CREATE TABLE "notifications" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "order_items" (
+CREATE TABLE IF NOT EXISTS "order_items" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"order_id" integer NOT NULL,
 	"menu_item_id" integer,
@@ -57,7 +57,7 @@ CREATE TABLE "order_items" (
 	"notes" text
 );
 --> statement-breakpoint
-CREATE TABLE "orders" (
+CREATE TABLE IF NOT EXISTS "orders" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"restaurant_id" integer NOT NULL,
 	"table_id" integer,
@@ -75,13 +75,13 @@ CREATE TABLE "orders" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "platform_settings" (
+CREATE TABLE IF NOT EXISTS "platform_settings" (
 	"key" text PRIMARY KEY NOT NULL,
 	"value" text,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "restaurant_tables" (
+CREATE TABLE IF NOT EXISTS "restaurant_tables" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"restaurant_id" integer NOT NULL,
 	"table_number" text NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE "restaurant_tables" (
 	"is_occupied" boolean DEFAULT false NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "restaurants" (
+CREATE TABLE IF NOT EXISTS "restaurants" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"slug" text NOT NULL,
@@ -128,7 +128,7 @@ CREATE TABLE "restaurants" (
 	CONSTRAINT "restaurants_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
-CREATE TABLE "subscription_plans" (
+CREATE TABLE IF NOT EXISTS "subscription_plans" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"price" integer DEFAULT 0 NOT NULL,
@@ -141,7 +141,7 @@ CREATE TABLE "subscription_plans" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "subscription_transactions" (
+CREATE TABLE IF NOT EXISTS "subscription_transactions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"restaurant_id" integer NOT NULL,
 	"plan_id" integer NOT NULL,
@@ -154,7 +154,7 @@ CREATE TABLE "subscription_transactions" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "users" (
+CREATE TABLE IF NOT EXISTS "users" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"email" text NOT NULL,
 	"password_hash" text NOT NULL,
