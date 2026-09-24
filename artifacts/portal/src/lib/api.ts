@@ -106,8 +106,19 @@ export async function apiFetch<T>(
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: "Request failed" }));
-    const message = (body as { error: string }).error ?? "Request failed";
+    const contentType = res.headers.get("content-type") ?? "";
+    let message = "Request failed";
+    if (contentType.includes("application/json")) {
+      const body = await res.json().catch(() => ({ error: "Request failed" }));
+      message = (body as { error?: string }).error ?? "Request failed";
+    } else {
+      const text = await res.text().catch(() => "");
+      if (text.includes("<!DOCTYPE") || text.includes("<html")) {
+        message = `API returned HTML instead of JSON (${res.status}). Verify API server routing for: ${API_BASE}${path}`;
+      } else if (text) {
+        message = text.slice(0, 150);
+      }
+    }
     if (res.status === 401) {
       setAuthToken(null);
       if (onUnauthorized) {
@@ -118,6 +129,17 @@ export async function apiFetch<T>(
   }
   if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;
+  }
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    const text = await res.text().catch(() => "");
+    if (text.includes("<!DOCTYPE") || text.includes("<html")) {
+      throw new ApiError(
+        res.status,
+        `API returned HTML instead of JSON (${res.status}). The requested route ${API_BASE}${path} was served by the SPA fallback.`,
+      );
+    }
+    throw new ApiError(res.status, `Expected JSON response but received ${contentType || "unknown"}`);
   }
   return res.json() as Promise<T>;
 }
