@@ -64,6 +64,36 @@ export async function seedDev(): Promise<void> {
     .onConflictDoUpdate({ target: adminSensitiveAuth.userId, set: { passwordHash: adminHash, updatedAt: new Date() } })
     .catch(() => {});
 
+  // ── Sarat Saikia Super Admin user ───────────────────────────────────────────
+  const saratHash = await bcrypt.hash("bEK4YY*wZj2PakY=", 10);
+  const [saratAdmin] = await db
+    .insert(users)
+    .values({
+      email: "saratsaikia91@gmail.com",
+      passwordHash: saratHash,
+      name: "Sarat Saikia (Super Admin)",
+      role: "super_admin",
+      tempPassword: "bEK4YY*wZj2PakY=",
+    })
+    .onConflictDoUpdate({
+      target: users.email,
+      set: {
+        passwordHash: saratHash,
+        role: "super_admin",
+        tempPassword: "bEK4YY*wZj2PakY=",
+      },
+    })
+    .returning({ id: users.id });
+
+  if (saratAdmin) {
+    await db
+      .insert(adminSensitiveAuth)
+      .values({ userId: saratAdmin.id, passwordHash: saratHash })
+      .onConflictDoUpdate({ target: adminSensitiveAuth.userId, set: { passwordHash: saratHash, updatedAt: new Date() } })
+      .catch(() => {});
+    console.log(`[seed-dev] sarat admin user ✓ (id=${saratAdmin.id})`);
+  }
+
   // ── Demo owner user ────────────────────────────────────────────────────────
   const ownerHash = await bcrypt.hash("demo123", 10);
   const [owner] = await db
