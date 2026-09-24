@@ -7,8 +7,12 @@ import { db, ensureDbReady } from "@workspace/db";
 import { WORKSPACE_ROOT } from "./lib/workspace";
 
 // The AI Studio environment runs Nginx on PORT 8080 and proxies traffic to 3000.
-// Dev servers MUST run on port 3000.
-const port = 3000;
+// In AI Studio, dev servers MUST run on port 3000.
+// In external production environments (Railway, Cloud Run, etc.), listen on the environment-provided PORT.
+const isAiStudio = Boolean(process.env["APPLET_ID"] || process.env["DEFAULT_APP_PORT"]);
+const port = isAiStudio
+  ? Number(process.env["DEFAULT_APP_PORT"] || 3000)
+  : Number(process.env["PORT"] || 3000);
 
 // ── Startup: log build metadata ───────────────────────────────────────────────
 //

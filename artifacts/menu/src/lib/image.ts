@@ -15,7 +15,7 @@
  */
 
 const rawBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-const BASE = (rawBase.includes("railway.app") || rawBase.includes("bitebend.in")) ? "" : rawBase;
+const BASE = rawBase.includes("api-server-production-78de.up.railway.app") ? "" : rawBase;
 
 // Origin only (no /api suffix) — used to resolve relative /api/... media URLs
 // (e.g. /api/images/<uuid>) to an absolute URL when the frontend is deployed

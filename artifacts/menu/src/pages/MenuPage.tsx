@@ -38,7 +38,7 @@ import type { RazorpayResponse } from "./menu/RazorpayCheckout";
 const CUSTOMER_RAZORPAY_ENABLED = import.meta.env["VITE_ENABLE_CUSTOMER_RAZORPAY"] === "true";
 
 const rawBase: string = import.meta.env.VITE_API_URL ?? "";
-const BASE: string = (rawBase.includes("railway.app") || rawBase.includes("bitebend.in")) ? "" : rawBase;
+const BASE: string = rawBase.includes("api-server-production-78de.up.railway.app") ? "" : rawBase;
 
 interface ProofResult {
   ocrConfigured: boolean;

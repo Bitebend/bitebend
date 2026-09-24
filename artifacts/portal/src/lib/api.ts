@@ -1,5 +1,5 @@
 const rawBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-const BASE = (rawBase.includes("railway.app") || rawBase.includes("bitebend.in")) ? "" : rawBase;
+const BASE = rawBase.includes("api-server-production-78de.up.railway.app") ? "" : rawBase;
 
 export const API_BASE = `${BASE}/api`;
 

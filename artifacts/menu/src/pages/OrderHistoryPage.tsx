@@ -12,7 +12,7 @@ import type { RestaurantData, PlacedOrderItem, OrderType } from "./menu/types";
 import { lsGet } from "./menu/utils";
 
 const rawBase: string = import.meta.env.VITE_API_URL ?? "";
-const BASE: string = (rawBase.includes("railway.app") || rawBase.includes("bitebend.in")) ? "" : rawBase;
+const BASE: string = rawBase.includes("api-server-production-78de.up.railway.app") ? "" : rawBase;
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png"];
 const MAX_SIZE_BYTES = 10 * 1024 * 1024;
 

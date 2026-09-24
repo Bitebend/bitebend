@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +40,17 @@ async function start() {
       console.log("[server.js] Migrations completed successfully.");
     } catch (err) {
       console.error("[server.js] Warning: Database migration failed, proceeding with server startup:", err.message);
+    }
+  }
+
+  // Verify frontend distributions are present
+  const ensureFrontendScript = path.join(__dirname, "scripts/ensure-frontend-dist.mjs");
+  if (existsSync(ensureFrontendScript)) {
+    try {
+      console.log("[server.js] Verifying frontend distributions...");
+      await runCommand("node", [ensureFrontendScript]);
+    } catch (err) {
+      console.warn("[server.js] Warning: frontend verification notice:", err.message);
     }
   }
 

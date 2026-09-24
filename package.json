@@ -13,7 +13,7 @@
     "build:api": "npm --workspace=@workspace/api-server run build",
     "build:bridge": "pnpm --filter @workspace/whatsapp-bridge run build",
     "build:all": "npm --workspace=@workspace/menu run build && npm --workspace=@workspace/portal run build && npm --workspace=@workspace/api-server run build && pnpm --filter @workspace/whatsapp-bridge run build",
-    "start": "npm --workspace=@workspace/api-server run start",
+    "start": "node server.js",
     "start:bridge": "pnpm --filter @workspace/whatsapp-bridge run start",
     "typecheck:libs": "tsc --build",
     "lint": "eslint artifacts/menu/src artifacts/portal/src"
