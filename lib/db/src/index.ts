@@ -56,20 +56,9 @@ const isValidPostgresUrl = Boolean(
   )
 );
 
-const isRailwayUrl = Boolean(
-  dbUrl && (
-    dbUrl.includes("railway") ||
-    dbUrl.includes("rlwy.net") ||
-    dbUrl.includes("railway.internal") ||
-    dbUrl.includes("postgres.railway")
-  )
-);
 const useExternalPg = Boolean(
   isValidPostgresUrl &&
-  process.env.USE_LOCAL_DB !== "true" &&
-  !isRailwayUrl &&
-  process.env.NODE_ENV === "production" &&
-  !process.env.DEV
+  process.env.USE_LOCAL_DB !== "true"
 );
 
 if (useExternalPg && dbUrl) {
