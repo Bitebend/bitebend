@@ -5,7 +5,12 @@ function optional(key: string, fallback: string): string {
 }
 
 const config = {
-  port: parseInt(optional('BRIDGE_PORT', '3001'), 10),
+  port: parseInt(
+    process.env.BRIDGE_PORT?.trim() ||
+    process.env.PORT?.trim() ||
+    '3001',
+    10,
+  ),
   nodeEnv: optional('NODE_ENV', 'development'),
 
   bridgeApiSecret: optional('BRIDGE_API_SECRET', ''),
