@@ -104,9 +104,49 @@ const statusHandler: RequestHandler = async (req, res) => {
   }
 };
 
+// ── Owner: get QR status (REST poll fallback) ──────────────────────────────────
+const qrStatusHandler: RequestHandler = async (req, res) => {
+  const restaurantId = req.user!.restaurantId;
+  if (!restaurantId) {
+    res.status(400).json({ error: "No restaurant associated with this account" });
+    return;
+  }
+  try {
+    const data = await callBridge(`/api/whatsapp/qr-status/${restaurantId}`, "GET");
+    res.json({ ...data, bridgeReachable: true });
+  } catch {
+    const bridgeState = getBridgeState();
+    const managed = isBridgeManaged();
+
+    if (managed && (bridgeState === "starting" || bridgeState === "restarting")) {
+      res.json({
+        success: true,
+        restaurantId,
+        status: "initialising",
+        qr: null,
+        generatedAt: null,
+        expiresAt: null,
+        bridgeReachable: true,
+        bridgeStarting: true,
+      });
+    } else {
+      res.json({
+        success: false,
+        restaurantId,
+        status: "not_initialised",
+        qr: null,
+        generatedAt: null,
+        expiresAt: null,
+        bridgeReachable: false,
+      });
+    }
+  }
+};
+
 router.post("/owner/whatsapp/connect",    requireOwner, connectHandler);
 router.post("/owner/whatsapp/disconnect", requireOwner, disconnectHandler);
 router.get("/owner/whatsapp/status",      requireOwner, statusHandler);
+router.get("/owner/whatsapp/qr-status",   requireOwner, qrStatusHandler);
 
 // ── Incoming webhook from the bridge (general messages) ───────────────────────
 router.post("/whatsapp/incoming", ((req, res) => {
