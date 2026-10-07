@@ -51,14 +51,19 @@ function extractMediaHints(msg: Message): MediaHints | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const d = (msg as any)._data;
   if (!d || !d.directPath || !d.mediaKey) return null;
+  const rawMime = d.mimetype ? String(d.mimetype) : '';
+  const rawType = d.type ? String(d.type) : 'image';
+  const mime = (rawMime && rawMime !== 'application/octet-stream')
+    ? rawMime
+    : (rawType === 'image' || !rawType ? 'image/jpeg' : (rawMime || 'image/jpeg'));
   return {
     directPath:        String(d.directPath),
     mediaKey:          String(d.mediaKey),
     mediaKeyTimestamp: d.mediaKeyTimestamp != null ? Number(d.mediaKeyTimestamp) : null,
-    mimetype:          d.mimetype ? String(d.mimetype) : 'image/jpeg',
+    mimetype:          mime,
     encFilehash:       d.encFilehash  ? String(d.encFilehash)  : null,
     filehash:          d.filehash     ? String(d.filehash)      : null,
-    type:              d.type         ? String(d.type)          : 'image',
+    type:              rawType,
     filesize:          d.size         != null ? Number(d.size)  : null,
   };
 }

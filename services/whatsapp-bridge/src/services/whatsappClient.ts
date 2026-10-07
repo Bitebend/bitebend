@@ -844,6 +844,9 @@ export async function downloadMediaDirect(
             addAnnotations() { return this; },
             addPoint()       { return this; },
           };
+          const resolvedMime = (hints.mimetype && hints.mimetype !== 'application/octet-stream')
+            ? hints.mimetype
+            : (hints.type === 'image' || !hints.type ? 'image/jpeg' : hints.mimetype || 'image/jpeg');
           const decrypted = await g.require('WAWebDownloadManager')
             .downloadManager.downloadAndMaybeDecrypt({
               directPath:        hints.directPath,
@@ -852,6 +855,7 @@ export async function downloadMediaDirect(
               mediaKey:          hints.mediaKey,
               mediaKeyTimestamp: hints.mediaKeyTimestamp ?? undefined,
               type:              hints.type          ?? 'image',
+              mimetype:          resolvedMime,
               signal:            new AbortController().signal,
               downloadQpl:       mockQpl,
             });
@@ -859,7 +863,7 @@ export async function downloadMediaDirect(
           return {
             ok:       true,
             data,
-            mimetype: hints.mimetype ?? 'image/jpeg',
+            mimetype: resolvedMime,
             filename: null,
             filesize: hints.filesize ?? null,
           };
@@ -1030,6 +1034,9 @@ export async function downloadMediaDirect(
           addAnnotations() { return this; },
           addPoint()       { return this; },
         };
+        const resolvedMime = (msg.mimetype && msg.mimetype !== 'application/octet-stream')
+          ? msg.mimetype
+          : (msg.type === 'image' || !msg.type ? 'image/jpeg' : msg.mimetype || 'image/jpeg');
         const decrypted = await g.require('WAWebDownloadManager')
           .downloadManager.downloadAndMaybeDecrypt({
             directPath:        msg.directPath,
@@ -1038,6 +1045,7 @@ export async function downloadMediaDirect(
             mediaKey:          msg.mediaKey,
             mediaKeyTimestamp: msg.mediaKeyTimestamp,
             type:              msg.type,
+            mimetype:          resolvedMime,
             signal:            new AbortController().signal,
             downloadQpl:       mockQpl,
           });
@@ -1047,7 +1055,7 @@ export async function downloadMediaDirect(
         return {
           ok:       true,
           data,
-          mimetype: msg.mimetype ?? 'image/jpeg',
+          mimetype: resolvedMime,
           filename: msg.filename ?? null,
           filesize: msg.size     ?? null,
         };

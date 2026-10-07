@@ -151,6 +151,7 @@ async function runWorkerTick(downloadMedia: DownloadFn): Promise<void> {
         customerPhone: item.customerPhone,
         imageUrl:      dataUrl,
         timestamp:     item.timestamp,
+        senderJid:     item.msg.from,
       });
 
       logger.info('[media] retry success', {

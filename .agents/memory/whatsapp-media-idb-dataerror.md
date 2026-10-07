@@ -98,3 +98,16 @@ Fix: **Step 0.5** in `downloadMediaDirect`. `msg._data` is fully populated at ev
 `mediaKey` format: base64 string in both `_data` and the Backbone model — no conversion needed.
 
 Files changed: `whatsappClient.ts` (MediaHints export + step 0.5), `incomingMessages.ts` (extractMediaHints + threading through retry + enqueue), `mediaQueue.ts` (hints stored in QueueItem, forwarded in retry worker).
+
+### Bug 3 — `InvalidMediaFileType: Unexpected mimetype application/octet-stream for media type image` (fixed)
+Confirmed by live production logs:
+```
+11:42:21 [info]: [media:dump] Download failed — browser-side diagnostics {"step":"0.5_hints_cdn","reason":"cdn_error","detail":"r=undefined status=undefined str=InvalidMediaFileType: Unexpected mimetype application/octet-stream for media type image","msgFoundVia":"hints","mediaDump":null}
+```
+- **Root Cause**: In WA Web, `WAWebDownloadManager.downloadManager.downloadAndMaybeDecrypt(options)` requires `options.mimetype`. If `mimetype` is omitted, WA Web defaults it to `'application/octet-stream'`. When `type: 'image'`, WA Web validates that the MIME type is an image MIME type; seeing `'application/octet-stream'`, it throws `InvalidMediaFileType: Unexpected mimetype application/octet-stream for media type image`.
+- **Fix**:
+  1. In `whatsappClient.ts` (both Step 0.5 and Step 5), pass sanitized `mimetype: resolvedMime` into `downloadAndMaybeDecrypt`. If `mimetype` is missing or `'application/octet-stream'` for image messages, fallback safely to `'image/jpeg'`.
+  2. In `incomingMessages.ts` (`extractMediaHints`), sanitize `mimetype` against `'application/octet-stream'`.
+  3. In `mediaQueue.ts`, include `senderJid: item.msg.from` in retried screenshot webhooks.
+  4. Added `scripts/patch-wwebjs.mjs` postinstall script for `whatsapp-web.js` Message.js.
+
