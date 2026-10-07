@@ -786,6 +786,69 @@ export interface MediaHints {
   filesize:          number | null;
 }
 
+/**
+ * Inspect magic bytes of a buffer, Uint8Array or byte array to detect image MIME type.
+ * Supports:
+ * - JPEG: FF D8 FF
+ * - PNG:  89 50 4E 47 0D 0A 1A 0A
+ * - WebP: RIFF [4 bytes] WEBP
+ * - GIF:  GIF87a / GIF89a
+ * Returns the detected MIME type ('image/jpeg', 'image/png', 'image/webp', 'image/gif') or null.
+ */
+export function detectImageMimeType(bytes: Uint8Array | Buffer | number[]): string | null {
+  if (!bytes || bytes.length < 3) return null;
+
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  // WebP: RIFF [4 bytes] WEBP
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+
+  // GIF: GIF87a or GIF89a
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
+  ) {
+    return 'image/gif';
+  }
+
+  return null;
+}
+
 export async function downloadMediaDirect(
   restaurantId: number,
   msgId: string,
@@ -826,6 +889,33 @@ export async function downloadMediaDirect(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const g = globalThis as any;
 
+      // Browser-side magic-byte detection for decrypted ArrayBuffer
+      function sniffImageMime(buf: ArrayBuffer): string | null {
+        if (!buf || buf.byteLength < 3) return null;
+        const b = new Uint8Array(buf, 0, Math.min(buf.byteLength, 16));
+        // JPEG: FF D8 FF
+        if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+        // PNG: 89 50 4E 47 0D 0A 1A 0A
+        if (
+          b.length >= 8 &&
+          b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
+          b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a
+        ) return 'image/png';
+        // WebP: RIFF .... WEBP
+        if (
+          b.length >= 12 &&
+          b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+          b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+        ) return 'image/webp';
+        // GIF: GIF87a or GIF89a
+        if (
+          b.length >= 6 &&
+          b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38 &&
+          (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61
+        ) return 'image/gif';
+        return null;
+      }
+
       // ── Step 0.5: hints fast-path (bypass IDB for @lid senders) ──────────
       // When msg._data was already populated at event-fire time (which is
       // always the case for both @c.us and @lid senders), Node.js passes the
@@ -844,9 +934,14 @@ export async function downloadMediaDirect(
             addAnnotations() { return this; },
             addPoint()       { return this; },
           };
-          const resolvedMime = (hints.mimetype && hints.mimetype !== 'application/octet-stream')
+          // 1. Prefer actual MIME from metadata whenever available
+          // 2. Only use image/jpeg as fallback when type is image AND metadata is missing/application/octet-stream
+          const isImageType = hints.type === 'image' || !hints.type;
+          const hasUsableMime = Boolean(hints.mimetype && hints.mimetype !== 'application/octet-stream');
+          const requestMime = hasUsableMime
             ? hints.mimetype
-            : (hints.type === 'image' || !hints.type ? 'image/jpeg' : hints.mimetype || 'image/jpeg');
+            : (isImageType ? 'image/jpeg' : (hints.mimetype || 'image/jpeg'));
+
           const decrypted = await g.require('WAWebDownloadManager')
             .downloadManager.downloadAndMaybeDecrypt({
               directPath:        hints.directPath,
@@ -855,17 +950,35 @@ export async function downloadMediaDirect(
               mediaKey:          hints.mediaKey,
               mediaKeyTimestamp: hints.mediaKeyTimestamp ?? undefined,
               type:              hints.type          ?? 'image',
-              mimetype:          resolvedMime,
+              mimetype:          requestMime,
               signal:            new AbortController().signal,
               downloadQpl:       mockQpl,
             });
+
+          // 3. Validate resulting bytes
+          const detectedMime = sniffImageMime(decrypted);
+
+          // 4. Do not blindly relabel arbitrary application/octet-stream data as JPEG.
+          if (!hasUsableMime && isImageType && !detectedMime) {
+            return {
+              ok: false,
+              reason: 'media_error',
+              step: '0.5_hints_magic_bytes',
+              detail: 'Decrypted data does not match JPEG, PNG, WebP or GIF signatures',
+              msgFoundVia: 'hints' as const,
+            };
+          }
+
+          // 5. If downloaded bytes are valid image data, accept and assign detected MIME type
+          const finalMime = detectedMime ?? (hasUsableMime ? hints.mimetype : 'image/jpeg');
           const data = await g.WWebJS.arrayBufferToBase64Async(decrypted);
+
           return {
             ok:       true,
             data,
-            mimetype: resolvedMime,
+            mimetype: finalMime,
             filename: null,
-            filesize: hints.filesize ?? null,
+            filesize: hints.filesize ?? decrypted.byteLength ?? null,
           };
         } catch (e: any) {
           // Hints-based CDN download failed.  Return a structured error —
@@ -1034,9 +1147,12 @@ export async function downloadMediaDirect(
           addAnnotations() { return this; },
           addPoint()       { return this; },
         };
-        const resolvedMime = (msg.mimetype && msg.mimetype !== 'application/octet-stream')
+        const isImageType = msg.type === 'image' || !msg.type;
+        const hasUsableMime = Boolean(msg.mimetype && msg.mimetype !== 'application/octet-stream');
+        const requestMime = hasUsableMime
           ? msg.mimetype
-          : (msg.type === 'image' || !msg.type ? 'image/jpeg' : msg.mimetype || 'image/jpeg');
+          : (isImageType ? 'image/jpeg' : (msg.mimetype || 'image/jpeg'));
+
         const decrypted = await g.require('WAWebDownloadManager')
           .downloadManager.downloadAndMaybeDecrypt({
             directPath:        msg.directPath,
@@ -1045,19 +1161,33 @@ export async function downloadMediaDirect(
             mediaKey:          msg.mediaKey,
             mediaKeyTimestamp: msg.mediaKeyTimestamp,
             type:              msg.type,
-            mimetype:          resolvedMime,
+            mimetype:          requestMime,
             signal:            new AbortController().signal,
             downloadQpl:       mockQpl,
           });
 
+        const detectedMime = sniffImageMime(decrypted);
+
+        if (!hasUsableMime && isImageType && !detectedMime) {
+          return {
+            ok: false,
+            reason: 'media_error',
+            step: 'step_5_magic_bytes',
+            detail: 'Decrypted data does not match JPEG, PNG, WebP or GIF signatures',
+            msgFoundVia,
+            mediaDump,
+          };
+        }
+
+        const finalMime = detectedMime ?? (hasUsableMime ? msg.mimetype : 'image/jpeg');
         const data = await g.WWebJS.arrayBufferToBase64Async(decrypted);
 
         return {
           ok:       true,
           data,
-          mimetype: resolvedMime,
+          mimetype: finalMime,
           filename: msg.filename ?? null,
-          filesize: msg.size     ?? null,
+          filesize: msg.size     ?? decrypted.byteLength ?? null,
         };
       } catch (e: any) {
         // Capture the CDN error as structured data — prevents the {r:'r'}
@@ -1099,8 +1229,23 @@ export async function downloadMediaDirect(
     return (raw as MediaDownloadResult) ?? { ok: false, reason: 'cdn_error', detail: 'null from evaluate' };
   }
 
+  // Node-side magic-byte confirmation: if payload is valid base64 image data,
+  // ensure the exact detected MIME type is preserved on the resulting MessageMedia.
+  let finalMime = raw.mimetype;
+  if (typeof raw.data === 'string' && raw.data.length > 0) {
+    try {
+      const headerBytes = Buffer.from(raw.data.slice(0, 48), 'base64');
+      const detected = detectImageMimeType(headerBytes);
+      if (detected) {
+        finalMime = detected;
+      }
+    } catch {
+      // Keep raw.mimetype on slice/base64 parse fallback
+    }
+  }
+
   // MessageMedia constructor: (mimetype, data, filename?, filesize?)
-  return new MessageMedia(raw.mimetype, raw.data, raw.filename ?? undefined, raw.filesize ?? undefined);
+  return new MessageMedia(finalMime, raw.data, raw.filename ?? undefined, raw.filesize ?? undefined);
 }
 
 export async function getBrowserDiagnostics(restaurantId: number): Promise<BrowserDiagnostics> {
