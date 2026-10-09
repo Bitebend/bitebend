@@ -241,6 +241,7 @@ export interface PaymentScreenshotInboxEntry {
   matchingStrategy: string | null;
   isDuplicate: boolean;
   hasScreenshot: boolean;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -449,6 +450,7 @@ export interface ScreenshotInboxEntry {
   isDuplicate: boolean;
   /** True when screenshot_data is still present (not yet purged by retention policy) */
   hasScreenshot: boolean;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

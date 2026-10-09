@@ -16,7 +16,7 @@ import {
   sessionBills,
   tableSessions,
 } from "@workspace/db";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, isNull, isNotNull } from "drizzle-orm";
 import { requireOwner } from "../middlewares/auth";
 import { logger } from "../lib/logger";
 import { matchAndAttachScreenshot } from "../lib/screenshotMatcher";
@@ -38,7 +38,16 @@ const listInboxHandler: RequestHandler = async (req, res) => {
   }
 
   const rawStatus = (req.query["status"] as string) ?? "all";
-  const validStatuses = ["all", "matched", "unmatched", "ambiguous"] as const;
+  const rawArchived = req.query["archived"];
+  const isArchivedQuery = rawStatus === "archived" || rawArchived === "true";
+
+  const validStatuses = [
+    "all",
+    "matched",
+    "unmatched",
+    "ambiguous",
+    "archived",
+  ] as const;
 
   const status = validStatuses.includes(
     rawStatus as (typeof validStatuses)[number],
@@ -54,13 +63,25 @@ const listInboxHandler: RequestHandler = async (req, res) => {
   const PAGE_SIZE = 50;
   const offset = (page - 1) * PAGE_SIZE;
 
-  const whereClause =
-    status === "all"
-      ? eq(paymentScreenshotInbox.restaurantId, restaurantId)
+  const whereClause = isArchivedQuery
+    ? and(
+        eq(paymentScreenshotInbox.restaurantId, restaurantId),
+        isNotNull(paymentScreenshotInbox.archivedAt),
+      )
+    : status === "all"
+      ? and(
+          eq(paymentScreenshotInbox.restaurantId, restaurantId),
+          isNull(paymentScreenshotInbox.archivedAt),
+        )
       : and(
           eq(paymentScreenshotInbox.restaurantId, restaurantId),
+          isNull(paymentScreenshotInbox.archivedAt),
           eq(paymentScreenshotInbox.matchStatus, status),
         );
+
+  const orderByClause = isArchivedQuery
+    ? desc(paymentScreenshotInbox.archivedAt)
+    : desc(paymentScreenshotInbox.receivedAt);
 
   const [entries, [{ total }]] = await Promise.all([
     db
@@ -77,12 +98,13 @@ const listInboxHandler: RequestHandler = async (req, res) => {
         matchingStrategy: paymentScreenshotInbox.matchingStrategy,
         isDuplicate: paymentScreenshotInbox.isDuplicate,
         hasScreenshot: sql<boolean>`screenshot_data IS NOT NULL`,
+        archivedAt: paymentScreenshotInbox.archivedAt,
         createdAt: paymentScreenshotInbox.createdAt,
         updatedAt: paymentScreenshotInbox.updatedAt,
       })
       .from(paymentScreenshotInbox)
       .where(whereClause)
-      .orderBy(desc(paymentScreenshotInbox.receivedAt))
+      .orderBy(orderByClause)
       .limit(PAGE_SIZE)
       .offset(offset),
 
@@ -188,6 +210,14 @@ const attachHandler: RequestHandler = async (req, res) => {
 
   if (!entry) {
     res.status(404).json({ error: "Inbox entry not found" });
+    return;
+  }
+
+  if (entry.archivedAt) {
+    res.status(422).json({
+      error:
+        "Cannot attach an archived screenshot. Restore it to the active inbox first.",
+    });
     return;
   }
 
@@ -354,6 +384,14 @@ const retryMatchHandler: RequestHandler = async (req, res) => {
     return;
   }
 
+  if (entry.archivedAt) {
+    res.status(422).json({
+      error:
+        "Cannot retry matching on an archived screenshot. Restore it to the active inbox first.",
+    });
+    return;
+  }
+
   if (entry.matchStatus === "matched") {
     res.status(422).json({
       error:
@@ -479,6 +517,170 @@ const retryMatchHandler: RequestHandler = async (req, res) => {
   });
 };
 
+// ── Archive screenshot ────────────────────────────────────────────────────────
+
+const archiveHandler: RequestHandler = async (req, res) => {
+  const restaurantId = req.user!.restaurantId;
+
+  if (!restaurantId) {
+    res.status(400).json({ error: "No restaurant" });
+    return;
+  }
+
+  const id = parseInt(String(req.params["id"]), 10);
+
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [entry] = await db
+    .select()
+    .from(paymentScreenshotInbox)
+    .where(
+      and(
+        eq(paymentScreenshotInbox.id, id),
+        eq(paymentScreenshotInbox.restaurantId, restaurantId),
+      ),
+    )
+    .limit(1);
+
+  if (!entry) {
+    res.status(404).json({ error: "Inbox entry not found" });
+    return;
+  }
+
+  // Idempotent: already archived
+  if (entry.archivedAt) {
+    res.json({
+      ok: true,
+      alreadyArchived: true,
+      id,
+      archivedAt: entry.archivedAt.toISOString(),
+    });
+    return;
+  }
+
+  const now = new Date();
+
+  await db
+    .update(paymentScreenshotInbox)
+    .set({
+      archivedAt: now,
+      updatedAt: now,
+    })
+    .where(eq(paymentScreenshotInbox.id, id));
+
+  emitScreenshotInboxEvent(restaurantId, {
+    inboxId: id,
+    matchStatus: entry.matchStatus,
+    receivedAt: entry.receivedAt.toISOString(),
+    isDuplicate: entry.isDuplicate,
+  });
+
+  logger.info(
+    {
+      event: "screenshot_archived",
+      inboxId: id,
+      restaurantId,
+      userId: req.user!.id,
+    },
+    "[screenshot-inbox] Screenshot archived",
+  );
+
+  res.json({
+    ok: true,
+    id,
+    archivedAt: now.toISOString(),
+  });
+};
+
+// ── Restore screenshot ────────────────────────────────────────────────────────
+
+const restoreHandler: RequestHandler = async (req, res) => {
+  const restaurantId = req.user!.restaurantId;
+
+  if (!restaurantId) {
+    res.status(400).json({ error: "No restaurant" });
+    return;
+  }
+
+  const id = parseInt(String(req.params["id"]), 10);
+
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [entry] = await db
+    .select()
+    .from(paymentScreenshotInbox)
+    .where(
+      and(
+        eq(paymentScreenshotInbox.id, id),
+        eq(paymentScreenshotInbox.restaurantId, restaurantId),
+      ),
+    )
+    .limit(1);
+
+  if (!entry) {
+    res.status(404).json({ error: "Inbox entry not found" });
+    return;
+  }
+
+  // Check if media is expired or purged (retention policy)
+  if (!entry.screenshotData) {
+    res.status(410).json({
+      error:
+        "Screenshot media has expired or been removed (retention policy) and cannot be restored",
+    });
+    return;
+  }
+
+  // Idempotent: already active / not archived
+  if (!entry.archivedAt) {
+    res.json({
+      ok: true,
+      alreadyRestored: true,
+      id,
+    });
+    return;
+  }
+
+  const now = new Date();
+
+  await db
+    .update(paymentScreenshotInbox)
+    .set({
+      archivedAt: null,
+      updatedAt: now,
+    })
+    .where(eq(paymentScreenshotInbox.id, id));
+
+  emitScreenshotInboxEvent(restaurantId, {
+    inboxId: id,
+    matchStatus: entry.matchStatus,
+    receivedAt: entry.receivedAt.toISOString(),
+    isDuplicate: entry.isDuplicate,
+  });
+
+  logger.info(
+    {
+      event: "screenshot_restored",
+      inboxId: id,
+      restaurantId,
+      userId: req.user!.id,
+    },
+    "[screenshot-inbox] Screenshot restored",
+  );
+
+  res.json({
+    ok: true,
+    id,
+    restored: true,
+  });
+};
+
 router.get(
   "/owner/screenshot-inbox",
   requireOwner,
@@ -501,6 +703,30 @@ router.post(
   "/owner/screenshot-inbox/:id/retry-match",
   requireOwner,
   retryMatchHandler,
+);
+
+router.post(
+  "/owner/screenshot-inbox/:id/archive",
+  requireOwner,
+  archiveHandler,
+);
+
+router.patch(
+  "/owner/screenshot-inbox/:id/archive",
+  requireOwner,
+  archiveHandler,
+);
+
+router.post(
+  "/owner/screenshot-inbox/:id/restore",
+  requireOwner,
+  restoreHandler,
+);
+
+router.patch(
+  "/owner/screenshot-inbox/:id/restore",
+  requireOwner,
+  restoreHandler,
 );
 
 export default router;

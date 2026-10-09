@@ -44,6 +44,7 @@ import {
   FileText,
   Inbox,
   Link2,
+  Archive,
   RotateCcw,
   RotateCw,
   ImageOff,
@@ -273,7 +274,9 @@ export default function Dashboard() {
   // ── Screenshot Inbox ──────────────────────────────────────────────────────
   const [screenshotInbox, setScreenshotInbox] = useState<ScreenshotInboxEntry[]>([]);
   const [inboxTotal, setInboxTotal] = useState(0);
-  const [inboxFilter, setInboxFilter] = useState<"all" | "unmatched" | "ambiguous" | "matched">("all");
+  const [inboxFilter, setInboxFilter] = useState<
+    "all" | "unmatched" | "ambiguous" | "matched" | "archived"
+  >("all");
   const [inboxLoading, setInboxLoading] = useState(false);
   const [inboxPage, setInboxPage] = useState(1);
   const [viewingInboxImage, setViewingInboxImage] = useState<{ id: number; data: string | null }>({ id: -1, data: null });
@@ -281,6 +284,9 @@ export default function Dashboard() {
   const [attachBillId, setAttachBillId] = useState<number | null>(null);
   const [attachConfirmReplace, setAttachConfirmReplace] = useState(false);
   const [attachLoading, setAttachLoading] = useState(false);
+  const [archivingInboxId, setArchivingInboxId] = useState<number | null>(null);
+  const [restoringInboxId, setRestoringInboxId] = useState<number | null>(null);
+  const [archiveConfirmEntry, setArchiveConfirmEntry] = useState<ScreenshotInboxEntry | null>(null);
 
   const handleSessionScreenshotReceived = useCallback((sessionId: number) => {
     setSessionScreenshots((prev) => {
@@ -427,6 +433,53 @@ export default function Dashboard() {
       setAttachLoading(false);
     }
   }, [attachEntry, attachBillId, attachConfirmReplace, fetchData, fetchInbox]);
+
+  const handleArchiveScreenshot = useCallback(
+    async (entry: ScreenshotInboxEntry) => {
+      setArchivingInboxId(entry.id);
+      try {
+        await apiFetch<{ ok: boolean; archivedAt?: string }>(
+          `/owner/screenshot-inbox/${entry.id}/archive`,
+          { method: "POST" },
+        );
+        toast.success(`Screenshot #${entry.id} moved to Archived / Removed`);
+        setArchiveConfirmEntry(null);
+        await Promise.all([fetchData(), fetchInbox()]);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to archive screenshot",
+        );
+      } finally {
+        setArchivingInboxId(null);
+      }
+    },
+    [fetchData, fetchInbox],
+  );
+
+  const handleRestoreScreenshot = useCallback(
+    async (entry: ScreenshotInboxEntry) => {
+      if (!entry.hasScreenshot) {
+        toast.error("Screenshot media has expired and cannot be restored");
+        return;
+      }
+      setRestoringInboxId(entry.id);
+      try {
+        await apiFetch<{ ok: boolean; restored?: boolean }>(
+          `/owner/screenshot-inbox/${entry.id}/restore`,
+          { method: "POST" },
+        );
+        toast.success(`Screenshot #${entry.id} restored to active list ✓`);
+        await Promise.all([fetchData(), fetchInbox()]);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to restore screenshot",
+        );
+      } finally {
+        setRestoringInboxId(null);
+      }
+    },
+    [fetchData, fetchInbox],
+  );
 
   useOrderNotifications({
     enabled: !!user && user.role === "owner",
@@ -1326,13 +1379,29 @@ export default function Dashboard() {
                     className={cn(
                       "text-xs px-2.5 py-1 rounded-md font-medium transition-all capitalize",
                       inboxFilter === f
-                        ? "bg-violet-100 text-violet-700"
+                        ? "bg-violet-100 text-violet-700 font-semibold"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     {f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
                   </button>
                 ))}
+                <span className="w-px h-4 bg-border mx-1 shrink-0" />
+                <button
+                  onClick={() => {
+                    setInboxFilter("archived");
+                    setInboxPage(1);
+                  }}
+                  className={cn(
+                    "text-xs px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1.5",
+                    inboxFilter === "archived"
+                      ? "bg-amber-100 text-amber-800 font-semibold border border-amber-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Archive className="w-3.5 h-3.5 text-amber-600" />
+                  Archived / Removed
+                </button>
                 <Button
                   size="sm"
                   variant="outline"
@@ -1360,7 +1429,14 @@ export default function Dashboard() {
                 <Camera className="w-8 h-8 mx-auto mb-2 opacity-30" />
                 {inboxFilter === "all"
                   ? "No payment screenshots received yet"
-                  : `No ${inboxFilter} screenshots`}
+                  : inboxFilter === "archived"
+                    ? "No archived screenshots"
+                    : `No ${inboxFilter} screenshots`}
+                {inboxFilter === "archived" && (
+                  <p className="text-xs text-muted-foreground/70 mt-1 max-w-sm mx-auto">
+                    Screenshots you archive or remove from the active list will appear here. Their stored media files are preserved according to the 30-day retention policy.
+                  </p>
+                )}
               </div>
             ) : (
               <div className="divide-y divide-border">
@@ -1384,6 +1460,9 @@ export default function Dashboard() {
                   }[entry.matchStatus];
                   const isRetrying = retryingInboxId === entry.id;
                   const isLoadingImg = loadingInboxImageId === entry.id;
+                  const isArchiving = archivingInboxId === entry.id;
+                  const isRestoring = restoringInboxId === entry.id;
+                  const isArchived = Boolean(entry.archivedAt) || inboxFilter === "archived";
                   const matchedSession =
                     entry.matchedSessionId !== null
                       ? (sessions.find(
@@ -1398,7 +1477,11 @@ export default function Dashboard() {
                     >
                       {/* Icon placeholder */}
                       <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                        <Camera className="w-5 h-5 text-muted-foreground" />
+                        {isArchived ? (
+                          <Archive className="w-5 h-5 text-amber-600" />
+                        ) : (
+                          <Camera className="w-5 h-5 text-muted-foreground" />
+                        )}
                       </div>
 
                       <div className="flex-1 min-w-0">
@@ -1420,6 +1503,12 @@ export default function Dashboard() {
                             />
                             {badge.label}
                           </span>
+                          {isArchived && (
+                            <span className="text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 flex items-center gap-1 font-medium">
+                              <Archive className="w-3 h-3 text-amber-600" />
+                              Archived
+                            </span>
+                          )}
                           {entry.isDuplicate && (
                             <span className="text-xs px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200">
                               Duplicate
@@ -1442,6 +1531,18 @@ export default function Dashboard() {
                               minute: "2-digit",
                             })}
                           </div>
+                          {entry.archivedAt && (
+                            <div>
+                              <strong className="text-foreground">Archived:</strong>{" "}
+                              {new Date(entry.archivedAt).toLocaleString("en-IN", {
+                                day: "numeric",
+                                month: "short",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </div>
+                          )}
                           {entry.senderPhone && (
                             <div>
                               <strong className="text-foreground">Sender:</strong>{" "}
@@ -1461,6 +1562,12 @@ export default function Dashboard() {
                                   : `Table ${matchedSession.tableNumber ?? "?"}`
                                 : `Session #${entry.matchedSessionId}`}
                               {entry.matchedBillId && ` · Bill #${entry.matchedBillId}`}
+                            </div>
+                          )}
+                          {!entry.hasScreenshot && (
+                            <div className="text-destructive font-medium text-[11px] flex items-center gap-1 mt-0.5">
+                              <ImageOff className="w-3 h-3 shrink-0" />
+                              Media expired (30-day retention elapsed)
                             </div>
                           )}
                         </div>
@@ -1484,35 +1591,75 @@ export default function Dashboard() {
                             View
                           </Button>
                         )}
-                        {(entry.matchStatus === "unmatched" ||
-                          entry.matchStatus === "ambiguous") && (
+
+                        {isArchived ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-2.5 text-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                            onClick={() => void handleRestoreScreenshot(entry)}
+                            disabled={!entry.hasScreenshot || isRestoring}
+                            title={
+                              !entry.hasScreenshot
+                                ? "Cannot restore: media file has expired"
+                                : "Restore to active inbox"
+                            }
+                          >
+                            {isRestoring ? (
+                              <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                            ) : (
+                              <RotateCcw className="w-3 h-3 mr-1" />
+                            )}
+                            Restore
+                          </Button>
+                        ) : (
                           <>
+                            {(entry.matchStatus === "unmatched" ||
+                              entry.matchStatus === "ambiguous") && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2.5 text-xs text-violet-700 border-violet-300 hover:bg-violet-50"
+                                  onClick={() => {
+                                    setAttachEntry(entry);
+                                    setAttachBillId(null);
+                                    setAttachConfirmReplace(false);
+                                  }}
+                                >
+                                  <Link2 className="w-3 h-3 mr-1" />
+                                  Attach
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2.5 text-xs"
+                                  onClick={() => void handleRetryMatch(entry.id)}
+                                  disabled={isRetrying}
+                                >
+                                  {isRetrying ? (
+                                    <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                                  ) : (
+                                    <RotateCcw className="w-3 h-3 mr-1" />
+                                  )}
+                                  Retry
+                                </Button>
+                              </>
+                            )}
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-8 px-2.5 text-xs text-violet-700 border-violet-300 hover:bg-violet-50"
-                              onClick={() => {
-                                setAttachEntry(entry);
-                                setAttachBillId(null);
-                                setAttachConfirmReplace(false);
-                              }}
+                              className="h-8 px-2.5 text-xs text-muted-foreground hover:text-amber-700 hover:border-amber-300 hover:bg-amber-50"
+                              onClick={() => setArchiveConfirmEntry(entry)}
+                              disabled={isArchiving}
+                              title="Archive / Remove screenshot"
                             >
-                              <Link2 className="w-3 h-3 mr-1" />
-                              Attach
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 px-2.5 text-xs"
-                              onClick={() => void handleRetryMatch(entry.id)}
-                              disabled={isRetrying}
-                            >
-                              {isRetrying ? (
+                              {isArchiving ? (
                                 <Loader2 className="w-3 h-3 animate-spin mr-1" />
                               ) : (
-                                <RotateCcw className="w-3 h-3 mr-1" />
+                                <Archive className="w-3 h-3 mr-1" />
                               )}
-                              Retry
+                              Archive
                             </Button>
                           </>
                         )}
@@ -2757,6 +2904,69 @@ export default function Dashboard() {
                   : <><Link2 className="w-3 h-3 mr-1" /> Attach Screenshot</>}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Archive Confirmation Modal ─────────────────────────────── */}
+      <Dialog
+        open={archiveConfirmEntry !== null}
+        onOpenChange={(open) => {
+          if (!open) setArchiveConfirmEntry(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <Archive className="w-4 h-4 text-amber-600 shrink-0" />
+              Archive Screenshot
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1 text-sm text-muted-foreground">
+            <p>
+              Are you sure you want to archive{" "}
+              <strong className="text-foreground">
+                Screenshot #{archiveConfirmEntry?.id}
+              </strong>
+              ?
+            </p>
+            <p className="text-xs text-muted-foreground bg-muted/50 p-2.5 rounded-lg border border-border">
+              This will hide it from the active screenshot list and move it to the <strong>Archived / Removed</strong> tab. The original media file remains stored until the standard 30-day retention window expires. You can restore it at any time.
+            </p>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setArchiveConfirmEntry(null)}
+              disabled={archivingInboxId !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+              onClick={() => {
+                if (archiveConfirmEntry) {
+                  void handleArchiveScreenshot(archiveConfirmEntry);
+                }
+              }}
+              disabled={archivingInboxId !== null}
+            >
+              {archivingInboxId !== null ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                  Archiving…
+                </>
+              ) : (
+                <>
+                  <Archive className="w-3 h-3 mr-1" />
+                  Archive Screenshot
+                </>
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -37,6 +37,8 @@ describe("WhatsApp Bridge Owner Routes & Proxy Tests", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    process.env.BITEBEND_WEBHOOK_SECRET = process.env.BITEBEND_WEBHOOK_SECRET || "test-webhook-secret";
+    process.env.BRIDGE_API_SECRET = process.env.BRIDGE_API_SECRET || "secret-key-xyz";
     originalFetch = globalThis.fetch;
   });
 

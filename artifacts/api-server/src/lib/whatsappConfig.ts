@@ -9,6 +9,19 @@ export function getWhatsAppBridgeConfig(): WhatsAppBridgeConfig {
   const bridgeApiSecret = process.env.BRIDGE_API_SECRET?.trim();
   const webhookSecret = process.env.BITEBEND_WEBHOOK_SECRET?.trim();
 
+  if (process.env.NODE_ENV === "production") {
+    const missing: string[] = [];
+    if (!bridgeUrl) missing.push("BRIDGE_URL");
+    if (!bridgeApiSecret) missing.push("BRIDGE_API_SECRET");
+    if (!webhookSecret) missing.push("BITEBEND_WEBHOOK_SECRET");
+
+    if (missing.length > 0) {
+      throw new Error(
+        `[CONFIG_ERROR] Missing required production WhatsApp configuration: ${missing.join(", ")}`,
+      );
+    }
+  }
+
   return {
     bridgeUrl: bridgeUrl || "http://localhost:3001",
     bridgeApiSecret: bridgeApiSecret || "",
