@@ -23,7 +23,7 @@ import {
   Filter, ChevronDown, Smartphone, ShieldCheck, Pencil, Clock,
   FileText, ScrollText, ExternalLink, Download, FileSpreadsheet,
   Receipt, BookOpen, Database, Lock, PowerOff, LineChart,
-  Handshake, DollarSign,
+  Handshake, DollarSign, Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { STATE_NAMES, getDistricts } from "@/data/india-states-districts";
@@ -39,12 +39,19 @@ const STATUS_SUB_COLORS: Record<string, string> = {
   expired: "bg-red-100 text-red-600",
 };
 
-function StatCard({ label, value, icon: Icon, color, sub, accent }: {
+function StatCard({ label, value, icon: Icon, color, sub, accent, onClick }: {
   label: string; value: string | number; icon: React.ElementType;
-  color: string; sub?: string; accent?: string;
+  color: string; sub?: string; accent?: string; onClick?: () => void;
 }) {
   return (
-    <div className={cn("bg-white rounded-xl border p-5 shadow-sm", accent ?? "border-slate-200")}>
+    <div
+      onClick={onClick}
+      className={cn(
+        "bg-white rounded-xl border p-5 shadow-sm transition-all",
+        accent ?? "border-slate-200",
+        onClick && "cursor-pointer hover:border-indigo-300 hover:shadow-md"
+      )}
+    >
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</span>
         <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", color)}>
@@ -328,6 +335,8 @@ export default function Admin() {
 
   const [filterState, setFilterState] = useState<string>("all");
   const [filterDistrict, setFilterDistrict] = useState<string>("all");
+  const [restStatusTab, setRestStatusTab] = useState<"all" | "active" | "exhausted" | "suspended" | "disabled">("all");
+  const [restSearch, setRestSearch] = useState<string>("");
 
   const [txnFilterOpen, setTxnFilterOpen] = useState(false);
   const [txnFilterState, setTxnFilterState] = useState("all");
@@ -796,19 +805,36 @@ export default function Admin() {
     [filterState]
   );
 
-  const filteredRestaurants = useMemo(() => {
-    return restaurants.filter((r) => {
-      if (r.subscriptionStatus !== "active") return false;
-      if (filterState !== "all" && r.state !== filterState) return false;
-      if (filterDistrict !== "all" && r.district !== filterDistrict) return false;
-      return true;
-    });
-  }, [restaurants, filterState, filterDistrict]);
-
   const suspendedRests = useMemo(() => restaurants.filter((r) => r.subscriptionStatus === "suspended"), [restaurants]);
   const exhaustedRestsArr = useMemo(() => restaurants.filter((r) => r.subscriptionStatus === "exhausted"), [restaurants]);
   const activeRestsArr = useMemo(() => restaurants.filter((r) => r.subscriptionStatus === "active"), [restaurants]);
   const disabledRestsArr = useMemo(() => restaurants.filter((r) => !r.isActive), [restaurants]);
+
+  const filteredRestaurants = useMemo(() => {
+    return restaurants.filter((r) => {
+      // 1. Status tab filter
+      if (restStatusTab === "active" && r.subscriptionStatus !== "active") return false;
+      if (restStatusTab === "exhausted" && r.subscriptionStatus !== "exhausted") return false;
+      if (restStatusTab === "suspended" && r.subscriptionStatus !== "suspended") return false;
+      if (restStatusTab === "disabled" && r.isActive) return false;
+
+      // 2. Location filters
+      if (filterState !== "all" && r.state !== filterState) return false;
+      if (filterDistrict !== "all" && r.district !== filterDistrict) return false;
+
+      // 3. Search query filter (name, email, ID, phone)
+      if (restSearch.trim()) {
+        const query = restSearch.trim().toLowerCase();
+        const matchesName = (r.name || "").toLowerCase().includes(query);
+        const matchesEmail = (r.ownerEmail || "").toLowerCase().includes(query);
+        const matchesId = String(r.id).includes(query);
+        const matchesPhone = (r.ownerPhone || "").toLowerCase().includes(query);
+        if (!matchesName && !matchesEmail && !matchesId && !matchesPhone) return false;
+      }
+
+      return true;
+    });
+  }, [restaurants, restStatusTab, filterState, filterDistrict, restSearch]);
   const filteredResources = useMemo(() =>
     resFilter === "all" ? adminResources
       : adminResources.filter((r) => r.approvalStatus === resFilter),
@@ -1044,7 +1070,11 @@ export default function Admin() {
   // ── Page header ──
   const PAGE_TITLES: Record<AdminSection, { title: string; desc: string; icon: React.ElementType }> = {
     overview: { title: "Overview", desc: "Platform-wide summary and alerts", icon: LayoutDashboard },
-    restaurants: { title: "Restaurants", desc: `${activeRestsArr.length} active`, icon: Store },
+    restaurants: {
+      title: "Restaurants",
+      desc: `${restaurants.length} total · ${activeRestsArr.length} active${exhaustedRestsArr.length > 0 ? ` · ${exhaustedRestsArr.length} quota exhausted` : ""}${suspendedRests.length > 0 ? ` · ${suspendedRests.length} suspended` : ""}`,
+      icon: Store,
+    },
     partners: { title: "Partner Network", desc: "Manage field partners & affiliate onboarding", icon: Handshake },
     commissions: { title: "Commission Ledger", desc: "Partner earnings, payouts & approvals", icon: DollarSign },
     plans: { title: "Subscription Plans", desc: "Manage pricing tiers", icon: BarChart3 },
@@ -1104,11 +1134,35 @@ export default function Admin() {
         {tab === "overview" && (
           <div className="space-y-6">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <StatCard label="Total Restaurants" value={stats?.totalRestaurants ?? 0} icon={Store} color="bg-blue-100 text-blue-600" />
-              <StatCard label="Active" value={stats?.activeRestaurants ?? 0} icon={TrendingUp} color="bg-emerald-100 text-emerald-600" />
-              <StatCard label="Suspended" value={stats?.suspendedRestaurants ?? 0} icon={Ban} color="bg-red-100 text-red-500" />
-              <StatCard label="Quota Exhausted" value={stats?.exhaustedRestaurants ?? 0} icon={TrendingDown} color="bg-amber-100 text-amber-600"
-                accent={exhaustedRests > 0 ? "border-amber-200" : undefined} />
+              <StatCard
+                label="Total Restaurants"
+                value={stats?.totalRestaurants ?? 0}
+                icon={Store}
+                color="bg-blue-100 text-blue-600"
+                onClick={() => { setTab("restaurants"); setRestStatusTab("all"); }}
+              />
+              <StatCard
+                label="Active"
+                value={stats?.activeRestaurants ?? 0}
+                icon={TrendingUp}
+                color="bg-emerald-100 text-emerald-600"
+                onClick={() => { setTab("restaurants"); setRestStatusTab("active"); }}
+              />
+              <StatCard
+                label="Suspended"
+                value={stats?.suspendedRestaurants ?? 0}
+                icon={Ban}
+                color="bg-red-100 text-red-500"
+                onClick={() => { setTab("restaurants"); setRestStatusTab("suspended"); }}
+              />
+              <StatCard
+                label="Quota Exhausted"
+                value={stats?.exhaustedRestaurants ?? 0}
+                icon={TrendingDown}
+                color="bg-amber-100 text-amber-600"
+                accent={exhaustedRests > 0 ? "border-amber-200" : undefined}
+                onClick={() => { setTab("restaurants"); setRestStatusTab("exhausted"); }}
+              />
               <StatCard label="Total Orders" value={stats?.totalOrders ?? 0} icon={ShoppingBag} color="bg-indigo-100 text-indigo-600" />
               <StatCard label="Order Revenue" value={`₹${(stats?.totalRevenue ?? 0).toLocaleString("en-IN")}`} icon={IndianRupee} color="bg-emerald-100 text-emerald-600" sub="From all orders" />
               <StatCard label="Total Customers" value={stats?.totalCustomers ?? 0} icon={Users} color="bg-purple-100 text-purple-600" />
@@ -1325,6 +1379,17 @@ export default function Admin() {
                   </div>
                 )}
               </div>
+              <div className="p-3 bg-slate-50 border-t border-slate-100 text-right">
+                <button
+                  onClick={() => {
+                    setTab("restaurants");
+                    setRestStatusTab(overviewRestTab);
+                  }}
+                  className="text-xs text-indigo-600 hover:text-indigo-800 font-medium inline-flex items-center gap-1 cursor-pointer"
+                >
+                  View in Restaurants Management <ExternalLink className="w-3 h-3" />
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1332,17 +1397,82 @@ export default function Admin() {
         {/* ── Restaurants ── */}
         {tab === "restaurants" && (
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+            {/* Status tabs */}
+            <div className="flex border-b border-slate-200 overflow-x-auto">
+              {(["all", "active", "exhausted", "suspended", "disabled"] as const).map((t) => {
+                const counts = {
+                  all: restaurants.length,
+                  active: activeRestsArr.length,
+                  exhausted: exhaustedRestsArr.length,
+                  suspended: suspendedRests.length,
+                  disabled: disabledRestsArr.length,
+                };
+                const labels = {
+                  all: "All",
+                  active: "Active",
+                  exhausted: "Quota Exhausted",
+                  suspended: "Suspended",
+                  disabled: "Disabled",
+                };
+                const isSelected = restStatusTab === t;
+                const activeColors = {
+                  all: "border-indigo-600 text-indigo-700 bg-indigo-50/60",
+                  active: "border-emerald-600 text-emerald-700 bg-emerald-50/60",
+                  exhausted: "border-amber-600 text-amber-700 bg-amber-50/60",
+                  suspended: "border-red-600 text-red-700 bg-red-50/60",
+                  disabled: "border-slate-600 text-slate-700 bg-slate-100/60",
+                };
+                const badgeColors = {
+                  all: isSelected ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600",
+                  active: isSelected ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600",
+                  exhausted: isSelected ? "bg-amber-100 text-amber-800" : (counts.exhausted > 0 ? "bg-amber-100 text-amber-800 font-bold" : "bg-slate-100 text-slate-600"),
+                  suspended: isSelected ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600",
+                  disabled: isSelected ? "bg-slate-200 text-slate-700" : "bg-slate-100 text-slate-600",
+                };
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setRestStatusTab(t)}
+                    className={cn(
+                      "flex items-center justify-center gap-2 px-4 py-3 text-xs md:text-sm font-medium border-b-2 transition-all whitespace-nowrap cursor-pointer",
+                      isSelected ? activeColors[t] : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+                    )}
+                  >
+                    <span>{labels[t]}</span>
+                    <span className={cn("text-xs px-1.5 py-0.5 rounded-full font-semibold", badgeColors[t])}>
+                      {counts[t]}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Filter toolbar: Search + Location + Export */}
             <div className="p-4 border-b border-slate-100 flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Filter className="w-4 h-4 text-slate-400 shrink-0" />
-                <h2 className="font-semibold text-slate-700 shrink-0">
-                  Restaurants
-                  <span className="ml-1.5 text-slate-400 font-normal text-sm">
-                    {filteredRestaurants.length === restaurants.length
-                      ? `(${restaurants.length})`
-                      : `(${filteredRestaurants.length} of ${restaurants.length})`}
-                  </span>
-                </h2>
+              <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+                <div className="relative w-full max-w-sm">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  <Input
+                    type="text"
+                    placeholder="Search by name, email, phone, or ID..."
+                    value={restSearch}
+                    onChange={(e) => setRestSearch(e.target.value)}
+                    className="h-8 pl-8 pr-7 text-xs rounded-lg border-slate-200 w-full"
+                  />
+                  {restSearch && (
+                    <button
+                      onClick={() => setRestSearch("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+                <span className="text-slate-400 font-normal text-xs shrink-0 whitespace-nowrap">
+                  {filteredRestaurants.length === restaurants.length
+                    ? `${restaurants.length} total`
+                    : `${filteredRestaurants.length} of ${restaurants.length}`}
+                </span>
               </div>
 
               {/* State filter */}
@@ -1377,12 +1507,17 @@ export default function Admin() {
               </div>
 
               {/* Clear filters */}
-              {(filterState !== "all" || filterDistrict !== "all") && (
+              {(filterState !== "all" || filterDistrict !== "all" || restStatusTab !== "all" || restSearch.trim() !== "") && (
                 <button
-                  onClick={() => { setFilterState("all"); setFilterDistrict("all"); }}
-                  className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                  onClick={() => {
+                    setFilterState("all");
+                    setFilterDistrict("all");
+                    setRestStatusTab("all");
+                    setRestSearch("");
+                  }}
+                  className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium cursor-pointer"
                 >
-                  <X className="w-3.5 h-3.5" /> Clear
+                  <X className="w-3.5 h-3.5" /> Reset Filters
                 </button>
               )}
 
@@ -1419,8 +1554,23 @@ export default function Admin() {
             ) : filteredRestaurants.length === 0 ? (
               <div className="text-center py-16 text-slate-400">
                 <Filter className="w-10 h-10 mx-auto mb-3 opacity-20" />
-                <p className="font-medium">No restaurants match this filter</p>
-                <p className="text-xs mt-1">Try a different state or district</p>
+                <p className="font-medium text-slate-600">No restaurants match this filter</p>
+                <p className="text-xs mt-1 text-slate-400">
+                  {restStatusTab !== "all"
+                    ? `No ${restStatusTab === "exhausted" ? "quota exhausted" : restStatusTab} restaurants found`
+                    : "Try adjusting your search or location filters"}
+                </p>
+                <button
+                  onClick={() => {
+                    setFilterState("all");
+                    setFilterDistrict("all");
+                    setRestStatusTab("all");
+                    setRestSearch("");
+                  }}
+                  className="mt-3 text-xs text-indigo-600 hover:text-indigo-800 font-medium inline-flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" /> Show All Restaurants
+                </button>
               </div>
             ) : (
               <div className="overflow-x-auto">
