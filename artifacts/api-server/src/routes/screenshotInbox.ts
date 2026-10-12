@@ -68,7 +68,7 @@ const listInboxHandler: RequestHandler = async (req, res) => {
         eq(paymentScreenshotInbox.restaurantId, restaurantId),
         isNotNull(paymentScreenshotInbox.archivedAt),
       )
-    : status === "all"
+    : status === "all" || status === "archived"
       ? and(
           eq(paymentScreenshotInbox.restaurantId, restaurantId),
           isNull(paymentScreenshotInbox.archivedAt),
@@ -76,7 +76,7 @@ const listInboxHandler: RequestHandler = async (req, res) => {
       : and(
           eq(paymentScreenshotInbox.restaurantId, restaurantId),
           isNull(paymentScreenshotInbox.archivedAt),
-          eq(paymentScreenshotInbox.matchStatus, status),
+          eq(paymentScreenshotInbox.matchStatus, status as "matched" | "unmatched" | "ambiguous"),
         );
 
   const orderByClause = isArchivedQuery
@@ -99,6 +99,7 @@ const listInboxHandler: RequestHandler = async (req, res) => {
         isDuplicate: paymentScreenshotInbox.isDuplicate,
         hasScreenshot: sql<boolean>`screenshot_data IS NOT NULL`,
         archivedAt: paymentScreenshotInbox.archivedAt,
+        attachedAt: paymentScreenshotInbox.attachedAt,
         createdAt: paymentScreenshotInbox.createdAt,
         updatedAt: paymentScreenshotInbox.updatedAt,
       })
@@ -285,7 +286,7 @@ const attachHandler: RequestHandler = async (req, res) => {
     .limit(1);
 
   // Keep the three related writes atomic.
-  await db.transaction(async (tx) => {
+  await db.transaction(async (tx: any) => {
     await tx
       .update(sessionBills)
       .set({
@@ -313,6 +314,7 @@ const attachHandler: RequestHandler = async (req, res) => {
         matchedSessionId: bill.sessionId,
         matchedBillId: sessionBillId,
         matchingStrategy: "manual",
+        attachedAt: now,
         updatedAt: now,
       })
       .where(eq(paymentScreenshotInbox.id, id));
@@ -438,6 +440,7 @@ const retryMatchHandler: RequestHandler = async (req, res) => {
         matchedSessionId: outcome.sessionId,
         matchedBillId: outcome.sessionBillId,
         matchingStrategy: outcome.strategy,
+        attachedAt: now,
         updatedAt: now,
       })
       .where(eq(paymentScreenshotInbox.id, id));

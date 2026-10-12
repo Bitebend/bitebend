@@ -27,6 +27,7 @@ import {
   Camera,
   ShieldCheck,
   RotateCcw,
+  ImageOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -321,7 +322,7 @@ function SessionDetailModal({
                 </div>
 
                 {/* Screenshot */}
-                {bill.hasScreenshot && (
+                {bill.hasScreenshot ? (
                   <div className="px-3 py-2.5 border-t border-border">
                     {!screenshot && !screenshotLoading && (
                       <Button
@@ -347,7 +348,14 @@ function SessionDetailModal({
                       />
                     )}
                   </div>
-                )}
+                ) : bill.screenshotReceivedAt ? (
+                  <div className="px-3 py-2.5 border-t border-border">
+                    <div className="text-xs text-muted-foreground flex items-center gap-1.5 py-1">
+                      <ImageOff className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                      <span>Media permanently deleted (24-hour retention elapsed)</span>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* Resend action */}
                 {canResend && (

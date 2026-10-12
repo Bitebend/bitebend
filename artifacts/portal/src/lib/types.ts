@@ -242,6 +242,7 @@ export interface PaymentScreenshotInboxEntry {
   isDuplicate: boolean;
   hasScreenshot: boolean;
   archivedAt: string | null;
+  attachedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -451,6 +452,7 @@ export interface ScreenshotInboxEntry {
   /** True when screenshot_data is still present (not yet purged by retention policy) */
   hasScreenshot: boolean;
   archivedAt: string | null;
+  attachedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

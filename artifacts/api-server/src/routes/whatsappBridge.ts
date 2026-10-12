@@ -343,6 +343,7 @@ router.post("/whatsapp/payment-screenshot", (async (req, res) => {
         matchedSessionId: outcome.sessionId,
         matchedBillId: outcome.sessionBillId,
         matchingStrategy: outcome.strategy,
+        attachedAt: new Date(),
         updatedAt: new Date(),
       })
       .where(eq(paymentScreenshotInbox.id, inboxEntry.id));

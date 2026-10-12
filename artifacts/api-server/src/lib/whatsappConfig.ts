@@ -9,7 +9,11 @@ export function getWhatsAppBridgeConfig(): WhatsAppBridgeConfig {
   const bridgeApiSecret = process.env.BRIDGE_API_SECRET?.trim();
   const webhookSecret = process.env.BITEBEND_WEBHOOK_SECRET?.trim();
 
-  if (process.env.NODE_ENV === "production") {
+  const isAiStudio = Boolean(
+    process.env["APPLET_ID"] || process.env["DEFAULT_APP_PORT"],
+  );
+
+  if (process.env.NODE_ENV === "production" && !isAiStudio) {
     const missing: string[] = [];
     if (!bridgeUrl) missing.push("BRIDGE_URL");
     if (!bridgeApiSecret) missing.push("BRIDGE_API_SECRET");

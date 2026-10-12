@@ -187,10 +187,20 @@ import { purgeExpiredScreenshots } from "./lib/screenshotCleanup";
 purgeExpiredBills().catch(() => void 0);
 setInterval(() => { purgeExpiredBills().catch(() => void 0); }, 24 * 60 * 60 * 1000).unref();
 
-// Run once on startup, then every 24 h — removes screenshot blobs for paid/rejected orders
-// past the PAYMENT_SCREENSHOT_RETENTION_DAYS window (default: 30 days).
-purgeExpiredScreenshots().catch(() => void 0);
-setInterval(() => { purgeExpiredScreenshots().catch(() => void 0); }, 24 * 60 * 60 * 1000).unref();
+// Run once on startup, then hourly (default: 60m) — permanently deletes screenshot media blobs
+// for archived screenshots (24h), attached screenshots (24h), and legacy/unattached (30d).
+purgeExpiredScreenshots().catch((err) => {
+  logger.error({ err }, "Initial screenshot cleanup failed");
+});
+const CLEANUP_INTERVAL_MS =
+  (parseInt(process.env["SCREENSHOT_CLEANUP_INTERVAL_MINUTES"] ?? "60", 10) || 60) *
+  60 *
+  1000;
+setInterval(() => {
+  purgeExpiredScreenshots().catch((err) => {
+    logger.error({ err }, "Periodic screenshot cleanup failed");
+  });
+}, CLEANUP_INTERVAL_MS).unref();
 
 // ── Server ────────────────────────────────────────────────────────────────────
 

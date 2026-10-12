@@ -445,6 +445,7 @@ export const paymentScreenshotInbox = pgTable(
     isDuplicate: boolean("is_duplicate").notNull().default(false),
     duplicateOfId: integer("duplicate_of_id"),
     archivedAt: timestamp("archived_at"),
+    attachedAt: timestamp("attached_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -452,6 +453,7 @@ export const paymentScreenshotInbox = pgTable(
     index("idx_psi_restaurant_status").on(t.restaurantId, t.matchStatus),
     index("idx_psi_restaurant_received").on(t.restaurantId, t.receivedAt),
     index("idx_psi_restaurant_archived").on(t.restaurantId, t.archivedAt),
+    index("idx_psi_restaurant_attached").on(t.restaurantId, t.attachedAt),
     index("idx_psi_image_hash").on(t.restaurantId, t.imageHash),
     check(
       "psi_match_status_check",

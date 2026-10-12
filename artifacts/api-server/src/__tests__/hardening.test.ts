@@ -61,6 +61,11 @@ describe("Phase 2 & 3: Production Configuration Hardening", () => {
   });
 
   describe("WhatsApp Bridge configuration validation", () => {
+    beforeEach(() => {
+      delete process.env.APPLET_ID;
+      delete process.env.DEFAULT_APP_PORT;
+    });
+
     it("fails fast in production mode when all WhatsApp variables are missing", () => {
       process.env.NODE_ENV = "production";
       delete process.env.BRIDGE_URL;

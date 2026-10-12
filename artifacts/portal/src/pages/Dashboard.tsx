@@ -1434,7 +1434,7 @@ export default function Dashboard() {
                     : `No ${inboxFilter} screenshots`}
                 {inboxFilter === "archived" && (
                   <p className="text-xs text-muted-foreground/70 mt-1 max-w-sm mx-auto">
-                    Screenshots you archive or remove from the active list will appear here. Their stored media files are preserved according to the 30-day retention policy.
+                    Screenshots you archive or remove from the active list will appear here. Their stored media files are permanently deleted after 24 hours according to retention policy.
                   </p>
                 )}
               </div>
@@ -1567,7 +1567,9 @@ export default function Dashboard() {
                           {!entry.hasScreenshot && (
                             <div className="text-destructive font-medium text-[11px] flex items-center gap-1 mt-0.5">
                               <ImageOff className="w-3 h-3 shrink-0" />
-                              Media expired (30-day retention elapsed)
+                              {isArchived || entry.attachedAt || entry.matchStatus === "matched"
+                                ? "Media permanently deleted (24-hour retention elapsed)"
+                                : "Media expired (30-day retention elapsed)"}
                             </div>
                           )}
                         </div>
@@ -1601,7 +1603,7 @@ export default function Dashboard() {
                             disabled={!entry.hasScreenshot || isRestoring}
                             title={
                               !entry.hasScreenshot
-                                ? "Cannot restore: media file has expired"
+                                ? "Cannot restore: media file has been permanently deleted"
                                 : "Restore to active inbox"
                             }
                           >
