@@ -595,8 +595,15 @@ export default function OrderHistoryPage() {
     const sp = new URLSearchParams(window.location.search);
     const rid = sp.get("rid");
     const tid = sp.get("tid");
+    const mode = sp.get("mode");
     if (!rid) return null;
-    return tid ? `/menu/${rid}/table/${tid}` : `/menu/${rid}`;
+    const q = new URLSearchParams();
+    q.set("view", "menu");
+    if (mode) q.set("mode", mode);
+    const qs = `?${q.toString()}`;
+    return tid
+      ? `/menu/${encodeURIComponent(rid)}/table/${encodeURIComponent(tid)}${qs}`
+      : `/menu/${encodeURIComponent(rid)}${qs}`;
   }, []);
 
   const [inputPhone, setInputPhone] = useState(() => lsGet("ts_phone") ?? "");
@@ -666,7 +673,8 @@ export default function OrderHistoryPage() {
         <div style={{ height: "56px", padding: "0 16px", display: "flex", alignItems: "center", gap: "12px" }}>
           <button
             onClick={() => backUrl ? navigate(backUrl) : window.history.back()}
-            aria-label="Go back"
+            aria-label="Menu"
+            title="Menu"
             style={{
               width: "36px", height: "36px", borderRadius: "50%",
               backgroundColor: C.mutedBg,
@@ -675,6 +683,7 @@ export default function OrderHistoryPage() {
             }}
           >
             <ArrowLeft style={{ width: "18px", height: "18px", color: C.muted }} />
+            <span className="sr-only">Menu</span>
           </button>
           <h1 style={{ flex: 1, fontWeight: 700, fontSize: "17px", color: C.ink }}>My Orders</h1>
           <ShoppingCart style={{ width: "20px", height: "20px", color: C.muted }} />

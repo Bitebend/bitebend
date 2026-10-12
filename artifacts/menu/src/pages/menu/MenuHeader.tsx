@@ -10,6 +10,7 @@ interface Props {
   takeAwayOnly: boolean;
   onChangeMode: () => void;
   tableId?: string;
+  onMyOrders?: () => void;
 }
 
 export function MenuHeader({
@@ -19,6 +20,7 @@ export function MenuHeader({
   takeAwayOnly,
   onChangeMode,
   tableId,
+  onMyOrders,
 }: Props) {
   const [, setLocation] = useLocation();
   const modeLabel =
@@ -131,7 +133,16 @@ export function MenuHeader({
 
         {/* My Orders button */}
         <button
-          onClick={() => setLocation(`/my-orders?rid=${restaurant.id}${tableId ? `&tid=${tableId}` : ""}`)}
+          onClick={
+            onMyOrders ??
+            (() => {
+              const q = new URLSearchParams();
+              q.set("rid", restaurant.id.toString());
+              if (tableId) q.set("tid", tableId);
+              if (orderType) q.set("mode", orderType);
+              setLocation(`/my-orders?${q.toString()}`);
+            })
+          }
           aria-label="My Orders"
           title="My Orders"
           style={{

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { normalizeRestaurantParam } from "@workspace/url-utils";
 import { fetchWithTimeout, safeJson, extractApiError, TIMEOUTS } from "@/lib/net";
-import { lsGet, lsSet } from "./menu/utils";
+import { lsGet, lsSet, getSavedOrderContext, saveOrderContext, clearOrderContext } from "./menu/utils";
 import type {
   RestaurantData,
   CategoryData,
@@ -58,6 +58,12 @@ export default function MenuPage() {
     [params.restaurantId],
   );
 
+  const searchParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const isReturningToMenu = searchParams.get("view") === "menu";
+  const urlMode = searchParams.get("mode") as OrderType | null;
+
+  const savedContext = useMemo(() => getSavedOrderContext(rawParam), [rawParam]);
+
   const [restaurant, setRestaurant] = useState<RestaurantData | null>(null);
   const [categories, setCategories] = useState<CategoryData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,14 +72,27 @@ export default function MenuPage() {
   const [tables, setTables] = useState<TableData[]>([]);
 
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [view, setView] = useState<ViewState>("landing");
+  const [view, setView] = useState<ViewState>(() => {
+    if (isReturningToMenu || (savedContext && savedContext.orderType)) {
+      return "menu";
+    }
+    return "landing";
+  });
   const [activeCategory, setActiveCategory] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const [orderType, setOrderType] = useState<OrderType | null>(null);
-  const [selectedArea, setSelectedArea] = useState<string | null>(null);
-  const [manualTableNumber, setManualTableNumber] = useState("");
-  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
+  const [orderType, setOrderType] = useState<OrderType | null>(() => {
+    return savedContext?.orderType ?? (urlMode === "dine_in" || urlMode === "take_away" ? urlMode : null);
+  });
+  const [selectedArea, setSelectedArea] = useState<string | null>(() => {
+    return savedContext?.selectedArea ?? null;
+  });
+  const [manualTableNumber, setManualTableNumber] = useState<string>(() => {
+    return savedContext?.manualTableNumber ?? "";
+  });
+  const [selectedTableId, setSelectedTableId] = useState<number | null>(() => {
+    return savedContext?.selectedTableId ?? (params.tableId ? parseInt(params.tableId, 10) : null);
+  });
   const [tableInputError, setTableInputError] = useState("");
 
   const [customerName, setCustomerName] = useState(() => lsGet("ts_name"));
@@ -94,6 +113,14 @@ export default function MenuPage() {
   // Legacy Razorpay checkout state — non-null only when CUSTOMER_RAZORPAY_ENABLED=true
   const [razorpayCheckout, setRazorpayCheckout] = useState<(RazorpayCheckoutState & { customerName: string; customerPhone: string }) | null>(null);
   const [, setLocation] = useLocation();
+
+  const goToMyOrders = useCallback(() => {
+    const q = new URLSearchParams();
+    q.set("rid", rawParam);
+    if (params.tableId) q.set("tid", params.tableId);
+    if (orderType) q.set("mode", orderType);
+    setLocation(`/my-orders?${q.toString()}`);
+  }, [rawParam, params.tableId, orderType, setLocation]);
 
   // ── Session lock state ───────────────────────────────────────────────────
   const [sessionLock, setSessionLock] = useState<SessionLockState | null>(null);
@@ -175,6 +202,18 @@ export default function MenuPage() {
         if (data.restaurant.seatingLabel === null) {
           setOrderType("take_away");
           setView("menu");
+        } else if (params.tableId) {
+          const tableEntry = (data.tables ?? []).find((t) => t.id === parseInt(params.tableId!, 10));
+          if (tableEntry) {
+            setSelectedTableId((prev) => prev ?? tableEntry.id);
+            setManualTableNumber((prev) => (prev ? prev : tableEntry.tableNumber));
+            if (tableEntry.area) {
+              setSelectedArea((prev) => (prev ? prev : tableEntry.area));
+            }
+            if (isReturningToMenu) {
+              setOrderType((prev) => prev ?? "dine_in");
+            }
+          }
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -186,7 +225,7 @@ export default function MenuPage() {
         setLoading(false);
       }
     })();
-  }, [rawParam]);
+  }, [rawParam, params.tableId, isReturningToMenu]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -195,6 +234,18 @@ export default function MenuPage() {
       if (view === "landing") setView("menu");
     }
   }, [restaurant, orderType, view]);
+
+  // Persist active order context to session storage while browsing the menu
+  useEffect(() => {
+    if (view === "menu" && orderType && rawParam) {
+      saveOrderContext(rawParam, {
+        orderType,
+        selectedArea,
+        manualTableNumber,
+        selectedTableId,
+      });
+    }
+  }, [view, orderType, selectedArea, manualTableNumber, selectedTableId, rawParam]);
 
   // Load-time session lock check — fires once when restaurant + tables are ready.
   // Also re-fires after bfcache restore (pageShowCount bump resets loadLockCheckedRef).
@@ -329,6 +380,12 @@ export default function MenuPage() {
       }
     }
     setTableInputError("");
+    saveOrderContext(rawParam, {
+      orderType,
+      selectedArea,
+      manualTableNumber,
+      selectedTableId,
+    });
     setView("menu");
   };
 
@@ -496,11 +553,7 @@ export default function MenuPage() {
         billNumber={sessionLock.billNumber}
         tableOwnedByThisPhone={sessionLock.tableOwnedByThisPhone}
         onBack={() => setSessionLock(null)}
-        onViewMyOrders={() =>
-          setLocation(
-            `/my-orders?rid=${rawParam}${params.tableId ? `&tid=${params.tableId}` : ""}`,
-          )
-        }
+        onViewMyOrders={goToMyOrders}
       />
     );
   }
@@ -547,7 +600,7 @@ export default function MenuPage() {
           setPlaceError("");
           setProofResult(null);
         }}
-        onGoToOrders={() => setLocation(`/my-orders?rid=${rawParam}${params.tableId ? `&tid=${params.tableId}` : ""}`)}
+        onGoToOrders={goToMyOrders}
       />
     );
   }
@@ -672,7 +725,7 @@ export default function MenuPage() {
         onRemove={removeFromCart}
         onClose={() => setView("menu")}
         onCheckout={() => setView("form")}
-        onMyOrders={() => setLocation(`/my-orders?rid=${rawParam}${params.tableId ? `&tid=${params.tableId}` : ""}`)}
+        onMyOrders={goToMyOrders}
       />
     );
   }
@@ -699,7 +752,14 @@ export default function MenuPage() {
         setSearchQuery("");
       }}
       onSearch={setSearchQuery}
-      onChangeMode={() => setView("landing")}
+      onChangeMode={() => {
+        clearOrderContext(rawParam);
+        if (window.location.search) {
+          window.history.replaceState({}, "", window.location.pathname);
+        }
+        setView("landing");
+      }}
+      onMyOrders={goToMyOrders}
       onOpenCart={async () => {
         const phone = customerPhone.trim();
         const tableEntry = params.tableId

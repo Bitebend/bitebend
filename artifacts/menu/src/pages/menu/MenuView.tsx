@@ -24,6 +24,7 @@ interface Props {
   onSearch: (q: string) => void;
   onChangeMode: () => void;
   onOpenCart: () => void;
+  onMyOrders?: () => void;
 }
 
 export function MenuView({
@@ -46,6 +47,7 @@ export function MenuView({
   onSearch,
   onChangeMode,
   onOpenCart,
+  onMyOrders,
 }: Props) {
   return (
     <div className="min-h-dvh" style={{ backgroundColor: "#faf9f6" }}>
@@ -56,6 +58,7 @@ export function MenuView({
         takeAwayOnly={takeAwayOnly}
         onChangeMode={onChangeMode}
         tableId={tableId}
+        onMyOrders={onMyOrders}
       />
       <CategoryTabs
         categories={categories}

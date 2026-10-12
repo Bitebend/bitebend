@@ -2,6 +2,8 @@
 // localStorage can be null on some mobile browsers when storage is blocked
 // (e.g. iOS Safari "Block All Cookies" mode).
 
+import type { OrderType } from "./types";
+
 export function lsGet(key: string): string {
   try {
     return localStorage?.getItem(key) ?? "";
@@ -13,6 +15,77 @@ export function lsGet(key: string): string {
 export function lsSet(key: string, value: string): void {
   try {
     localStorage?.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+// ── Safe sessionStorage helpers ───────────────────────────────────────────────
+export function ssGet(key: string): string {
+  try {
+    return sessionStorage?.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function ssSet(key: string, value: string): void {
+  try {
+    sessionStorage?.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function ssRemove(key: string): void {
+  try {
+    sessionStorage?.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+// ── Session Order Context Persistence ─────────────────────────────────────────
+export interface SavedOrderContext {
+  orderType: OrderType;
+  selectedArea: string | null;
+  manualTableNumber: string;
+  selectedTableId: number | null;
+}
+
+export function getSavedOrderContext(restaurantParam: string): SavedOrderContext | null {
+  if (!restaurantParam) return null;
+  try {
+    const raw = sessionStorage?.getItem(`bb_order_ctx_${restaurantParam}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && (parsed.orderType === "dine_in" || parsed.orderType === "take_away")) {
+      return {
+        orderType: parsed.orderType,
+        selectedArea: typeof parsed.selectedArea === "string" ? parsed.selectedArea : null,
+        manualTableNumber: typeof parsed.manualTableNumber === "string" ? parsed.manualTableNumber : "",
+        selectedTableId: typeof parsed.selectedTableId === "number" ? parsed.selectedTableId : null,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function saveOrderContext(restaurantParam: string, ctx: SavedOrderContext): void {
+  if (!restaurantParam) return;
+  try {
+    sessionStorage?.setItem(`bb_order_ctx_${restaurantParam}`, JSON.stringify(ctx));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearOrderContext(restaurantParam: string): void {
+  if (!restaurantParam) return;
+  try {
+    sessionStorage?.removeItem(`bb_order_ctx_${restaurantParam}`);
   } catch {
     /* ignore */
   }
