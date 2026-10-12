@@ -267,14 +267,61 @@ const updateRestaurantAdmin: RequestHandler = async (req, res) => {
   const updates: Record<string, unknown> = {};
   if (name !== undefined) updates.name = name.trim();
   if (phone !== undefined) updates.phone = phone.trim();
-  if (subscriptionStatus !== undefined) updates.subscriptionStatus = subscriptionStatus;
+
+  // Quota validation
+  if (customerLimit !== undefined) {
+    if (typeof customerLimit !== "number" || isNaN(customerLimit) || !Number.isInteger(customerLimit) || customerLimit < 0) {
+      res.status(400).json({ error: "Customer limit must be a non-negative integer" });
+      return;
+    }
+    updates.customerLimit = customerLimit;
+  }
+
+  // Quota usage: do not allow overwriting customersUsed inappropriately, but if provided validate it
+  if (customersUsed !== undefined) {
+    if (typeof customersUsed !== "number" || isNaN(customersUsed) || !Number.isInteger(customersUsed) || customersUsed < 0) {
+      res.status(400).json({ error: "Customers used must be a non-negative integer" });
+      return;
+    }
+    updates.customersUsed = customersUsed;
+  }
+
   if (planId !== undefined) updates.planId = planId;
-  if (customerLimit !== undefined) updates.customerLimit = customerLimit;
-  if (customersUsed !== undefined) updates.customersUsed = customersUsed;
-  if (subscriptionExpiresAt !== undefined) updates.subscriptionExpiresAt = subscriptionExpiresAt ? new Date(subscriptionExpiresAt) : null;
-  if (subscriptionStartedAt !== undefined) updates.subscriptionStartedAt = subscriptionStartedAt ? new Date(subscriptionStartedAt) : null;
+  if (subscriptionExpiresAt !== undefined) {
+    updates.subscriptionExpiresAt = subscriptionExpiresAt ? new Date(subscriptionExpiresAt) : null;
+  }
+  if (subscriptionStartedAt !== undefined) {
+    updates.subscriptionStartedAt = subscriptionStartedAt ? new Date(subscriptionStartedAt) : null;
+  }
   if (isActive !== undefined) updates.isActive = isActive;
   if (approvalNote !== undefined) updates.approvalNote = approvalNote;
+
+  // Recalculate subscriptionStatus according to authoritative backend rules:
+  // 1. If explicitly suspended, preserve suspended unless admin explicitly changes it
+  // 2. Determine effective limit, usage, expiry
+  const finalLimit = (updates.customerLimit !== undefined ? updates.customerLimit : existing.customerLimit) as number;
+  const finalUsed = (updates.customersUsed !== undefined ? updates.customersUsed : existing.customersUsed) as number;
+  const finalExpires = (updates.subscriptionExpiresAt !== undefined ? updates.subscriptionExpiresAt : existing.subscriptionExpiresAt) as Date | null;
+  const currentStatus = (subscriptionStatus !== undefined ? subscriptionStatus : existing.subscriptionStatus) as string;
+
+  if (currentStatus === "suspended" && subscriptionStatus === undefined) {
+    // Keep suspended
+  } else if (subscriptionStatus !== undefined && subscriptionStatus === "suspended") {
+    updates.subscriptionStatus = "suspended";
+  } else {
+    const now = new Date();
+    const isExpired = finalExpires && finalExpires < now && finalLimit > 0;
+    const isExhausted = finalLimit > 0 && finalUsed >= finalLimit;
+
+    if (isExpired) {
+      updates.subscriptionStatus = "expired";
+    } else if (isExhausted) {
+      updates.subscriptionStatus = "exhausted";
+    } else {
+      // Not expired and not exhausted -> active
+      updates.subscriptionStatus = "active";
+    }
+  }
 
   // Email sync: when admin updates restaurant email, also update the owner's users.email
   if (email !== undefined && email.trim() && email.trim().toLowerCase() !== existing.email) {

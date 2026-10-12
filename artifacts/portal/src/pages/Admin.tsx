@@ -23,7 +23,7 @@ import {
   Filter, ChevronDown, Smartphone, ShieldCheck, Pencil, Clock,
   FileText, ScrollText, ExternalLink, Download, FileSpreadsheet,
   Receipt, BookOpen, Database, Lock, PowerOff, LineChart,
-  Handshake, DollarSign, Search,
+  Handshake, DollarSign, Search, MapPin, QrCode, Mail, Info, Calendar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { STATE_NAMES, getDistricts } from "@/data/india-states-districts";
@@ -310,6 +310,22 @@ export default function Admin() {
   const [showPassword, setShowPassword] = useState<number | null>(null);
   const [showModalPassword, setShowModalPassword] = useState(false);
 
+  // Restaurant Details View state
+  const [detailRestModal, setDetailRestModal] = useState<RestaurantWithOwner | null>(null);
+
+  // Dedicated Edit Plan & Quota modal state
+  interface PlanQuotaForm {
+    planId: string;
+    customerLimit: string;
+    isUnlimited: boolean;
+    subscriptionExpiresAt: string;
+  }
+  const [planQuotaModal, setPlanQuotaModal] = useState<RestaurantWithOwner | null>(null);
+  const [planQuotaForm, setPlanQuotaForm] = useState<PlanQuotaForm | null>(null);
+  const [planQuotaSaving, setPlanQuotaSaving] = useState(false);
+  const [planQuotaError, setPlanQuotaError] = useState<string | null>(null);
+  const [planQuotaSuccess, setPlanQuotaSuccess] = useState<string | null>(null);
+
   interface EditRestForm {
     name: string; phone: string; email: string;
     subscriptionStatus: string; planId: string;
@@ -544,6 +560,76 @@ export default function Admin() {
     setCredCopied(null);
   };
 
+  const openDetailRestModal = (r: RestaurantWithOwner) => {
+    setDetailRestModal(r);
+  };
+
+  const openPlanQuotaModal = (r: RestaurantWithOwner) => {
+    setPlanQuotaModal(r);
+    setPlanQuotaError(null);
+    setPlanQuotaSuccess(null);
+    const isUnlimited = r.customerLimit >= 999999;
+    setPlanQuotaForm({
+      planId: r.planId ? String(r.planId) : "",
+      customerLimit: isUnlimited ? "999999" : String(r.customerLimit ?? 0),
+      isUnlimited,
+      subscriptionExpiresAt: r.subscriptionExpiresAt
+        ? new Date(r.subscriptionExpiresAt).toISOString().slice(0, 10)
+        : "",
+    });
+  };
+
+  const handlePlanQuotaSave = async () => {
+    if (!planQuotaModal || !planQuotaForm) return;
+    setPlanQuotaSaving(true);
+    setPlanQuotaError(null);
+    setPlanQuotaSuccess(null);
+
+    // Frontend validation
+    const limitNum = planQuotaForm.isUnlimited ? 999999 : parseInt(planQuotaForm.customerLimit, 10);
+    if (isNaN(limitNum) || limitNum < 0) {
+      setPlanQuotaError("Customer limit must be a valid non-negative number.");
+      setPlanQuotaSaving(false);
+      return;
+    }
+
+    try {
+      const body: Record<string, unknown> = {
+        planId: planQuotaForm.planId ? parseInt(planQuotaForm.planId, 10) : null,
+        customerLimit: limitNum,
+        subscriptionExpiresAt: planQuotaForm.subscriptionExpiresAt ? planQuotaForm.subscriptionExpiresAt : null,
+      };
+
+      const updated = await apiFetch<RestaurantWithOwner>(`/admin/restaurants/${planQuotaModal.id}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+
+      // Show success feedback
+      setPlanQuotaSuccess("Plan & quota updated successfully!");
+
+      // Update restaurants list in-place and re-sync details modal
+      setRestaurants((prev) =>
+        prev.map((r) => (r.id === planQuotaModal.id ? { ...r, ...updated } : r))
+      );
+      setDetailRestModal((prev) => (prev && prev.id === planQuotaModal.id ? { ...prev, ...updated } : prev));
+      setPlanQuotaModal((prev) => (prev ? { ...prev, ...updated } : null));
+
+      // Refresh platform data to update cards, stats, and sidebar badge
+      await fetchData();
+
+      setTimeout(() => {
+        setPlanQuotaModal(null);
+        setPlanQuotaForm(null);
+        setPlanQuotaSuccess(null);
+      }, 700);
+    } catch (e) {
+      setPlanQuotaError((e as Error).message || "Failed to update plan & quota");
+    } finally {
+      setPlanQuotaSaving(false);
+    }
+  };
+
   const openEditRestModal = (r: RestaurantWithOwner) => {
     setEditRestModal(r);
     setEditRestError(null);
@@ -570,21 +656,30 @@ export default function Admin() {
     setEditRestSaving(true);
     setEditRestError(null);
     try {
+      const limitNum = parseInt(editRestForm.customerLimit, 10);
+      if (isNaN(limitNum) || limitNum < 0) {
+        setEditRestError("Customer limit must be a valid non-negative number.");
+        setEditRestSaving(false);
+        return;
+      }
       const body: Record<string, unknown> = {
         name: editRestForm.name.trim(),
         phone: editRestForm.phone.trim(),
         email: editRestForm.email.trim(),
         subscriptionStatus: editRestForm.subscriptionStatus,
-        customerLimit: parseInt(editRestForm.customerLimit) || 0,
-        customersUsed: parseInt(editRestForm.customersUsed) || 0,
+        customerLimit: limitNum,
+        // Preserve customersUsed from existing modal record
+        customersUsed: editRestModal.customersUsed ?? 0,
         isActive: editRestForm.isActive,
-        planId: editRestForm.planId ? parseInt(editRestForm.planId) : null,
+        planId: editRestForm.planId ? parseInt(editRestForm.planId, 10) : null,
         subscriptionExpiresAt: editRestForm.subscriptionExpiresAt || null,
         subscriptionStartedAt: editRestForm.subscriptionStartedAt || null,
       };
-      await apiFetch(`/admin/restaurants/${editRestModal.id}`, { method: "PUT", body: JSON.stringify(body) });
+      const updated = await apiFetch<RestaurantWithOwner>(`/admin/restaurants/${editRestModal.id}`, { method: "PUT", body: JSON.stringify(body) });
       setEditRestModal(null);
       setEditRestForm(null);
+      setRestaurants((prev) => prev.map((r) => r.id === editRestModal.id ? { ...r, ...updated } : r));
+      setDetailRestModal((prev) => prev && prev.id === editRestModal.id ? { ...prev, ...updated } : prev);
       await fetchData();
     } catch (e) {
       setEditRestError((e as Error).message);
@@ -1314,7 +1409,15 @@ export default function Admin() {
                 {(overviewRestTab === "active" ? activeRestsArr : overviewRestTab === "suspended" ? suspendedRests : overviewRestTab === "exhausted" ? exhaustedRestsArr : disabledRestsArr).map((r) => (
                   <div key={r.id} className="px-4 py-3 flex items-center gap-3">
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm text-slate-800 truncate">{r.name}</p>
+                      <button
+                        onClick={() => openDetailRestModal(r)}
+                        className="text-left group cursor-pointer block truncate"
+                        title="Click to view details"
+                      >
+                        <p className="font-medium text-sm text-slate-800 group-hover:text-indigo-600 transition-colors truncate">
+                          {r.name}
+                        </p>
+                      </button>
                       <p className="text-xs text-slate-400">
                         {[r.district, r.state].filter(Boolean).join(", ") || r.city} · {r.planName ?? "No plan"}
                         {r.subscriptionExpiresAt && (
@@ -1593,12 +1696,22 @@ export default function Admin() {
                       return (
                         <tr key={r.id} className="hover:bg-slate-50 transition-colors">
                           <td className="px-4 py-3">
-                            <p className="font-medium text-slate-800">{r.name}</p>
-                            <p className="text-xs text-slate-400">
-                              {[r.district, r.state].filter(Boolean).join(", ") || r.city}
-                              {" · "}{r.cuisineType.replace(/_/g, " ")}
-                            </p>
-                            <span className="inline-block mt-0.5 text-xs font-mono bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">ID #{r.id}</span>
+                            <button
+                              onClick={() => openDetailRestModal(r)}
+                              className="text-left group cursor-pointer block"
+                            >
+                              <p className="font-medium text-slate-800 group-hover:text-indigo-600 transition-colors flex items-center gap-1">
+                                {r.name}
+                                <Info className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </p>
+                              <p className="text-xs text-slate-400">
+                                {[r.district, r.state].filter(Boolean).join(", ") || r.city}
+                                {" · "}{r.cuisineType.replace(/_/g, " ")}
+                              </p>
+                              <span className="inline-block mt-0.5 text-xs font-mono bg-slate-100 group-hover:bg-indigo-50 group-hover:text-indigo-600 text-slate-500 px-1.5 py-0.5 rounded transition-colors">
+                                ID #{r.id}
+                              </span>
+                            </button>
                           </td>
                           <td className="px-4 py-3 min-w-[200px]">
                             {/* Email row */}
@@ -1657,7 +1770,13 @@ export default function Admin() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{r.planName ?? "No plan"}</span>
+                            <button
+                              onClick={() => openPlanQuotaModal(r)}
+                              className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer"
+                              title="Click to Edit Plan / Quota"
+                            >
+                              {r.planName ?? "No plan"}
+                            </button>
                           </td>
                           <td className="px-4 py-3 text-center">
                             {(r.hardwareQuantity ?? (r.qrStandsCount ?? 0)) > 0 ? (
@@ -1710,16 +1829,22 @@ export default function Admin() {
                           </td>
                           <td className="px-4 py-3">
                             {r.customerLimit > 0 ? (
-                              <div className="min-w-[80px]">
+                              <button
+                                onClick={() => openPlanQuotaModal(r)}
+                                className="min-w-[80px] text-left group w-full cursor-pointer"
+                                title="Click to Edit Plan / Quota"
+                              >
                                 <div className="flex justify-between text-xs mb-1">
                                   <span className="text-slate-600">{r.customersUsed}</span>
-                                  <span className="text-slate-400">{r.customerLimit === 999999 ? "∞" : r.customerLimit}</span>
+                                  <span className="text-slate-400 group-hover:text-indigo-600">{r.customerLimit === 999999 ? "∞" : r.customerLimit}</span>
                                 </div>
                                 <div className="w-full bg-slate-100 rounded-full h-1.5">
                                   <div className={cn("h-1.5 rounded-full transition-all", usedPct >= 90 ? "bg-red-500" : usedPct >= 70 ? "bg-amber-400" : "bg-indigo-500")} style={{ width: `${usedPct}%` }} />
                                 </div>
-                              </div>
-                            ) : <span className="text-xs text-slate-400">—</span>}
+                              </button>
+                            ) : (
+                              <button onClick={() => openPlanQuotaModal(r)} className="text-xs text-indigo-500 hover:underline cursor-pointer">Set Quota</button>
+                            )}
                           </td>
                           <td className="px-4 py-3 text-right font-semibold text-slate-800">₹{r.totalRevenue.toLocaleString()}</td>
                           <td className="px-4 py-3 text-center">
@@ -1729,7 +1854,15 @@ export default function Admin() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-1 justify-end flex-wrap">
+                              <Button size="sm" variant="outline" className="h-8 px-2 text-slate-600 hover:bg-slate-100 text-xs border-slate-200"
+                                onClick={() => openDetailRestModal(r)}>
+                                <Info className="w-3.5 h-3.5 mr-1" />Details
+                              </Button>
                               <Button size="sm" variant="ghost" className="h-8 px-2 text-indigo-600 hover:bg-indigo-50 text-xs"
+                                onClick={() => openPlanQuotaModal(r)}>
+                                <BarChart3 className="w-3.5 h-3.5 mr-1" />Plan/Quota
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-8 px-2 text-slate-600 hover:bg-slate-100 text-xs"
                                 onClick={() => openEditRestModal(r)}>
                                 <Pencil className="w-3.5 h-3.5 mr-1" />Edit
                               </Button>
@@ -3286,6 +3419,566 @@ export default function Admin() {
           }}
           onClose={() => setShowLoginPasswordDialog(false)}
         />
+      )}
+
+      {/* ── Restaurant Details / Management View Modal ── */}
+      {detailRestModal && (() => {
+        const r = detailRestModal;
+        const used = r.customersUsed ?? 0;
+        const limit = r.customerLimit ?? 0;
+        const remaining = limit >= 999999 ? "Unlimited" : Math.max(0, limit - used);
+        const usagePct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+        const isExhausted = r.subscriptionStatus === "exhausted";
+        const isSuspended = r.subscriptionStatus === "suspended";
+        const isExpired = r.subscriptionStatus === "expired";
+        const isDisabled = !r.isActive;
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto"
+            onClick={() => setDetailRestModal(null)}
+          >
+            <div
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-8 overflow-hidden flex flex-col max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="px-6 py-5 border-b border-slate-100 flex items-start justify-between bg-gradient-to-r from-slate-50 to-indigo-50/40">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+                    {r.name.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className="text-lg font-bold text-slate-900 leading-tight">{r.name}</h2>
+                      <span className="text-xs font-mono bg-white border border-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-semibold">
+                        ID #{r.id}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                      <span>{[r.district, r.state].filter(Boolean).join(", ") || r.city}</span>
+                      <span>·</span>
+                      <span className="capitalize">{r.cuisineType.replace(/_/g, " ")}</span>
+                      {r.slug && (
+                        <>
+                          <span>·</span>
+                          <span className="font-mono text-slate-400">/{r.slug}</span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setDetailRestModal(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white/80 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="px-6 py-5 overflow-y-auto space-y-6 flex-1 text-sm">
+                {/* Status Banners */}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Subscription Status Card */}
+                  <div className={cn(
+                    "p-3.5 rounded-xl border flex items-center justify-between",
+                    isExhausted ? "bg-amber-50/70 border-amber-200" :
+                    isSuspended ? "bg-red-50/70 border-red-200" :
+                    isExpired ? "bg-rose-50/70 border-rose-200" :
+                    "bg-emerald-50/70 border-emerald-200"
+                  )}>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Subscription Status</p>
+                      <p className={cn(
+                        "text-base font-bold capitalize mt-0.5",
+                        isExhausted ? "text-amber-800" :
+                        isSuspended ? "text-red-700" :
+                        isExpired ? "text-rose-700" :
+                        "text-emerald-700"
+                      )}>
+                        {r.subscriptionStatus === "exhausted" ? "Quota Exhausted" : r.subscriptionStatus}
+                      </p>
+                    </div>
+                    <span className={cn("text-xs px-2.5 py-1 rounded-full font-bold", STATUS_SUB_COLORS[r.subscriptionStatus])}>
+                      {r.subscriptionStatus}
+                    </span>
+                  </div>
+
+                  {/* Operational Status Card */}
+                  <div className={cn(
+                    "p-3.5 rounded-xl border flex items-center justify-between",
+                    isDisabled ? "bg-slate-100 border-slate-300" : "bg-blue-50/70 border-blue-200"
+                  )}>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Operational Status</p>
+                      <p className={cn("text-base font-bold mt-0.5", isDisabled ? "text-slate-700" : "text-blue-700")}>
+                        {r.isActive ? "Enabled (Accepting Orders)" : "Disabled (Orders Off)"}
+                      </p>
+                    </div>
+                    <span className={cn(
+                      "text-xs px-2.5 py-1 rounded-full font-bold",
+                      r.isActive ? "bg-blue-100 text-blue-800" : "bg-slate-200 text-slate-700"
+                    )}>
+                      {r.isActive ? "Active" : "Disabled"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Suspension reason if suspended */}
+                {isSuspended && r.approvalNote && (
+                  <div className="bg-red-50 border border-red-200 text-red-800 rounded-xl p-3 text-xs flex items-start gap-2">
+                    <Ban className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold">Suspension Reason</p>
+                      <p className="mt-0.5">{r.approvalNote}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Subscription & Quota Section */}
+                <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <BarChart3 className="w-4 h-4 text-indigo-600" />
+                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Subscription & Quota</h3>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                      onClick={() => {
+                        openPlanQuotaModal(r);
+                      }}
+                    >
+                      <Edit2 className="w-3 h-3 mr-1" /> Edit Plan / Quota
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <p className="text-[11px] text-slate-400 font-medium">Current Plan</p>
+                      <p className="text-sm font-bold text-slate-800 mt-0.5">{r.planName ?? "No Plan"}</p>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <p className="text-[11px] text-slate-400 font-medium">Customer Limit</p>
+                      <p className="text-sm font-bold text-slate-800 mt-0.5">
+                        {r.customerLimit >= 999999 ? "∞ Unlimited" : r.customerLimit}
+                      </p>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <p className="text-[11px] text-slate-400 font-medium">Customers Used</p>
+                      <p className="text-sm font-bold text-slate-800 mt-0.5">{r.customersUsed}</p>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <p className="text-[11px] text-slate-400 font-medium">Remaining Quota</p>
+                      <p className={cn("text-sm font-bold mt-0.5", remaining === 0 ? "text-red-600" : "text-emerald-600")}>
+                        {remaining}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  {r.customerLimit > 0 && r.customerLimit < 999999 && (
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>Quota Utilization: {usagePct}%</span>
+                        <span>{r.customersUsed} of {r.customerLimit} customers</span>
+                      </div>
+                      <div className="w-full bg-slate-200 rounded-full h-2">
+                        <div
+                          className={cn(
+                            "h-2 rounded-full transition-all",
+                            usagePct >= 100 ? "bg-red-500" : usagePct >= 80 ? "bg-amber-500" : "bg-emerald-500"
+                          )}
+                          style={{ width: `${usagePct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Dates */}
+                  <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-200/60 text-xs text-slate-600">
+                    <div>
+                      <span className="text-slate-400">Subscription Started: </span>
+                      <span className="font-medium">
+                        {r.subscriptionStartedAt
+                          ? new Date(r.subscriptionStartedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                          : "—"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Subscription Expiry: </span>
+                      <span className={cn("font-medium", isExpired && "text-red-600 font-bold")}>
+                        {r.subscriptionExpiresAt
+                          ? new Date(r.subscriptionExpiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                          : "—"}
+                        {r.subscriptionExpiresAt && (() => {
+                          const days = Math.ceil((new Date(r.subscriptionExpiresAt).getTime() - Date.now()) / 86400000);
+                          return days <= 0 ? " (Expired)" : ` (${days}d left)`;
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Identity & Location Section */}
+                <div className="border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Store className="w-4 h-4 text-slate-600" />
+                    <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Restaurant & Owner Identity</h3>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <p className="text-slate-400">Owner Name</p>
+                      <p className="font-medium text-slate-800 text-sm mt-0.5">{r.ownerName ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Approval Status</p>
+                      <p className="font-medium text-slate-800 text-sm mt-0.5 capitalize">
+                        {r.approvalStatus ?? "Approved"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Owner Email (Login)</p>
+                      <p className="font-mono text-slate-800 mt-0.5 truncate">{r.ownerEmail ?? r.email ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Owner Phone</p>
+                      <p className="font-mono text-slate-800 mt-0.5">{r.ownerPhone ?? r.phone ?? "—"}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-slate-400">Address / Location</p>
+                      <p className="text-slate-700 mt-0.5">
+                        {[r.address, r.city, r.district, r.state].filter(Boolean).join(", ") || "—"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Partner, Hardware & Live Menu Section */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Partner info */}
+                  <div className="border border-slate-200 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Handshake className="w-4 h-4 text-slate-600" />
+                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Partner & Attribution</h3>
+                    </div>
+                    {r.partnerName ? (
+                      <div className="space-y-1 text-xs">
+                        <p className="text-slate-700 font-semibold">{r.partnerName}</p>
+                        {r.partnerCode && <p className="font-mono text-slate-500">Referral Code: {r.partnerCode}</p>}
+                        <span className="inline-block mt-1 bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded text-[11px] font-medium border border-emerald-200">
+                          Attributed Partner
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 italic">No partner attributed to this restaurant</p>
+                    )}
+                  </div>
+
+                  {/* QR Stand & Live Menu */}
+                  <div className="border border-slate-200 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <QrCode className="w-4 h-4 text-slate-600" />
+                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">QR & Live Menu</h3>
+                    </div>
+                    <div className="space-y-1.5 text-xs">
+                      <p className="text-slate-700">
+                        <span className="text-slate-400">QR Stands: </span>
+                        <span className="font-semibold">{r.hardwareQuantity ?? (r.qrStandsCount ?? 0)} stands</span>
+                      </p>
+                      {/* Live customer menu link */}
+                      {r.slug || r.id ? (
+                        <div className="pt-1">
+                          <a
+                            href={`https://menu.bitebend.in/${r.slug || r.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1.5 rounded-lg border border-indigo-200 transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" /> View Live Customer Menu
+                          </a>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Toolbar Footer */}
+              <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs text-slate-600 border-slate-200 hover:bg-white"
+                    onClick={() => {
+                      setDetailRestModal(null);
+                      openEditRestModal(r);
+                    }}
+                  >
+                    <Pencil className="w-3.5 h-3.5 mr-1" /> Edit Restaurant
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                    onClick={() => {
+                      openPlanQuotaModal(r);
+                    }}
+                  >
+                    <BarChart3 className="w-3.5 h-3.5 mr-1" /> Edit Plan / Quota
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs text-slate-600 border-slate-200 hover:bg-white"
+                    onClick={() => {
+                      openCredModal(r);
+                    }}
+                  >
+                    <KeyRound className="w-3.5 h-3.5 mr-1" /> Reset Credentials
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {r.subscriptionStatus === "suspended" ? (
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                      disabled={actionId === r.id}
+                      onClick={async () => {
+                        await handleActivate(r.id);
+                        setDetailRestModal((prev) => (prev ? { ...prev, subscriptionStatus: "active", isActive: true } : null));
+                      }}
+                    >
+                      {actionId === r.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <CheckCircle className="w-3.5 h-3.5 mr-1" />}
+                      Activate
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs text-amber-600 border-amber-200 hover:bg-amber-50"
+                      onClick={() => {
+                        setSuspendTarget(r);
+                        setSuspendReason("");
+                      }}
+                    >
+                      <Ban className="w-3.5 h-3.5 mr-1" /> Suspend
+                    </Button>
+                  )}
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className={cn(
+                      "h-8 text-xs font-medium border-slate-200",
+                      r.isActive ? "text-slate-600 hover:bg-slate-100" : "text-indigo-600 hover:bg-indigo-50"
+                    )}
+                    onClick={async () => {
+                      await handleToggle(r.id);
+                      setDetailRestModal((prev) => (prev ? { ...prev, isActive: !prev.isActive } : null));
+                    }}
+                    disabled={actionId === r.id}
+                  >
+                    {actionId === r.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                    ) : r.isActive ? (
+                      <><ToggleLeft className="w-4 h-4 mr-1 text-slate-400" />Disable</>
+                    ) : (
+                      <><ToggleRight className="w-4 h-4 mr-1 text-emerald-600" />Enable</>
+                    )}
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs text-slate-500 border-slate-200 hover:bg-slate-100"
+                    onClick={() => setDetailRestModal(null)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Dedicated Edit Plan & Quota Modal ── */}
+      {planQuotaModal && planQuotaForm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+          onClick={() => {
+            setPlanQuotaModal(null);
+            setPlanQuotaForm(null);
+          }}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center shrink-0">
+                  <BarChart3 className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-800">Edit Plan & Quota</h3>
+                  <p className="text-xs text-slate-500">#{planQuotaModal.id} · {planQuotaModal.name}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setPlanQuotaModal(null);
+                  setPlanQuotaForm(null);
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Current status overview card */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span className="text-slate-400">Current Status:</span>
+                <p className="font-bold text-slate-700 capitalize mt-0.5">{planQuotaModal.subscriptionStatus}</p>
+              </div>
+              <div>
+                <span className="text-slate-400">Customers Used:</span>
+                <p className="font-bold text-slate-700 mt-0.5">{planQuotaModal.customersUsed} (Preserved)</p>
+              </div>
+            </div>
+
+            {/* Form Fields */}
+            <div className="space-y-4">
+              {/* Plan selector */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-slate-700">Subscription Plan</Label>
+                <select
+                  value={planQuotaForm.planId}
+                  onChange={(e) => {
+                    const selId = e.target.value;
+                    const chosen = plans.find((p) => String(p.id) === selId);
+                    setPlanQuotaForm((f) => {
+                      if (!f) return f;
+                      if (!chosen) return { ...f, planId: "" };
+                      const unlim = chosen.customerLimit >= 999999;
+                      return {
+                        ...f,
+                        planId: selId,
+                        customerLimit: unlim ? "999999" : String(chosen.customerLimit),
+                        isUnlimited: unlim,
+                      };
+                    });
+                  }}
+                  className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                >
+                  <option value="">No Plan / Custom Quota</option>
+                  {plans.map((p) => (
+                    <option key={p.id} value={String(p.id)}>
+                      {p.name} ({p.customerLimit >= 999999 ? "Unlimited" : `${p.customerLimit} customers`}) — ₹{p.price}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-slate-400">Selecting a plan presets customer limit defaults automatically.</p>
+              </div>
+
+              {/* Customer Limit / Quota */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold text-slate-700">Customer Limit (Quota)</Label>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={planQuotaForm.isUnlimited}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setPlanQuotaForm((f) => f ? {
+                          ...f,
+                          isUnlimited: checked,
+                          customerLimit: checked ? "999999" : (f.customerLimit === "999999" ? "2000" : f.customerLimit),
+                        } : f);
+                      }}
+                      className="accent-indigo-600 rounded"
+                    />
+                    <span>Unlimited (∞)</span>
+                  </label>
+                </div>
+                <Input
+                  type="number"
+                  min="0"
+                  disabled={planQuotaForm.isUnlimited}
+                  value={planQuotaForm.isUnlimited ? "999999" : planQuotaForm.customerLimit}
+                  onChange={(e) => setPlanQuotaForm((f) => f ? { ...f, customerLimit: e.target.value } : f)}
+                  className="h-9 text-sm"
+                  placeholder="e.g. 1000"
+                />
+                <p className="text-[11px] text-slate-400">
+                  Usage stays at <span className="font-semibold text-slate-600">{planQuotaModal.customersUsed}</span>. Increasing limit above usage clears the Quota Exhausted status immediately on save.
+                </p>
+              </div>
+
+              {/* Expiry Date */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-slate-700">Subscription Expiry Date</Label>
+                <Input
+                  type="date"
+                  value={planQuotaForm.subscriptionExpiresAt}
+                  onChange={(e) => setPlanQuotaForm((f) => f ? { ...f, subscriptionExpiresAt: e.target.value } : f)}
+                  className="h-9 text-sm"
+                />
+                <p className="text-[11px] text-slate-400">
+                  Note: If the expiration date is in the past, increasing quota alone will not clear expiration.
+                </p>
+              </div>
+            </div>
+
+            {/* Error & Success Messages */}
+            {planQuotaError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3.5 py-2 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{planQuotaError}</span>
+              </div>
+            )}
+            {planQuotaSuccess && (
+              <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg px-3.5 py-2 text-xs flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                <span>{planQuotaSuccess}</span>
+              </div>
+            )}
+
+            {/* Buttons */}
+            <div className="flex gap-2.5 pt-1">
+              <Button
+                variant="outline"
+                className="flex-1 text-xs border-slate-200"
+                onClick={() => {
+                  setPlanQuotaModal(null);
+                  setPlanQuotaForm(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs"
+                disabled={planQuotaSaving}
+                onClick={handlePlanQuotaSave}
+              >
+                {planQuotaSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                ) : (
+                  <Save className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                Save Quota
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
     </AdminShell>
