@@ -670,23 +670,34 @@ export default function OrderHistoryPage() {
         borderBottom: `1px solid ${C.border}`,
         paddingTop: "env(safe-area-inset-top, 0px)",
       }}>
-        <div style={{ height: "56px", padding: "0 16px", display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ height: "56px", padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
           <button
             onClick={() => backUrl ? navigate(backUrl) : window.history.back()}
-            aria-label="Menu"
-            title="Menu"
+            aria-label="View Menu"
+            title="View Menu"
             style={{
-              width: "36px", height: "36px", borderRadius: "50%",
+              height: "36px",
+              padding: "0 12px 0 10px",
+              borderRadius: "18px",
               backgroundColor: C.mutedBg,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              flexShrink: 0, border: "none", cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              flexShrink: 0,
+              border: "none",
+              cursor: "pointer",
+              color: C.ink,
+              fontSize: "13px",
+              fontWeight: 600,
             }}
           >
-            <ArrowLeft style={{ width: "18px", height: "18px", color: C.muted }} />
-            <span className="sr-only">Menu</span>
+            <ArrowLeft style={{ width: "16px", height: "16px", color: C.muted }} />
+            <span>View Menu</span>
           </button>
-          <h1 style={{ flex: 1, fontWeight: 700, fontSize: "17px", color: C.ink }}>My Orders</h1>
-          <ShoppingCart style={{ width: "20px", height: "20px", color: C.muted }} />
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+            <h1 style={{ fontWeight: 700, fontSize: "16px", color: C.ink, margin: 0 }}>My Orders</h1>
+            <ShoppingCart style={{ width: "18px", height: "18px", color: C.muted }} />
+          </div>
         </div>
       </div>
 
