@@ -4,6 +4,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 import MenuPage from "@/pages/MenuPage";
 import OrderHistoryPage from "@/pages/OrderHistoryPage";
+import HomePage from "@/pages/HomePage";
 import NotFound from "@/pages/not-found";
 
 /* ─────────────────────────────────────────────────────────────
@@ -70,7 +71,7 @@ function Router() {
         <Route path="/menu" component={MenuPage} />
 
         {/* Home */}
-        <Route path="/" component={ScanPrompt} />
+        <Route path="/" component={HomePage} />
 
         {/* Fallback */}
         <Route component={NotFound} />

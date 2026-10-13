@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import {
   ArrowLeft, ShoppingCart, Loader2, AlertCircle,
   ShoppingBag, ChevronDown, ChevronUp, QrCode, Upload,
-  BadgeCheck, AlertTriangle,
+  BadgeCheck, AlertTriangle, Home,
 } from "lucide-react";
 import { fetchWithTimeout, safeJson, extractApiError, TIMEOUTS } from "@/lib/net";
 import { PaymentBillView } from "./menu/PaymentBillView";
@@ -670,30 +670,58 @@ export default function OrderHistoryPage() {
         borderBottom: `1px solid ${C.border}`,
         paddingTop: "env(safe-area-inset-top, 0px)",
       }}>
-        <div style={{ height: "56px", padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-          <button
-            onClick={() => backUrl ? navigate(backUrl) : window.history.back()}
-            aria-label="View Menu"
-            title="View Menu"
-            style={{
-              height: "36px",
-              padding: "0 12px 0 10px",
-              borderRadius: "18px",
-              backgroundColor: C.mutedBg,
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              flexShrink: 0,
-              border: "none",
-              cursor: "pointer",
-              color: C.ink,
-              fontSize: "13px",
-              fontWeight: 600,
-            }}
-          >
-            <ArrowLeft style={{ width: "16px", height: "16px", color: C.muted }} />
-            <span>View Menu</span>
-          </button>
+        <div style={{ height: "56px", padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+          {/* Left navigation controls: View Menu + Home */}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+            <button
+              onClick={() => backUrl ? navigate(backUrl) : window.history.back()}
+              aria-label="View Menu"
+              title="View Menu"
+              style={{
+                height: "36px",
+                padding: "0 12px 0 10px",
+                borderRadius: "18px",
+                backgroundColor: C.mutedBg,
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                flexShrink: 0,
+                border: "none",
+                cursor: "pointer",
+                color: C.ink,
+                fontSize: "13px",
+                fontWeight: 600,
+              }}
+            >
+              <ArrowLeft style={{ width: "16px", height: "16px", color: C.muted }} />
+              <span>View Menu</span>
+            </button>
+
+            <button
+              onClick={() => navigate("/")}
+              aria-label="Bitebend Home"
+              title="Bitebend Home"
+              style={{
+                height: "36px",
+                padding: "0 10px",
+                borderRadius: "18px",
+                backgroundColor: C.mutedBg,
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                flexShrink: 0,
+                border: "none",
+                cursor: "pointer",
+                color: C.ink,
+                fontSize: "13px",
+                fontWeight: 600,
+              }}
+            >
+              <Home style={{ width: "15px", height: "15px", color: C.muted }} />
+              <span>Home</span>
+            </button>
+          </div>
+
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
             <h1 style={{ fontWeight: 700, fontSize: "16px", color: C.ink, margin: 0 }}>My Orders</h1>
             <ShoppingCart style={{ width: "18px", height: "18px", color: C.muted }} />
