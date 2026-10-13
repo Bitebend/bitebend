@@ -192,7 +192,7 @@
 /* NOTE: overflow-x: hidden intentionally omitted from html — see @layer base comment above */
 html   { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body   { overflow-x: hidden; max-width: 100%; }
-#root  { overflow-x: hidden; max-width: 100%; }
+#root  { overflow-x: clip; max-width: 100%; }
 
 /* ── Mobile scroll hardening — unlayered so Samsung Internet ≤18 / old
  *    Android WebView receive these rules even though @layer blocks are silently

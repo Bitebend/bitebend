@@ -1,32 +1,20 @@
-import { MapPin, UtensilsCrossed, Receipt } from "lucide-react";
-import { useLocation } from "wouter";
+import { MapPin, UtensilsCrossed } from "lucide-react";
 import { resolveImageUrl } from "@/lib/image";
 import type { RestaurantData, OrderType } from "./types";
 
 interface Props {
   restaurant: RestaurantData;
-  orderType: OrderType | null;
-  manualTableNumber: string;
-  takeAwayOnly: boolean;
-  onChangeMode: () => void;
+  orderType?: OrderType | null;
+  manualTableNumber?: string;
+  takeAwayOnly?: boolean;
+  onChangeMode?: () => void;
   tableId?: string;
   onMyOrders?: () => void;
 }
 
 export function MenuHeader({
   restaurant,
-  orderType,
-  manualTableNumber,
-  takeAwayOnly,
-  onChangeMode,
-  tableId,
-  onMyOrders,
 }: Props) {
-  const [, setLocation] = useLocation();
-  const modeLabel =
-    orderType === "take_away"
-      ? "Take Away"
-      : `${restaurant.seatingLabel ?? "Table"} ${manualTableNumber}`;
 
   const cuisineLabel = restaurant.cuisineType
     ? restaurant.cuisineType.replace(/_/g, " ")
@@ -101,62 +89,7 @@ export function MenuHeader({
               </span>
             )}
           </div>
-
-          {/* Mode row */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "5px" }}>
-            <span style={{
-              backgroundColor: "rgba(255,255,255,0.18)",
-              borderRadius: "20px",
-              padding: "2px 10px",
-              color: "#fff",
-              fontSize: "11px",
-              fontWeight: 700,
-              letterSpacing: "0.01em",
-            }}>
-              {modeLabel}
-            </span>
-            {!takeAwayOnly && (
-              <button
-                onClick={onChangeMode}
-                style={{
-                  color: "rgba(255,255,255,0.60)",
-                  fontSize: "11px",
-                  textDecoration: "underline",
-                  padding: "2px 0",
-                }}
-              >
-                change
-              </button>
-            )}
-          </div>
         </div>
-
-        {/* My Orders button */}
-        <button
-          onClick={
-            onMyOrders ??
-            (() => {
-              const q = new URLSearchParams();
-              q.set("rid", restaurant.id.toString());
-              if (tableId) q.set("tid", tableId);
-              if (orderType) q.set("mode", orderType);
-              setLocation(`/my-orders?${q.toString()}`);
-            })
-          }
-          aria-label="My Orders"
-          title="My Orders"
-          style={{
-            display: "flex", alignItems: "center", justifyContent: "center",
-            width: "36px", height: "36px",
-            borderRadius: "10px",
-            backgroundColor: "rgba(255,255,255,0.18)",
-            flexShrink: 0,
-            border: "none",
-            cursor: "pointer",
-          }}
-        >
-          <Receipt style={{ width: "18px", height: "18px", color: "#fff" }} />
-        </button>
       </div>
     </div>
   );

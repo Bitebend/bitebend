@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import {
   CheckCircle2, ShoppingBag, UtensilsCrossed,
   Upload, Loader2, BadgeCheck, AlertTriangle,
-  ArrowLeft, ArrowRight, Banknote, QrCode, RefreshCw,
+  ArrowLeft, ArrowRight, Banknote, QrCode, RefreshCw, Receipt,
 } from "lucide-react";
 import type { RestaurantData, OrderType } from "./types";
 
@@ -88,16 +88,87 @@ export function OrderSuccessView({
   const uploadDone = !!proofResult && !alreadyHasScreenshot;
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      backgroundColor: C.bg,
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: "24px 16px",
-    }}>
-      <div style={{ width: "100%", maxWidth: "360px" }}>
+    <div style={{ minHeight: "100dvh", backgroundColor: C.bg }}>
+      {/* ── Sticky top header for persistent navigation ──────── */}
+      <div style={{
+        position: "sticky", top: 0, zIndex: 20,
+        backgroundColor: C.card,
+        borderBottom: `1px solid ${C.border}`,
+        paddingTop: "env(safe-area-inset-top, 0px)",
+      }}>
+        <div style={{
+          height: "56px",
+          padding: "0 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          maxWidth: "480px",
+          margin: "0 auto",
+        }}>
+          <button
+            onClick={onGoToMenu}
+            aria-label="View Menu"
+            title="View Menu"
+            style={{
+              height: "36px",
+              padding: "0 12px 0 10px",
+              borderRadius: "18px",
+              backgroundColor: C.mutedBg,
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              flexShrink: 0,
+              border: "none",
+              cursor: "pointer",
+              color: C.ink,
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            <ArrowLeft style={{ width: "16px", height: "16px", color: C.muted }} />
+            <span>View Menu</span>
+          </button>
+
+          <h1 style={{ fontWeight: 700, fontSize: "16px", color: C.ink, margin: 0, flex: 1, textAlign: "center" }}>
+            Order #{orderId}
+          </h1>
+
+          <button
+            onClick={onGoToOrders}
+            aria-label="My Orders"
+            title="My Orders"
+            style={{
+              height: "36px",
+              padding: "0 12px",
+              borderRadius: "18px",
+              backgroundColor: C.mutedBg,
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              flexShrink: 0,
+              border: "none",
+              cursor: "pointer",
+              color: C.ink,
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            <Receipt style={{ width: "16px", height: "16px", color: C.muted }} />
+            <span>Orders</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ── Main content ────────────────────────────────────────── */}
+      <div style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "24px 16px",
+      }}>
+        <div style={{ width: "100%", maxWidth: "360px" }}>
 
         {/* ── Success icon ──────────────────────────────────────── */}
         <div style={{ textAlign: "center", marginBottom: "20px" }}>
@@ -355,6 +426,7 @@ export function OrderSuccessView({
         style={{ display: "none" }}
         onChange={handleReplaceFileChange}
       />
+      </div>
     </div>
   );
 
