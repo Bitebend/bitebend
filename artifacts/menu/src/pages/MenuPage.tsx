@@ -199,6 +199,20 @@ export default function MenuPage() {
         setRestaurant(data.restaurant);
         setCategories(data.categories);
         setTables(data.tables ?? []);
+        // Save recent restaurant context for seamless resume from Bitebend Home
+        try {
+          lsSet(
+            "bb_last_restaurant",
+            JSON.stringify({
+              slug: rawParam,
+              name: data.restaurant.name,
+              tableId: params.tableId ?? null,
+              visitedAt: Date.now(),
+            }),
+          );
+        } catch {
+          /* ignore */
+        }
         if (data.restaurant.seatingLabel === null) {
           setOrderType("take_away");
           setView("menu");

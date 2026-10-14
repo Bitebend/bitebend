@@ -5,6 +5,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import MenuPage from "@/pages/MenuPage";
 import OrderHistoryPage from "@/pages/OrderHistoryPage";
 import HomePage from "@/pages/HomePage";
+import ScannerPage from "@/pages/ScannerPage";
 import NotFound from "@/pages/not-found";
 
 /* ─────────────────────────────────────────────────────────────
@@ -70,7 +71,11 @@ function Router() {
         {/* Generic menu page */}
         <Route path="/menu" component={MenuPage} />
 
-        {/* Home */}
+        {/* Restaurant platform alias & QR scanner */}
+        <Route path="/restaurant" component={HomePage} />
+        <Route path="/scanner" component={ScannerPage} />
+
+        {/* Restaurant Customer Home */}
         <Route path="/" component={HomePage} />
 
         {/* Fallback */}

@@ -114,6 +114,10 @@ import fs from "node:fs";
 import { WORKSPACE_ROOT } from "./lib/workspace";
 
 // ── Frontend static assets & SPA routing ──────────────────────────────────────
+function getHomeDistPath(): string {
+  return path.join(WORKSPACE_ROOT, "artifacts/home/dist");
+}
+
 function getMenuDistPath(): string {
   const p1 = path.join(WORKSPACE_ROOT, "artifacts/menu/dist/public");
   if (fs.existsSync(p1)) return p1;
@@ -128,9 +132,20 @@ function getPortalDistPath(): string {
 }
 
 // Static assets
+app.use("/home", express.static(path.join(WORKSPACE_ROOT, "artifacts/home/dist"), { redirect: false }));
 app.use("/menu", express.static(path.join(WORKSPACE_ROOT, "artifacts/menu/dist/public"), { redirect: false }));
 app.use("/menu", express.static(path.join(WORKSPACE_ROOT, "artifacts/menu/dist"), { redirect: false }));
 app.use(express.static(path.join(WORKSPACE_ROOT, "artifacts/portal/dist")));
+
+// Home SPA catch-all
+app.get(/^\/home(\/.*)?$/, (_req, res) => {
+  const homeDist = getHomeDistPath();
+  const indexHtml = path.join(homeDist, "index.html");
+  if (fs.existsSync(indexHtml)) {
+    return res.sendFile(indexHtml);
+  }
+  res.status(503).send("Home application is building. Please refresh in a moment.");
+});
 
 // Menu SPA catch-all
 app.get(/^\/menu(\/.*)?$/, (_req, res) => {
@@ -143,7 +158,27 @@ app.get(/^\/menu(\/.*)?$/, (_req, res) => {
 });
 
 // Portal / Root SPA catch-all (handles all non-api, non-whatsapp-bridge routes)
-app.get(/^\/(?!api|whatsapp-bridge).*/, (_req, res) => {
+// Supports multi-domain host header resolution:
+// - bitebend.in -> artifacts/home
+// - menu.bitebend.in -> artifacts/menu
+// - www.bitebend.in (or default) -> artifacts/portal
+app.get(/^\/(?!api|whatsapp-bridge).*/, (req, res) => {
+  const host = (req.headers.host || "").toLowerCase().split(":")[0];
+
+  if (host === "bitebend.in" || host.startsWith("home.")) {
+    const homeDist = getHomeDistPath();
+    const indexHtml = path.join(homeDist, "index.html");
+    if (fs.existsSync(indexHtml)) {
+      return res.sendFile(indexHtml);
+    }
+  } else if (host === "menu.bitebend.in") {
+    const menuDist = getMenuDistPath();
+    const indexHtml = path.join(menuDist, "index.html");
+    if (fs.existsSync(indexHtml)) {
+      return res.sendFile(indexHtml);
+    }
+  }
+
   const portalDist = getPortalDistPath();
   const indexHtml = path.join(portalDist, "index.html");
   if (fs.existsSync(indexHtml)) {

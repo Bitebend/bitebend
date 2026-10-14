@@ -7,16 +7,17 @@
   "scripts": {
     "dev": "node scripts/ensure-frontend-dist.mjs && npm --workspace=@workspace/api-server run start",
     "preinstall": "rm -f package-lock.json yarn.lock",
-    "build": "npm --workspace=@workspace/menu run build && npm --workspace=@workspace/portal run build && npm --workspace=@workspace/api-server run build",
+    "build": "npm --workspace=@workspace/home run build && npm --workspace=@workspace/menu run build && npm --workspace=@workspace/portal run build && npm --workspace=@workspace/api-server run build",
+    "build:home": "npm --workspace=@workspace/home run build",
     "build:menu": "npm --workspace=@workspace/menu run build",
     "build:portal": "npm --workspace=@workspace/portal run build",
     "build:api": "npm --workspace=@workspace/api-server run build",
     "build:bridge": "pnpm --filter @workspace/whatsapp-bridge run build",
-    "build:all": "npm --workspace=@workspace/menu run build && npm --workspace=@workspace/portal run build && npm --workspace=@workspace/api-server run build && pnpm --filter @workspace/whatsapp-bridge run build",
+    "build:all": "npm --workspace=@workspace/home run build && npm --workspace=@workspace/menu run build && npm --workspace=@workspace/portal run build && npm --workspace=@workspace/api-server run build && pnpm --filter @workspace/whatsapp-bridge run build",
     "start": "node server.js",
     "start:bridge": "pnpm --filter @workspace/whatsapp-bridge run start",
     "typecheck:libs": "tsc --build",
-    "lint": "eslint artifacts/menu/src artifacts/portal/src"
+    "lint": "eslint artifacts/home/src artifacts/menu/src artifacts/portal/src"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -17,6 +17,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 export default [
   {
     files: [
+      "artifacts/home/src/**/*.{ts,tsx}",
       "artifacts/menu/src/**/*.{ts,tsx}",
       "artifacts/portal/src/**/*.{ts,tsx}",
     ],

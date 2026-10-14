@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
+const homeIndex = path.resolve(rootDir, "artifacts/home/dist/index.html");
 const portalIndex = path.resolve(rootDir, "artifacts/portal/dist/index.html");
 const menuIndex1 = path.resolve(rootDir, "artifacts/menu/dist/public/index.html");
 const menuIndex2 = path.resolve(rootDir, "artifacts/menu/dist/index.html");
 
+const isHomeBuilt = existsSync(homeIndex);
 const isPortalBuilt = existsSync(portalIndex);
 const isMenuBuilt = existsSync(menuIndex1) || existsSync(menuIndex2);
 
@@ -19,6 +21,19 @@ try {
   pmCmd = "pnpm --filter ";
 } catch {
   pmCmd = "npm --workspace=";
+}
+
+if (!isHomeBuilt) {
+  console.log("[ensure-frontend-dist] Building home application...");
+  try {
+    execSync(`${pmCmd}@workspace/home run build`, {
+      cwd: rootDir,
+      stdio: "inherit",
+    });
+  } catch (err) {
+    console.error("[ensure-frontend-dist] Failed to build home:", err);
+    process.exit(1);
+  }
 }
 
 if (!isPortalBuilt) {
