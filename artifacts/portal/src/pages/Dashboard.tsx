@@ -179,7 +179,6 @@ export default function Dashboard() {
     "live" | "payment-inbox" | "history"
   >("live");
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [orders, setOrders] = useState<Order[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
   // Payment Screenshot Inbox
@@ -299,17 +298,15 @@ export default function Dashboard() {
   const fetchData = useCallback(async () => {
     if (!user) return;
     try {
-      const [statsData, ordersData, sessionsData, inboxData] =
+      const [statsData, sessionsData, inboxData] =
         await Promise.all([
           apiFetch<DashboardStats>("/owner/stats"),
-          apiFetch<Order[]>("/owner/orders"),
           apiFetch<SessionSummary[]>("/owner/sessions"),
           apiFetch<PaymentInboxResponse>(
             `/owner/screenshot-inbox?status=${paymentInboxStatus}`,
           ),
         ]);
       setStats(statsData);
-      setOrders(ordersData);
       setSessions(sessionsData);
       setPaymentInbox(inboxData.entries);
       setPaymentInboxTotal(inboxData.total);
@@ -822,18 +819,6 @@ export default function Dashboard() {
       setRejectingId(null);
     }
   };
-
-  // Orders belonging to any displayed session — shown in the Sessions section, not below
-  const activeSessionOrderIds = new Set(
-    sessions
-      .filter(
-        (s) =>
-          s.status === "active" ||
-          s.status === "awaiting_payment" ||
-          s.status === "awaiting_verification",
-      )
-      .flatMap((s) => s.orders.map((o) => o.id)),
-  );
 
   const subBanner = (() => {
     if (!stats) return null;
@@ -1796,22 +1781,37 @@ export default function Dashboard() {
             )}
 
             {/* ── Table Sessions (active + awaiting payment) ─────────────────── */}
-            {loading
-              ? null
-              : displaySessions.length > 0 && (
-                  <div className="bg-card rounded-xl border border-border overflow-hidden">
-                    <div className="px-4 py-3 border-b border-border flex items-center gap-2">
-                      <UtensilsCrossed className="w-4 h-4 text-orange-500 shrink-0" />
-                      <h2 className="text-base font-semibold">
-                        Table Sessions
-                      </h2>
-                      <span className="ml-2 text-xs bg-orange-100 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
-                        {displaySessions.length}{" "}
-                        {displaySessions.length === 1 ? "table" : "tables"}
-                      </span>
-                    </div>
-                    <div className="divide-y divide-border">
-                      {displaySessions.map((session) => {
+            <div className="bg-card rounded-xl border border-border overflow-hidden">
+              <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+                <UtensilsCrossed className="w-4 h-4 text-orange-500 shrink-0" />
+                <h2 className="text-base font-semibold">
+                  Table Sessions
+                </h2>
+                {!loading && displaySessions.length > 0 && (
+                  <span className="ml-2 text-xs bg-orange-100 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
+                    {displaySessions.length}{" "}
+                    {displaySessions.length === 1 ? "table" : "tables"}
+                  </span>
+                )}
+              </div>
+
+              {loading ? (
+                <div className="py-12 flex justify-center">
+                  <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : displaySessions.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">
+                  <UtensilsCrossed className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
+                  <p className="font-medium text-foreground">
+                    No active table sessions right now.
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Active tables and takeaway orders will appear here.
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {displaySessions.map((session) => {
                         const isExpanded = expandedSessions.has(session.id);
 
                         return (
@@ -2087,102 +2087,10 @@ export default function Dashboard() {
                         );
                       })}
                     </div>
-                  </div>
-                )}
-
-            {/* ── Customer Orders ────────────────────────────────────────── */}
-            <div className="bg-card rounded-xl border border-border overflow-hidden">
-              <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0">
-                  <ShoppingBag className="w-4 h-4 text-blue-600 shrink-0" />
-                  <h2 className="text-base font-semibold">Customer Orders</h2>
-                  <span className="text-xs bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 font-semibold">
-                    {orders.length}
-                  </span>
+                  )}
                 </div>
-                <span className="text-xs text-muted-foreground hidden sm:block">
-                  Live customer order queue & status
-                </span>
-              </div>
-
-              {loading ? (
-                <div className="py-12 flex justify-center">
-                  <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-                </div>
-              ) : orders.length === 0 ? (
-                <div className="py-12 text-center text-sm text-muted-foreground">
-                  No customer orders found today.
-                </div>
-              ) : (
-                <div className="divide-y divide-border">
-                  {orders.map((order, i) => {
-                    const session =
-                      order.sessionId !== null
-                        ? (sessions.find(
-                            (candidate) => candidate.id === order.sessionId,
-                          ) ?? null)
-                        : null;
-
-                    return (
-                      <div key={order.id}>
-                        {renderOrderCard(order, i)}
-                        {session && (
-                          <div className="px-4 pb-3 -mt-1 flex justify-end gap-2 flex-wrap">
-                            {session.status === "active" && !session.bill && (
-                              <Button
-                                size="sm"
-                                className="h-8 text-xs"
-                                onClick={() =>
-                                  void handleGenerateBill(session.id)
-                                }
-                                disabled={generatingBillId === session.id}
-                              >
-                                {generatingBillId === session.id ? (
-                                  <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                                ) : (
-                                  <Receipt className="w-3 h-3 mr-1.5" />
-                                )}
-                                Generate Bill
-                              </Button>
-                            )}
-                            {session.bill && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-8 text-xs"
-                                onClick={() =>
-                                  setViewingBillSessionId(session.id)
-                                }
-                              >
-                                <Eye className="w-3 h-3 mr-1.5" />
-                                View Bill
-                              </Button>
-                            )}
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-8 text-xs"
-                              onClick={() => {
-                                setExpandedSessions((prev) => {
-                                  const next = new Set(prev);
-                                  next.add(session.id);
-                                  return next;
-                                });
-                              }}
-                            >
-                              <Receipt className="w-3 h-3 mr-1.5" />
-                              Expand Table
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </>
-          )}
+              </>
+            )}
       {/* ── Payment Inbox Screenshot Modal ───────────────────────────── */}
       {(() => {
         const inboxEntry =
