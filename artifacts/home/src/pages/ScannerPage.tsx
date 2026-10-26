@@ -2,17 +2,15 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useLocation } from "wouter";
 import {
   QrCode,
-  ArrowLeft,
-  Camera,
-  Sparkles,
   ArrowRight,
   ExternalLink,
   RefreshCw,
   AlertCircle,
   CheckCircle2,
-  ScanLine,
   ShieldAlert,
   Loader2,
+  Keyboard,
+  X,
 } from "lucide-react";
 import jsQR from "jsqr";
 import { BitebendHeader } from "@/components/navigation/BitebendHeader";
@@ -25,7 +23,6 @@ const C = {
   muted: "#6b7280",
   orange: "#ea580c",
   orangeBg: "#fff7ed",
-  mutedBg: "#f5f0eb",
   emerald: "#059669",
   emeraldBg: "#ecfdf5",
 } as const;
@@ -61,6 +58,7 @@ function resolveQrDestination(rawCode: string): string {
 export default function ScannerPage() {
   const [, navigate] = useLocation();
   const [manualCode, setManualCode] = useState("");
+  const [showManualInput, setShowManualInput] = useState(false);
   const [cameraState, setCameraState] = useState<CameraState>("initializing");
   const [errorMessage, setErrorMessage] = useState("");
   const [detectedResult, setDetectedResult] = useState<DetectedPayload | null>(null);
@@ -169,7 +167,7 @@ export default function ScannerPage() {
 
     if (!navigator?.mediaDevices?.getUserMedia) {
       setCameraState("unsupported");
-      setErrorMessage("Camera access is not supported by your current browser. You can still enter your restaurant code manually below.");
+      setErrorMessage("Camera access is not supported by your current browser. You can enter your restaurant code manually below.");
       return;
     }
 
@@ -288,121 +286,98 @@ export default function ScannerPage() {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", backgroundColor: C.bg }}>
+    <div
+      style={{
+        height: "100dvh",
+        minHeight: "100dvh",
+        display: "flex",
+        flexDirection: "column",
+        backgroundColor: "#0d0907",
+        overflow: "hidden",
+      }}
+    >
       {/* Hidden processing canvas for jsQR analysis */}
       <canvas ref={canvasRef} style={{ display: "none" }} aria-hidden="true" />
 
       {/* Embedded CSS for the scanner laser animation */}
       <style>{`
         @keyframes bb-scan-sweep {
-          0% { top: 8%; opacity: 0; }
+          0% { top: 6%; opacity: 0; }
           15% { opacity: 1; }
           85% { opacity: 1; }
-          100% { top: 92%; opacity: 0; }
+          100% { top: 94%; opacity: 0; }
         }
         .bb-laser-beam {
           animation: bb-scan-sweep 2.2s ease-in-out infinite;
         }
       `}</style>
 
+      {/* Header stays pinned at top with safe-area support */}
       <BitebendHeader showBack={true} backTo="/" showScanner={false} title="QR Scanner" />
 
+      {/* Main Viewport Container: Edge-to-edge on mobile, max 640px centered on desktop */}
       <main
         style={{
-          maxWidth: "680px",
+          flex: 1,
+          width: "100%",
+          maxWidth: "640px",
           margin: "0 auto",
-          padding: "32px 16px 64px",
+          position: "relative",
+          overflow: "hidden",
           display: "flex",
           flexDirection: "column",
-          gap: "28px",
+          backgroundColor: "#0d0907",
         }}
       >
-        {/* Title Section */}
-        <section style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          <h1
-            style={{
-              margin: 0,
-              fontSize: "26px",
-              fontWeight: 800,
-              letterSpacing: "-0.02em",
-              color: C.ink,
-            }}
-          >
-            Universal QR Scanner
-          </h1>
-          <p
-            style={{
-              margin: 0,
-              fontSize: "15px",
-              lineHeight: 1.5,
-              color: C.muted,
-            }}
-          >
-            Scan any physical Bitebend table or counter QR code to instantly launch the digital menu.
-          </p>
-        </section>
-
-        {/* Viewfinder Shell */}
-        <section
+        {/* Full-bleed Video Preview Container */}
+        <div
           style={{
-            backgroundColor: "#0d0907",
-            borderRadius: "24px",
-            padding: "24px 20px 28px",
+            position: "absolute",
+            inset: 0,
+            overflow: "hidden",
             display: "flex",
-            flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: "20px",
-            position: "relative",
-            overflow: "hidden",
-            boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
-            minHeight: "360px",
           }}
         >
-          {/* Main Camera Viewport Frame */}
-          <div
+          {/* Live Video Feed */}
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
             style={{
+              position: "absolute",
+              inset: 0,
               width: "100%",
-              maxWidth: "320px",
-              height: "280px",
-              borderRadius: "20px",
-              position: "relative",
-              overflow: "hidden",
-              backgroundColor: "#17120e",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
+              height: "100%",
+              objectFit: "cover",
+              display: cameraState === "active" ? "block" : "none",
             }}
-          >
-            {/* Live Video Preview */}
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              autoPlay
+          />
+
+          {/* Active Scanning Reticle with Dimmed Vignette Overlay */}
+          {cameraState === "active" && (
+            <div
               style={{
                 position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: "100%",
-                objectFit: "cover",
-                display: cameraState === "active" ? "block" : "none",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                pointerEvents: "none",
               }}
-            />
-
-            {/* Viewfinder Overlay: Active Scanning State */}
-            {cameraState === "active" && (
+            >
+              {/* Responsive Reticle Box with 50% backdrop vignette shadow outside */}
               <div
                 style={{
-                  position: "absolute",
-                  inset: "16px",
-                  borderRadius: "16px",
-                  border: `2px dashed rgba(234, 88, 12, 0.6)`,
-                  pointerEvents: "none",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
+                  width: "min(72vw, min(290px, 38vh))",
+                  height: "min(72vw, min(290px, 38vh))",
+                  position: "relative",
+                  borderRadius: "24px",
+                  boxShadow: "0 0 0 9999px rgba(13, 9, 7, 0.52)",
+                  border: "2px dashed rgba(234, 88, 12, 0.65)",
                 }}
               >
                 {/* 4 Corner Markers */}
@@ -411,11 +386,11 @@ export default function ScannerPage() {
                     position: "absolute",
                     top: "-2px",
                     left: "-2px",
-                    width: "24px",
-                    height: "24px",
+                    width: "28px",
+                    height: "28px",
                     borderTop: `4px solid ${C.orange}`,
                     borderLeft: `4px solid ${C.orange}`,
-                    borderTopLeftRadius: "12px",
+                    borderTopLeftRadius: "14px",
                   }}
                 />
                 <div
@@ -423,11 +398,11 @@ export default function ScannerPage() {
                     position: "absolute",
                     top: "-2px",
                     right: "-2px",
-                    width: "24px",
-                    height: "24px",
+                    width: "28px",
+                    height: "28px",
                     borderTop: `4px solid ${C.orange}`,
                     borderRight: `4px solid ${C.orange}`,
-                    borderTopRightRadius: "12px",
+                    borderTopRightRadius: "14px",
                   }}
                 />
                 <div
@@ -435,11 +410,11 @@ export default function ScannerPage() {
                     position: "absolute",
                     bottom: "-2px",
                     left: "-2px",
-                    width: "24px",
-                    height: "24px",
+                    width: "28px",
+                    height: "28px",
                     borderBottom: `4px solid ${C.orange}`,
                     borderLeft: `4px solid ${C.orange}`,
-                    borderBottomLeftRadius: "12px",
+                    borderBottomLeftRadius: "14px",
                   }}
                 />
                 <div
@@ -447,11 +422,11 @@ export default function ScannerPage() {
                     position: "absolute",
                     bottom: "-2px",
                     right: "-2px",
-                    width: "24px",
-                    height: "24px",
+                    width: "28px",
+                    height: "28px",
                     borderBottom: `4px solid ${C.orange}`,
                     borderRight: `4px solid ${C.orange}`,
-                    borderBottomRightRadius: "12px",
+                    borderBottomRightRadius: "14px",
                   }}
                 />
 
@@ -460,206 +435,191 @@ export default function ScannerPage() {
                   className="bb-laser-beam"
                   style={{
                     position: "absolute",
-                    left: "8px",
-                    right: "8px",
+                    left: "10px",
+                    right: "10px",
                     height: "2px",
                     backgroundColor: C.orange,
-                    boxShadow: `0 0 10px 2px ${C.orange}, 0 0 20px 4px rgba(234, 88, 12, 0.4)`,
+                    boxShadow: `0 0 12px 3px ${C.orange}, 0 0 24px 6px rgba(234, 88, 12, 0.45)`,
                   }}
                 />
               </div>
-            )}
 
-            {/* State: Initializing / Requesting Permission */}
-            {cameraState === "initializing" && (
+              {/* Floating Instruction Pill directly below the reticle */}
               <div
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "12px",
+                  marginTop: "20px",
+                  padding: "8px 16px",
+                  borderRadius: "20px",
+                  backgroundColor: "rgba(13, 9, 7, 0.75)",
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255, 255, 255, 0.12)",
                   color: "#ffffff",
-                  padding: "20px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  letterSpacing: "-0.01em",
                   textAlign: "center",
+                  maxWidth: "85%",
                 }}
               >
-                <Loader2 style={{ width: "36px", height: "36px", color: C.orange }} className="animate-spin" />
-                <div style={{ fontSize: "14px", fontWeight: 700 }}>Starting camera...</div>
-                <div style={{ fontSize: "12px", color: "#9ca3af", maxWidth: "220px", lineHeight: 1.4 }}>
-                  Please allow camera access when prompted by your browser
-                </div>
+                Point camera at any Bitebend QR code
               </div>
-            )}
+            </div>
+          )}
 
-            {/* State: QR Detected Card inside Viewfinder */}
-            {cameraState === "detected" && detectedResult && (
+          {/* State: Initializing / Requesting Permission */}
+          {cameraState === "initializing" && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "14px",
+                color: "#ffffff",
+                padding: "24px",
+                textAlign: "center",
+              }}
+            >
+              <Loader2 style={{ width: "42px", height: "42px", color: C.orange }} className="animate-spin" />
+              <div style={{ fontSize: "16px", fontWeight: 700 }}>Starting camera...</div>
+              <div style={{ fontSize: "13px", color: "#9ca3af", maxWidth: "260px", lineHeight: 1.4 }}>
+                Please allow camera access when prompted by your browser
+              </div>
+            </div>
+          )}
+
+          {/* State: QR Detected Full-Screen Overlay Card */}
+          {cameraState === "detected" && detectedResult && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                backgroundColor: "rgba(13, 9, 7, 0.95)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "24px",
+                gap: "18px",
+                textAlign: "center",
+                zIndex: 30,
+              }}
+            >
               <div
                 style={{
-                  position: "absolute",
-                  inset: 0,
-                  backgroundColor: "rgba(13, 9, 7, 0.94)",
+                  width: "60px",
+                  height: "60px",
+                  borderRadius: "50%",
+                  backgroundColor: C.emeraldBg,
+                  border: "2px solid #a7f3d0",
                   display: "flex",
-                  flexDirection: "column",
                   alignItems: "center",
                   justifyContent: "center",
-                  padding: "20px",
-                  gap: "14px",
-                  textAlign: "center",
                 }}
               >
+                <CheckCircle2 style={{ width: "32px", height: "32px", color: C.emerald }} />
+              </div>
+
+              <div>
+                <div style={{ fontSize: "20px", fontWeight: 800, color: "#ffffff", letterSpacing: "-0.02em" }}>
+                  QR Code Detected!
+                </div>
                 <div
                   style={{
-                    width: "48px",
-                    height: "48px",
-                    borderRadius: "50%",
-                    backgroundColor: C.emeraldBg,
-                    border: "1px solid #a7f3d0",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
+                    fontSize: "13px",
+                    color: "#d1d5db",
+                    marginTop: "6px",
+                    wordBreak: "break-all",
+                    maxWidth: "340px",
+                    padding: "8px 12px",
+                    backgroundColor: "rgba(255, 255, 255, 0.08)",
+                    borderRadius: "10px",
+                    border: "1px solid rgba(255, 255, 255, 0.1)",
                   }}
                 >
-                  <CheckCircle2 style={{ width: "26px", height: "26px", color: C.emerald }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: "16px", fontWeight: 800, color: "#ffffff" }}>
-                    QR Code Detected!
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "12px",
-                      color: "#9ca3af",
-                      marginTop: "4px",
-                      wordBreak: "break-all",
-                      maxHeight: "36px",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {detectedResult.url.replace(/^https?:\/\//, "")}
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "8px", width: "100%", maxWidth: "240px", marginTop: "4px" }}>
-                  <button
-                    onClick={handleOpenDetected}
-                    style={{
-                      flex: 1,
-                      height: "40px",
-                      borderRadius: "10px",
-                      backgroundColor: C.orange,
-                      color: "#ffffff",
-                      border: "none",
-                      fontSize: "13px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: "6px",
-                    }}
-                  >
-                    <span>Open</span>
-                    <ExternalLink style={{ width: "14px", height: "14px" }} />
-                  </button>
-                  <button
-                    onClick={handleScanAgain}
-                    style={{
-                      height: "40px",
-                      padding: "0 12px",
-                      borderRadius: "10px",
-                      backgroundColor: "rgba(255,255,255,0.12)",
-                      color: "#ffffff",
-                      border: "none",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: "4px",
-                    }}
-                  >
-                    <RefreshCw style={{ width: "13px", height: "13px" }} />
-                    <span>Rescan</span>
-                  </button>
+                  {detectedResult.url.replace(/^https?:\/\//, "")}
                 </div>
               </div>
-            )}
 
-            {/* State: Permission Denied */}
-            {cameraState === "permission_denied" && (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "10px",
-                  color: "#ffffff",
-                  padding: "20px",
-                  textAlign: "center",
-                }}
-              >
-                <ShieldAlert style={{ width: "36px", height: "36px", color: "#f87171" }} />
-                <div style={{ fontSize: "14px", fontWeight: 700 }}>Camera access is blocked</div>
-                <div style={{ fontSize: "12px", color: "#9ca3af", maxWidth: "240px", lineHeight: 1.4 }}>
-                  Please enable camera permission in your browser settings and try again.
-                </div>
+              <div style={{ display: "flex", gap: "10px", width: "100%", maxWidth: "280px", marginTop: "6px" }}>
                 <button
-                  onClick={() => void startCamera()}
+                  onClick={handleOpenDetected}
                   style={{
-                    marginTop: "6px",
-                    padding: "8px 16px",
-                    borderRadius: "10px",
+                    flex: 1,
+                    height: "46px",
+                    borderRadius: "12px",
                     backgroundColor: C.orange,
                     color: "#ffffff",
                     border: "none",
-                    fontSize: "12px",
+                    fontSize: "15px",
                     fontWeight: 700,
                     cursor: "pointer",
-                    display: "inline-flex",
+                    display: "flex",
                     alignItems: "center",
+                    justifyContent: "center",
+                    gap: "8px",
+                    boxShadow: "0 2px 10px rgba(234, 88, 12, 0.35)",
+                  }}
+                >
+                  <span>Open Menu</span>
+                  <ExternalLink style={{ width: "16px", height: "16px" }} />
+                </button>
+                <button
+                  onClick={handleScanAgain}
+                  style={{
+                    height: "46px",
+                    padding: "0 16px",
+                    borderRadius: "12px",
+                    backgroundColor: "rgba(255, 255, 255, 0.12)",
+                    color: "#ffffff",
+                    border: "1px solid rgba(255, 255, 255, 0.15)",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
                     gap: "6px",
                   }}
                 >
-                  <RefreshCw style={{ width: "13px", height: "13px" }} />
-                  <span>Try Again</span>
+                  <RefreshCw style={{ width: "14px", height: "14px" }} />
+                  <span>Rescan</span>
                 </button>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* State: Unsupported or Error */}
-            {(cameraState === "unsupported" || cameraState === "error") && (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "10px",
-                  color: "#ffffff",
-                  padding: "20px",
-                  textAlign: "center",
-                }}
-              >
-                <AlertCircle style={{ width: "36px", height: "36px", color: "#fbbf24" }} />
-                <div style={{ fontSize: "14px", fontWeight: 700 }}>
-                  {cameraState === "unsupported" ? "Camera Not Supported" : "Camera Error"}
-                </div>
-                <div style={{ fontSize: "12px", color: "#9ca3af", maxWidth: "240px", lineHeight: 1.4 }}>
-                  {errorMessage || "Camera could not be started on this device."}
-                </div>
+          {/* State: Permission Denied */}
+          {cameraState === "permission_denied" && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "14px",
+                color: "#ffffff",
+                padding: "28px",
+                textAlign: "center",
+                zIndex: 25,
+              }}
+            >
+              <ShieldAlert style={{ width: "46px", height: "46px", color: "#f87171" }} />
+              <div style={{ fontSize: "17px", fontWeight: 700 }}>Camera access is blocked</div>
+              <div style={{ fontSize: "13px", color: "#9ca3af", maxWidth: "280px", lineHeight: 1.5 }}>
+                Please enable camera permission in your browser settings and try again.
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "6px", flexWrap: "wrap", justifyContent: "center" }}>
                 <button
                   onClick={() => void startCamera()}
                   style={{
-                    marginTop: "6px",
-                    padding: "8px 16px",
-                    borderRadius: "10px",
-                    backgroundColor: "rgba(255,255,255,0.15)",
+                    padding: "10px 18px",
+                    borderRadius: "12px",
+                    backgroundColor: C.orange,
                     color: "#ffffff",
                     border: "none",
-                    fontSize: "12px",
+                    fontSize: "13px",
                     fontWeight: 700,
                     cursor: "pointer",
                     display: "inline-flex",
@@ -667,158 +627,253 @@ export default function ScannerPage() {
                     gap: "6px",
                   }}
                 >
-                  <RefreshCw style={{ width: "13px", height: "13px" }} />
-                  <span>Retry</span>
+                  <RefreshCw style={{ width: "14px", height: "14px" }} />
+                  <span>Try Again</span>
+                </button>
+                <button
+                  onClick={() => setShowManualInput(true)}
+                  style={{
+                    padding: "10px 18px",
+                    borderRadius: "12px",
+                    backgroundColor: "rgba(255, 255, 255, 0.12)",
+                    color: "#ffffff",
+                    border: "1px solid rgba(255, 255, 255, 0.15)",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <Keyboard style={{ width: "14px", height: "14px" }} />
+                  <span>Enter Code</span>
                 </button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          {/* Viewfinder Subtext Instruction */}
-          <div style={{ color: "#d1d5db", fontSize: "13px", textAlign: "center", maxWidth: "300px" }}>
-            {cameraState === "active" && "Point your camera at a Bitebend QR code to automatically detect and open the menu."}
-            {cameraState === "initializing" && "Initializing camera access..."}
-            {cameraState === "detected" && "QR code captured successfully!"}
-            {cameraState === "permission_denied" && "Camera permission is required for live QR detection."}
-            {(cameraState === "error" || cameraState === "unsupported") && "You can still open any menu by typing the code below."}
-          </div>
-        </section>
-
-        {/* Quick Test Demo QRs */}
-        <section
-          style={{
-            backgroundColor: C.card,
-            border: `1px solid ${C.border}`,
-            borderRadius: "20px",
-            padding: "24px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "16px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <Sparkles style={{ width: "18px", height: "18px", color: C.orange }} />
-            <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: C.ink }}>
-              Quick Demo QRs
-            </h2>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "10px" }}>
-            <button
-              onClick={() => handleLaunchCode("the-grand-bistro")}
+          {/* State: Unsupported or Error */}
+          {(cameraState === "unsupported" || cameraState === "error") && (
+            <div
               style={{
-                padding: "14px 16px",
-                borderRadius: "12px",
-                backgroundColor: C.bg,
-                border: `1px solid ${C.border}`,
                 display: "flex",
+                flexDirection: "column",
                 alignItems: "center",
-                justifyContent: "space-between",
-                cursor: "pointer",
-              }}
-            >
-              <div style={{ textAlign: "left" }}>
-                <div style={{ fontSize: "14px", fontWeight: 700, color: C.ink }}>
-                  The Grand Bistro — Table #4
-                </div>
-                <div style={{ fontSize: "12px", color: C.muted, marginTop: "2px" }}>
-                  menu.bitebend.in/the-grand-bistro/table/4
-                </div>
-              </div>
-              <ExternalLink style={{ width: "16px", height: "16px", color: C.orange }} />
-            </button>
-          </div>
-        </section>
-
-        {/* Manual Code Input */}
-        <section
-          style={{
-            backgroundColor: C.card,
-            border: `1px solid ${C.border}`,
-            borderRadius: "20px",
-            padding: "24px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "14px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <QrCode style={{ width: "18px", height: "18px", color: C.orange }} />
-            <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: C.ink }}>
-              Manual Code Entry
-            </h2>
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleLaunchCode(manualCode);
-            }}
-            style={{ display: "flex", gap: "10px" }}
-          >
-            <input
-              type="text"
-              value={manualCode}
-              onChange={(e) => setManualCode(e.target.value)}
-              placeholder="e.g. the-grand-bistro or table-id"
-              style={{
-                flex: 1,
-                height: "44px",
-                borderRadius: "12px",
-                border: `1px solid ${C.border}`,
-                padding: "0 14px",
-                fontSize: "14px",
-                outline: "none",
-                backgroundColor: C.bg,
-              }}
-            />
-            <button
-              type="submit"
-              disabled={!manualCode.trim()}
-              style={{
-                height: "44px",
-                padding: "0 18px",
-                borderRadius: "12px",
-                backgroundColor: manualCode.trim() ? C.orange : "#d1d5db",
+                justifyContent: "center",
+                gap: "14px",
                 color: "#ffffff",
-                border: "none",
-                fontSize: "14px",
-                fontWeight: 700,
-                cursor: manualCode.trim() ? "pointer" : "default",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
+                padding: "28px",
+                textAlign: "center",
+                zIndex: 25,
               }}
             >
-              <span>Open</span>
-              <ArrowRight style={{ width: "14px", height: "14px" }} />
-            </button>
-          </form>
-        </section>
-
-        {/* Back Button */}
-        <div style={{ textAlign: "center" }}>
-          <button
-            onClick={() => {
-              stopCameraTracks();
-              navigate("/");
-            }}
-            style={{
-              background: "none",
-              border: "none",
-              color: C.muted,
-              fontSize: "14px",
-              fontWeight: 600,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            <ArrowLeft style={{ width: "16px", height: "16px" }} />
-            <span>Return to Bitebend Home</span>
-          </button>
+              <AlertCircle style={{ width: "46px", height: "46px", color: "#fbbf24" }} />
+              <div style={{ fontSize: "17px", fontWeight: 700 }}>
+                {cameraState === "unsupported" ? "Camera Not Supported" : "Camera Error"}
+              </div>
+              <div style={{ fontSize: "13px", color: "#9ca3af", maxWidth: "280px", lineHeight: 1.5 }}>
+                {errorMessage || "Camera could not be started on this device."}
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "6px", flexWrap: "wrap", justifyContent: "center" }}>
+                <button
+                  onClick={() => void startCamera()}
+                  style={{
+                    padding: "10px 18px",
+                    borderRadius: "12px",
+                    backgroundColor: "rgba(255, 255, 255, 0.15)",
+                    color: "#ffffff",
+                    border: "1px solid rgba(255, 255, 255, 0.2)",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <RefreshCw style={{ width: "14px", height: "14px" }} />
+                  <span>Retry</span>
+                </button>
+                <button
+                  onClick={() => setShowManualInput(true)}
+                  style={{
+                    padding: "10px 18px",
+                    borderRadius: "12px",
+                    backgroundColor: C.orange,
+                    color: "#ffffff",
+                    border: "none",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <Keyboard style={{ width: "14px", height: "14px" }} />
+                  <span>Enter Code Manually</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Docked Bottom Controls Bar */}
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            padding: "16px 20px",
+            paddingBottom: "max(env(safe-area-inset-bottom, 16px), 20px)",
+            background: "linear-gradient(to top, rgba(13, 9, 7, 0.9) 0%, rgba(13, 9, 7, 0.5) 60%, transparent 100%)",
+          }}
+        >
+          {cameraState === "active" && (
+            <button
+              onClick={() => setShowManualInput(true)}
+              style={{
+                height: "38px",
+                padding: "0 18px",
+                borderRadius: "19px",
+                backgroundColor: "rgba(255, 255, 255, 0.15)",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+                color: "#ffffff",
+                border: "1px solid rgba(255, 255, 255, 0.25)",
+                fontSize: "13px",
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+              }}
+            >
+              <Keyboard style={{ width: "15px", height: "15px" }} />
+              <span>Enter code manually</span>
+            </button>
+          )}
+        </div>
+
+        {/* Expandable Manual Code Entry Bottom Sheet */}
+        {showManualInput && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 50,
+              backgroundColor: "rgba(0, 0, 0, 0.72)",
+              backdropFilter: "blur(4px)",
+              WebkitBackdropFilter: "blur(4px)",
+              display: "flex",
+              alignItems: "flex-end",
+              justifyContent: "center",
+            }}
+            onClick={() => setShowManualInput(false)}
+          >
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "520px",
+                backgroundColor: C.card,
+                borderTopLeftRadius: "24px",
+                borderTopRightRadius: "24px",
+                padding: "24px 20px",
+                paddingBottom: "max(env(safe-area-inset-bottom, 20px), 24px)",
+                boxShadow: "0 -8px 30px rgba(0, 0, 0, 0.35)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "12px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <QrCode style={{ width: "20px", height: "20px", color: C.orange }} />
+                  <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: C.ink }}>
+                    Manual Code Entry
+                  </h2>
+                </div>
+                <button
+                  onClick={() => setShowManualInput(false)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: "4px",
+                    cursor: "pointer",
+                    color: C.muted,
+                  }}
+                  aria-label="Close"
+                >
+                  <X style={{ width: "20px", height: "20px" }} />
+                </button>
+              </div>
+
+              <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: C.muted, lineHeight: 1.45 }}>
+                Enter a restaurant code or slug (e.g. <code>the-grand-bistro</code>) to launch the digital menu.
+              </p>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleLaunchCode(manualCode);
+                }}
+                style={{ display: "flex", gap: "8px" }}
+              >
+                <input
+                  type="text"
+                  value={manualCode}
+                  onChange={(e) => setManualCode(e.target.value)}
+                  placeholder="e.g. the-grand-bistro or table-id"
+                  autoFocus
+                  style={{
+                    flex: 1,
+                    height: "46px",
+                    borderRadius: "12px",
+                    border: `1px solid ${C.border}`,
+                    padding: "0 14px",
+                    fontSize: "14px",
+                    outline: "none",
+                    backgroundColor: C.bg,
+                    color: C.ink,
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={!manualCode.trim()}
+                  style={{
+                    height: "46px",
+                    padding: "0 18px",
+                    borderRadius: "12px",
+                    backgroundColor: manualCode.trim() ? C.orange : "#d1d5db",
+                    color: "#ffffff",
+                    border: "none",
+                    fontSize: "14px",
+                    fontWeight: 700,
+                    cursor: manualCode.trim() ? "pointer" : "default",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <span>Open</span>
+                  <ArrowRight style={{ width: "15px", height: "15px" }} />
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
