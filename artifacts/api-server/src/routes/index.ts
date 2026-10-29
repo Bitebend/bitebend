@@ -18,6 +18,7 @@ import platformAnalyticsRouter from "./platformAnalytics";
 import adminPartnersRouter from "./adminPartners";
 import partnerPortalRouter from "./partnerPortal";
 import adminHardwareRouter from "./adminHardware";
+import restaurantsRouter from "./restaurants";
 
 const router: IRouter = Router();
 
@@ -40,5 +41,6 @@ router.use(platformAnalyticsRouter);
 router.use(adminPartnersRouter);
 router.use(partnerPortalRouter);
 router.use(adminHardwareRouter);
+router.use(restaurantsRouter);
 
 export default router;

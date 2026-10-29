@@ -128,9 +128,12 @@ export interface Restaurant {
   cuisineType: string;
   logoUrl: string | null;
   address: string;
+  locality: string | null;
   city: string;
   state: string | null;
   district: string | null;
+  latitude: number | null;
+  longitude: number | null;
   phone: string;
   email: string;
   ownerId: number | null;

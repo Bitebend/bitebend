@@ -2,6 +2,8 @@ import { useLocation } from "wouter";
 import { BitebendHeader } from "@/components/navigation/BitebendHeader";
 import { PlatformCard } from "@/components/platform/PlatformCard";
 import { PLATFORMS } from "@/components/platform/platforms";
+import { CustomerLocationControl } from "@/components/location/CustomerLocationControl";
+import { RestaurantDiscoverySection } from "@/components/discovery/RestaurantDiscoverySection";
 import { QrCode, ArrowRight, ShieldCheck, ExternalLink, Globe } from "lucide-react";
 
 const C = {
@@ -73,6 +75,12 @@ export default function HomePage() {
             Your services and platforms, all in one place. Discover, launch, and connect across the Bitebend network.
           </p>
         </section>
+
+        {/* ── Customer Location Control (P2 Foundation) ───────────── */}
+        <CustomerLocationControl />
+
+        {/* ── Restaurant Discovery (P3 Foundation) ─────────────────── */}
+        <RestaurantDiscoverySection />
 
         {/* ── Platforms Section (Rendered Dynamically from Registry) ── */}
         <section style={{ display: "flex", flexDirection: "column", gap: "16px" }}>

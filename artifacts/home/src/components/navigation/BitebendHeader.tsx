@@ -1,5 +1,6 @@
 import { useLocation } from "wouter";
-import { ArrowLeft, QrCode } from "lucide-react";
+import { ArrowLeft, QrCode, MapPin } from "lucide-react";
+import { useCustomerLocation } from "@/context/LocationContext";
 
 interface BitebendHeaderProps {
   title?: string;
@@ -24,6 +25,7 @@ export function BitebendHeader({
   showScanner = true,
 }: BitebendHeaderProps) {
   const [, navigate] = useLocation();
+  const { location } = useCustomerLocation();
 
   return (
     <header
@@ -148,33 +150,64 @@ export function BitebendHeader({
           )}
         </div>
 
-        {/* Right Action: QR Scanner */}
-        {showScanner && (
-          <button
-            onClick={() => navigate("/scanner")}
-            aria-label="Scan QR Code"
-            title="Scan QR Code"
-            style={{
-              height: "36px",
-              padding: "0 14px",
-              borderRadius: "18px",
-              backgroundColor: C.orange,
-              color: "#ffffff",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              fontSize: "12px",
-              fontWeight: 700,
-              boxShadow: "0 2px 6px rgba(234, 88, 12, 0.25)",
-              transition: "transform 0.1s ease, box-shadow 0.15s ease",
-            }}
-          >
-            <QrCode style={{ width: "15px", height: "15px" }} />
-            <span>Scan QR</span>
-          </button>
-        )}
+        {/* Right Actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {location && (
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: C.ink,
+                backgroundColor: C.mutedBg,
+                padding: "0 10px",
+                height: "32px",
+                borderRadius: "16px",
+                border: `1px solid ${C.border}`,
+                maxWidth: "140px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={`Active location: ${location.displayName}`}
+            >
+              <MapPin style={{ width: "13px", height: "13px", color: C.orange, flexShrink: 0 }} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {location.mode === "gps" ? "Current Location" : location.locality || location.city}
+              </span>
+            </div>
+          )}
+
+          {/* Right Action: QR Scanner */}
+          {showScanner && (
+            <button
+              onClick={() => navigate("/scanner")}
+              aria-label="Scan QR Code"
+              title="Scan QR Code"
+              style={{
+                height: "36px",
+                padding: "0 14px",
+                borderRadius: "18px",
+                backgroundColor: C.orange,
+                color: "#ffffff",
+                border: "none",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                fontSize: "12px",
+                fontWeight: 700,
+                boxShadow: "0 2px 6px rgba(234, 88, 12, 0.25)",
+                transition: "transform 0.1s ease, box-shadow 0.15s ease",
+              }}
+            >
+              <QrCode style={{ width: "15px", height: "15px" }} />
+              <span>Scan QR</span>
+            </button>
+          )}
+        </div>
       </div>
     </header>
   );

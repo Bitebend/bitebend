@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import logo from "@/assets/logo.png";
 import { cn } from "@/lib/utils";
+import { RestaurantLocationSection } from "@/components/location/RestaurantLocationSection";
 
 declare global {
   interface Window {
@@ -95,9 +96,12 @@ export default function RegisterPage() {
     restaurantName: "",
     restaurantPhone: "",
     restaurantAddress: "",
+    restaurantLocality: "",
     restaurantCity: "",
     restaurantState: "",
     restaurantDistrict: "",
+    latitude: null as number | null,
+    longitude: null as number | null,
     cuisineType: "multi_cuisine",
   });
 
@@ -505,6 +509,15 @@ export default function RegisterPage() {
                       />
                       {step1Submitted && !form.restaurantAddress && <p className="text-xs text-red-500">Address is required</p>}
                     </div>
+
+                    {/* Restaurant Location & Locality */}
+                    <RestaurantLocationSection
+                      locality={form.restaurantLocality}
+                      latitude={form.latitude}
+                      longitude={form.longitude}
+                      onLocalityChange={(loc) => setForm((f) => ({ ...f, restaurantLocality: loc }))}
+                      onCoordinatesChange={({ latitude, longitude }) => setForm((f) => ({ ...f, latitude, longitude }))}
+                    />
                     <div className="space-y-1.5">
                       <Label>Cuisine Type</Label>
                       <select

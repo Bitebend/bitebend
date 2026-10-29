@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Save, CheckCircle2, Eye, EyeOff, KeyRound, Smartphone, Zap, Upload, ScanLine, ShieldCheck } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import jsQR from "jsqr";
+import { RestaurantLocationSection } from "@/components/location/RestaurantLocationSection";
 
 // ── UPI QR parser ─────────────────────────────────────────────────────────────
 // UPI QR codes encode a URL in the form:
@@ -228,7 +229,10 @@ export default function Profile() {
     description: "",
     cuisineType: "multi_cuisine",
     address: "",
+    locality: "",
     city: "",
+    latitude: null as number | null,
+    longitude: null as number | null,
     phone: "",
     email: "",
     upiId: "",
@@ -274,7 +278,10 @@ export default function Profile() {
           description: r.description ?? "",
           cuisineType: r.cuisineType ?? "multi_cuisine",
           address: r.address ?? "",
+          locality: r.locality ?? "",
           city: r.city ?? "",
+          latitude: r.latitude ?? null,
+          longitude: r.longitude ?? null,
           phone: r.phone ?? "",
           email: r.email ?? "",
           upiId: r.upiId ?? "",
@@ -393,10 +400,11 @@ export default function Profile() {
         qrExtractedUpiId: payload.qrExtractedUpiId,
         qrMerchantName: payload.qrMerchantName,
       });
-      await apiFetch<Restaurant>("/owner/restaurant", {
+      const updated = await apiFetch<Restaurant>("/owner/restaurant", {
         method: "PUT",
         body: JSON.stringify(payload),
       });
+      setRestaurant(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
@@ -539,6 +547,18 @@ export default function Profile() {
               <div className="col-span-2 space-y-1.5">
                 <Label>Address <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
                 <Input value={form.address} onChange={set("address")} placeholder="Street, area, landmark…" />
+              </div>
+
+              {/* Restaurant Location & Locality */}
+              <div className="col-span-2 pt-1">
+                <RestaurantLocationSection
+                  locality={form.locality}
+                  latitude={form.latitude}
+                  longitude={form.longitude}
+                  onLocalityChange={(loc) => setForm((f) => ({ ...f, locality: loc }))}
+                  onCoordinatesChange={({ latitude, longitude }) => setForm((f) => ({ ...f, latitude, longitude }))}
+                  isSaved={Boolean(restaurant?.latitude && restaurant?.longitude && form.latitude === restaurant.latitude && form.longitude === restaurant.longitude)}
+                />
               </div>
             </div>
           </div>

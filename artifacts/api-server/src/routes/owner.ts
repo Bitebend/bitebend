@@ -173,6 +173,21 @@ const getRestaurant: RequestHandler = async (req, res) => {
   res.json(restaurant);
 };
 
+// ── Coordinate validation helper ──────────────────────────────────────────
+function parseCoordinate(value: unknown, min: number, max: number): { valid: boolean; value: number | null } {
+  if (value === undefined || value === null || value === "") {
+    return { valid: true, value: null };
+  }
+  const num = typeof value === "number" ? value : Number(value);
+  if (isNaN(num) || !isFinite(num)) {
+    return { valid: false, value: null };
+  }
+  if (num < min || num > max) {
+    return { valid: false, value: null };
+  }
+  return { valid: true, value: num };
+}
+
 const updateRestaurant: RequestHandler = async (req, res) => {
   const user = req.user!;
   if (!user.restaurantId) {
@@ -181,7 +196,8 @@ const updateRestaurant: RequestHandler = async (req, res) => {
   }
 
   const {
-    name, description, cuisineType, logoUrl, address, city, phone, email,
+    name, description, cuisineType, logoUrl, address, locality, city, phone, email,
+    latitude, longitude,
     upiId, upiName, personalUpiEnabled, whatsappNumber, taxPercent, seatingLabel,
     upiVerified, verifiedAt,
     qrImageData, qrDecodedPayload, qrMerchantName, qrExtractedUpiId, paymentQrEnabled,
@@ -202,8 +218,27 @@ const updateRestaurant: RequestHandler = async (req, res) => {
   if (cuisineType !== undefined) updates.cuisineType = cuisineType;
   if (logoUrl !== undefined) updates.logoUrl = logoUrl;
   if (address !== undefined) updates.address = address;
+  if (locality !== undefined) updates.locality = typeof locality === "string" ? locality.trim() || null : null;
   if (city !== undefined) updates.city = city;
   if (phone !== undefined) updates.phone = phone;
+
+  if (latitude !== undefined) {
+    const latParsed = parseCoordinate(latitude, -90, 90);
+    if (!latParsed.valid) {
+      res.status(400).json({ error: "Invalid latitude. Must be a number between -90 and 90." });
+      return;
+    }
+    updates.latitude = latParsed.value;
+  }
+
+  if (longitude !== undefined) {
+    const lngParsed = parseCoordinate(longitude, -180, 180);
+    if (!lngParsed.valid) {
+      res.status(400).json({ error: "Invalid longitude. Must be a number between -180 and 180." });
+      return;
+    }
+    updates.longitude = lngParsed.value;
+  }
   // ── Email sync guard ──────────────────────────────────────────────────────
   // users.email is the canonical credential source of truth. restaurants.email
   // must always mirror it. Log a warning if the submitted value diverges, then

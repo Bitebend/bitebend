@@ -49,6 +49,21 @@ function slugify(str: string): string {
     .slice(0, 60);
 }
 
+// ── Coordinate validation helper ──────────────────────────────────────────
+function parseCoordinate(value: unknown, min: number, max: number): { valid: boolean; value: number | null } {
+  if (value === undefined || value === null || value === "") {
+    return { valid: true, value: null };
+  }
+  const num = typeof value === "number" ? value : Number(value);
+  if (isNaN(num) || !isFinite(num)) {
+    return { valid: false, value: null };
+  }
+  if (num < min || num > max) {
+    return { valid: false, value: null };
+  }
+  return { valid: true, value: num };
+}
+
 const register: RequestHandler = async (req, res) => {
   const {
     name,
@@ -57,9 +72,13 @@ const register: RequestHandler = async (req, res) => {
     restaurantName,
     restaurantPhone,
     restaurantAddress,
+    restaurantLocality,
+    locality,
     restaurantCity,
     restaurantState,
     restaurantDistrict,
+    latitude,
+    longitude,
     cuisineType,
     planId,
     razorpayPaymentId,
@@ -74,9 +93,13 @@ const register: RequestHandler = async (req, res) => {
     restaurantName: string;
     restaurantPhone: string;
     restaurantAddress: string;
+    restaurantLocality?: string;
+    locality?: string;
     restaurantCity: string;
     restaurantState?: string;
     restaurantDistrict?: string;
+    latitude?: number | string | null;
+    longitude?: number | string | null;
     cuisineType: string;
     planId?: number;
     razorpayPaymentId?: string;
@@ -109,6 +132,19 @@ const register: RequestHandler = async (req, res) => {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
+
+  // ── Validate coordinates if supplied ──────────────────────────────────────
+  const latParsed = parseCoordinate(latitude, -90, 90);
+  if (!latParsed.valid) {
+    res.status(400).json({ error: "Invalid latitude. Must be a number between -90 and 90." });
+    return;
+  }
+  const lngParsed = parseCoordinate(longitude, -180, 180);
+  if (!lngParsed.valid) {
+    res.status(400).json({ error: "Invalid longitude. Must be a number between -180 and 180." });
+    return;
+  }
+  const cleanLocality = (locality || restaurantLocality)?.toString()?.trim() || null;
 
   const existing = await db
     .select()
@@ -215,9 +251,12 @@ const register: RequestHandler = async (req, res) => {
       phone: restaurantPhone,
       email,
       address: restaurantAddress ?? null,
+      locality: cleanLocality,
       city: restaurantCity,
       state: restaurantState ?? null,
       district: restaurantDistrict ?? null,
+      latitude: latParsed.value,
+      longitude: lngParsed.value,
       cuisineType,
       isActive: initialIsActive,
       partnerId: attributedPartnerId,
