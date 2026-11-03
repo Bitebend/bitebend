@@ -1,132 +1,107 @@
-import React, { useEffect, useState, useRef } from "react";
-import {
-  Compass,
-  RefreshCw,
-  AlertCircle,
-  Building2,
-  ChevronRight,
-  ArrowLeft,
-  SearchX,
-  UtensilsCrossed,
-  LayoutList,
-  Map as MapIcon,
-} from "lucide-react";
+import { useState, useEffect } from "react";
 import { useCustomerLocation } from "@/context/LocationContext";
 import { fetchDiscoveredRestaurants } from "@/lib/api";
 import type {
-  DiscoveryResponse,
   DiscoveredRestaurant,
+  DiscoveryResponse,
   SortOption,
-  DiscoveryFilterOptions,
 } from "@/types/discovery";
-import type { CustomerLocation } from "@/types/location";
 import { RestaurantDiscoveryCard } from "./RestaurantDiscoveryCard";
 import { RestaurantDiscoveryFilters } from "./RestaurantDiscoveryFilters";
 import { RestaurantDiscoveryMap } from "./RestaurantDiscoveryMap";
-
-/**
- * Returns the canonical default sort option for a given customer location and mode.
- * - GPS: "nearest"
- * - Manual: "relevance"
- * - No Location / View All: "name_asc"
- */
-function getDefaultSort(
-  location: CustomerLocation | null,
-  showAllUnfiltered: boolean
-): SortOption {
-  if (showAllUnfiltered || !location) return "name_asc";
-  if (location.mode === "gps") return "nearest";
-  if (location.mode === "manual") return "relevance";
-  return "name_asc";
-}
+import {
+  Compass,
+  LayoutList,
+  Map as MapIcon,
+  RefreshCw,
+  AlertCircle,
+  SearchX,
+  UtensilsCrossed,
+  Building2,
+  ArrowLeft,
+} from "lucide-react";
 
 export function RestaurantDiscoverySection() {
   const { location, clearLocation } = useCustomerLocation();
+
+  // State
   const [data, setData] = useState<DiscoveryResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Temporary unfiltered view state for empty-state discovery (Finding 2)
-  // Preserves customer P2 location and localStorage intact while displaying all restaurants
-  const [showAllUnfiltered, setShowAllUnfiltered] = useState<boolean>(false);
-
-  // Manual refresh trigger incrementor
   const [refreshKey, setRefreshKey] = useState<number>(0);
 
-  // ── P6-B Filter & Sort State ──────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [selectedCuisine, setSelectedCuisine] = useState<string>("");
-  const [availableCuisines, setAvailableCuisines] = useState<string[]>([]);
-  const [selectedSort, setSelectedSort] = useState<SortOption | null>(null);
-  const [selectedRadius, setSelectedRadius] = useState<number>(30);
-
-  // ── P6-C Interactive Map View Mode ────────────────────────────────────────
+  // View state: 'list' (default) or 'map'
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
 
-  // Auto-reset filters and temporary unfiltered view when customer changes their actual P2 location
-  const prevLocationRef = useRef(location);
+  // Discovery Filter State
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [selectedCuisine, setSelectedCuisine] = useState<string>("");
+  const [selectedSort, setSelectedSort] = useState<SortOption>(() => {
+    return location?.mode === "gps"
+      ? "nearest"
+      : location?.mode === "manual"
+      ? "relevance"
+      : "name_asc";
+  });
+  const [selectedRadius, setSelectedRadius] = useState<number>(30); // Default 30km for GPS
+  const [availableCuisines, setAvailableCuisines] = useState<string[]>([]);
+
+  // When customer has a location but wants to see all venues anyway without clearing location
+  const [showAllUnfiltered, setShowAllUnfiltered] = useState<boolean>(false);
+
+  // Synchronize default sort mode when customer location mode changes
   useEffect(() => {
-    if (prevLocationRef.current !== location) {
-      prevLocationRef.current = location;
-      setShowAllUnfiltered(false);
-      setSearchQuery("");
-      setSelectedCuisine("");
-      setSelectedSort(null);
-      setSelectedRadius(30);
+    if (showAllUnfiltered) {
+      setSelectedSort("name_asc");
+      return;
     }
-  }, [location]);
 
-  const isGpsMode = !showAllUnfiltered && location?.mode === "gps";
-  const activeSort = selectedSort ?? getDefaultSort(location, showAllUnfiltered);
+    if (location?.mode === "gps") {
+      setSelectedSort("nearest");
+    } else if (location?.mode === "manual") {
+      setSelectedSort("relevance");
+    } else {
+      setSelectedSort("name_asc");
+    }
+  }, [location?.mode, showAllUnfiltered]);
 
-  // Reset all local filters (preserves customer P5 location)
-  const handleResetFilters = () => {
+  // Reset filters when location or unfiltered toggle changes
+  useEffect(() => {
     setSearchQuery("");
     setSelectedCuisine("");
-    setSelectedSort(null);
     setSelectedRadius(30);
-  };
+  }, [location, showAllUnfiltered]);
 
-  const defaultSort = getDefaultSort(location, showAllUnfiltered);
-  const hasActiveFilters = Boolean(
-    searchQuery.trim() ||
-      selectedCuisine ||
-      (selectedSort !== null && selectedSort !== defaultSort) ||
-      (isGpsMode && selectedRadius !== 30)
-  );
-
-  // ── Request sequencing and AbortController lifecycle ───────────────────────
+  // Primary Data Fetching Effect
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
 
     const activeLocation = showAllUnfiltered ? null : location;
-    const currentSort = selectedSort ?? getDefaultSort(location, showAllUnfiltered);
 
-    const options: DiscoveryFilterOptions = {
-      sortBy: currentSort,
+    const options = {
+      radiusKm: activeLocation?.mode === "gps" ? selectedRadius : undefined,
+      cuisine: selectedCuisine || undefined,
+      sortBy: selectedSort,
     };
-
-    if (!showAllUnfiltered && location?.mode === "gps") {
-      options.radiusKm = selectedRadius;
-    }
-
-    if (selectedCuisine) {
-      options.cuisine = selectedCuisine;
-    }
 
     fetchDiscoveredRestaurants(activeLocation, options, controller.signal)
       .then((res) => {
         if (!controller.signal.aborted) {
           setData(res);
           setLoading(false);
+          setError(null);
 
-          // Harvest available unique cuisines from the result set
+          // Dynamically derive unique cuisines
           if (res.restaurants && res.restaurants.length > 0) {
-            const foundCuisines = res.restaurants
-              .map((r) => r.cuisineType?.trim())
-              .filter((c): c is string => Boolean(c));
+            const foundCuisines = Array.from(
+              new Set(
+                res.restaurants
+                  .map((r) => r.cuisineType)
+                  .filter((c): c is string => Boolean(c && c.trim()))
+              )
+            );
 
             setAvailableCuisines((prev) => {
               const combined = selectedCuisine
@@ -138,14 +113,11 @@ export function RestaurantDiscoverySection() {
         }
       })
       .catch((err: unknown) => {
-        // Silently ignore aborted requests to prevent stale errors on location changes or unmount
         if (controller.signal.aborted || (err as { name?: string })?.name === "AbortError") {
           return;
         }
         console.error("[RestaurantDiscovery] Fetch error:", err);
-        setError(
-          err instanceof Error ? err.message : "Failed to load nearby restaurants"
-        );
+        setError("Unable to connect to restaurants right now. Please check your connection and try again.");
         setLoading(false);
       });
 
@@ -170,7 +142,7 @@ export function RestaurantDiscoverySection() {
 
       return {
         title: "All Restaurants",
-        subtitle: `Showing all available restaurants (no matches in ${areaName})`,
+        subtitle: `Showing all available restaurants across Bitebend (no matches in ${areaName})`,
         badge: "All Locations",
       };
     }
@@ -222,24 +194,46 @@ export function RestaurantDiscoverySection() {
     return nameMatches || cuisineMatches || descMatches;
   });
 
+  const handleResetFilters = () => {
+    setSearchQuery("");
+    setSelectedCuisine("");
+    setSelectedRadius(30);
+    if (location?.mode === "gps") {
+      setSelectedSort("nearest");
+    } else if (location?.mode === "manual") {
+      setSelectedSort("relevance");
+    } else {
+      setSelectedSort("name_asc");
+    }
+  };
+
+  const hasActiveFilters = Boolean(
+    searchQuery.trim() ||
+      selectedCuisine ||
+      (location?.mode === "gps" && (selectedSort !== "nearest" || selectedRadius !== 30)) ||
+      (location?.mode === "manual" && selectedSort !== "relevance") ||
+      (!location && selectedSort !== "name_asc")
+  );
+
   return (
-    <section className="flex flex-col gap-4">
-      {/* ── Section Header ────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#ede8e3] pb-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#1a0a00] flex items-center gap-1.5">
-              <Compass className="w-4 h-4 text-[#ea580c]" />
-              {headerInfo.title}
+    <section className="flex flex-col gap-3.5">
+      {/* ── Section Header Toolbar ────────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2 border-b border-[#ede8e3]">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-base font-extrabold text-[#1a0a00] flex items-center gap-1.5 truncate">
+              <Compass className="w-4 h-4 text-[#ea580c] shrink-0" />
+              <span className="truncate">{headerInfo.title}</span>
             </h2>
-            <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#f5f0eb] text-[#6b7280]">
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#f5f0eb] text-[#6b7280] shrink-0">
               {loading ? "..." : `${filteredRestaurants.length} found`}
             </span>
           </div>
-          <p className="text-xs text-[#6b7280] mt-0.5">{headerInfo.subtitle}</p>
+          <p className="text-xs text-[#6b7280] mt-0.5 truncate">{headerInfo.subtitle}</p>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Action Controls: List/Map Switcher, Back/Clear, Refresh */}
+        <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
           {/* List / Map View Toggle */}
           <div
             className="inline-flex items-center p-0.5 bg-[#f5f0eb] rounded-xl border border-[#ede8e3]"
@@ -278,30 +272,36 @@ export function RestaurantDiscoverySection() {
 
           {showAllUnfiltered ? (
             <button
+              type="button"
               onClick={() => {
                 setShowAllUnfiltered(false);
                 handleResetFilters();
               }}
-              className="inline-flex items-center gap-1 text-xs font-semibold text-[#ea580c] hover:text-[#c2410c] px-2.5 py-1 rounded-lg bg-[#fff7ed] border border-[#fed7aa] transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1 text-xs font-semibold text-[#ea580c] hover:text-[#c2410c] px-2.5 py-1.5 rounded-lg bg-[#fff7ed] border border-[#fed7aa] transition-colors cursor-pointer"
+              aria-label="Back to filtered area restaurants"
             >
               <ArrowLeft className="w-3 h-3" />
               <span>Back to my area</span>
             </button>
           ) : location ? (
             <button
+              type="button"
               onClick={() => clearLocation()}
-              className="text-xs font-medium text-[#6b7280] hover:text-[#1a0a00] underline underline-offset-2 transition-colors cursor-pointer"
+              className="text-xs font-medium text-[#6b7280] hover:text-[#dc2626] transition-colors cursor-pointer px-1 py-1"
               aria-label="Clear saved location"
             >
               Clear location
             </button>
           ) : null}
 
+          {/* Refresh Action */}
           <button
+            type="button"
             onClick={() => setRefreshKey((k) => k + 1)}
             disabled={loading}
             aria-label="Refresh discovery results"
-            className="p-1.5 rounded-lg border border-[#ede8e3] bg-white text-[#6b7280] hover:text-[#1a0a00] hover:bg-[#faf9f6] transition-colors disabled:opacity-50 cursor-pointer"
+            title="Refresh discovery results"
+            className="p-1.5 rounded-lg border border-[#ede8e3] text-[#6b7280] hover:text-[#1a0a00] hover:bg-[#f5f0eb] transition-colors cursor-pointer disabled:opacity-50"
           >
             <RefreshCw
               className={`w-3.5 h-3.5 ${loading ? "animate-spin text-[#ea580c]" : ""}`}
@@ -310,16 +310,16 @@ export function RestaurantDiscoverySection() {
         </div>
       </div>
 
-      {/* ── P6-B Filter & Sort Bar ───────────────────────────────────── */}
+      {/* ── Filter & Search Toolbar (Always accessible) ────────────────── */}
       <RestaurantDiscoveryFilters
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         selectedCuisine={selectedCuisine}
         onCuisineChange={setSelectedCuisine}
         availableCuisines={availableCuisines}
-        sortBy={activeSort}
-        onSortChange={(sort) => setSelectedSort(sort)}
-        isGpsMode={isGpsMode}
+        sortBy={selectedSort}
+        onSortChange={setSelectedSort}
+        isGpsMode={location?.mode === "gps" && !showAllUnfiltered}
         radiusKm={selectedRadius}
         onRadiusChange={setSelectedRadius}
         onResetFilters={handleResetFilters}
@@ -329,11 +329,11 @@ export function RestaurantDiscoverySection() {
 
       {/* ── Loading Skeleton ─────────────────────────────────────────── */}
       {loading && !data && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 animate-pulse">
           {[1, 2, 3, 4].map((i) => (
             <div
               key={i}
-              className="bg-white border border-[#ede8e3] rounded-2xl p-5 animate-pulse flex flex-col gap-3"
+              className="bg-white border border-[#ede8e3] rounded-2xl p-4 sm:p-5 flex flex-col gap-3 min-h-[140px]"
             >
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-xl bg-gray-200 shrink-0" />
@@ -349,17 +349,18 @@ export function RestaurantDiscoverySection() {
         </div>
       )}
 
-      {/* ── Error State ──────────────────────────────────────────────── */}
+      {/* ── Error State (Non-disruptive, preserves filter toolbar) ──────── */}
       {!loading && error && (
         <div className="bg-[#fff7ed] border border-[#fed7aa] rounded-2xl p-5 flex flex-col items-center text-center gap-3">
           <AlertCircle className="w-8 h-8 text-[#ea580c]" />
           <div>
-            <h3 className="text-sm font-bold text-[#1a0a00]">Unable to load restaurants</h3>
+            <h3 className="text-sm font-bold text-[#1a0a00]">Unable to connect to restaurants</h3>
             <p className="text-xs text-[#6b7280] mt-1 max-w-md">{error}</p>
           </div>
           <button
+            type="button"
             onClick={() => setRefreshKey((k) => k + 1)}
-            className="px-4 py-2 bg-[#ea580c] text-white text-xs font-bold rounded-xl hover:bg-[#c2410c] transition-colors cursor-pointer"
+            className="px-4 py-2 bg-[#ea580c] text-white text-xs font-bold rounded-xl hover:bg-[#c2410c] transition-colors cursor-pointer shadow-xs"
           >
             Try Again
           </button>
@@ -382,6 +383,7 @@ export function RestaurantDiscoverySection() {
           </div>
 
           <button
+            type="button"
             onClick={() => setSearchQuery("")}
             className="mt-1 inline-flex items-center gap-1.5 px-4 py-2 bg-[#fff7ed] border border-[#fed7aa] text-[#ea580c] text-xs font-bold rounded-xl hover:bg-[#ffedd5] transition-colors cursor-pointer"
           >
@@ -408,6 +410,7 @@ export function RestaurantDiscoverySection() {
           </div>
 
           <button
+            type="button"
             onClick={() => setSelectedCuisine("")}
             className="mt-1 inline-flex items-center gap-1.5 px-4 py-2 bg-[#fff7ed] border border-[#fed7aa] text-[#ea580c] text-xs font-bold rounded-xl hover:bg-[#ffedd5] transition-colors cursor-pointer"
           >
@@ -429,48 +432,46 @@ export function RestaurantDiscoverySection() {
               {location?.mode === "gps"
                 ? `No Bitebend partner restaurants were found within ${selectedRadius} km of your current location yet.`
                 : location?.mode === "manual"
-                ? `No Bitebend partner restaurants are currently listed in ${
-                    location.locality ? `${location.locality}, ` : ""
-                  }${location.city}.`
-                : "There are currently no active Bitebend restaurants listed."}
+                ? `No active Bitebend partner restaurants are listed in ${
+                    location.locality ? `${location.locality}, ${location.city}` : location.city
+                  } yet.`
+                : `There are currently no active restaurants available on the network.`}
             </p>
           </div>
 
-          {location && (
+          {location && !showAllUnfiltered && (
             <button
-              onClick={() => {
-                setShowAllUnfiltered(true);
-                handleResetFilters();
-              }}
+              type="button"
+              onClick={() => setShowAllUnfiltered(true)}
               className="mt-1 inline-flex items-center gap-1.5 px-4 py-2 bg-[#fff7ed] border border-[#fed7aa] text-[#ea580c] text-xs font-bold rounded-xl hover:bg-[#ffedd5] transition-colors cursor-pointer"
             >
-              <span>View All Restaurants</span>
-              <ChevronRight className="w-3.5 h-3.5" />
+              <span>View All Restaurants Across Bitebend</span>
             </button>
           )}
         </div>
       )}
 
-      {/* ── Discovered Restaurants (List or Map View) ────────────────── */}
+      {/* ── Discovery View: List vs Interactive Map ───────────────────── */}
       {!loading && !error && filteredRestaurants.length > 0 && (
-        viewMode === "list" ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredRestaurants.map((restaurant) => (
-              <RestaurantDiscoveryCard
-                key={restaurant.id}
-                restaurant={restaurant}
-                isGpsMode={!showAllUnfiltered && location?.mode === "gps"}
-              />
-            ))}
-          </div>
-        ) : (
-          <RestaurantDiscoveryMap
-            restaurants={filteredRestaurants}
-            customerLocation={showAllUnfiltered ? null : location}
-            isGpsMode={isGpsMode}
-            radiusKm={selectedRadius}
-          />
-        )
+        <>
+          {viewMode === "list" ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {filteredRestaurants.map((restaurant) => (
+                <RestaurantDiscoveryCard
+                  key={restaurant.id}
+                  restaurant={restaurant}
+                  isGpsMode={location?.mode === "gps" && !showAllUnfiltered}
+                />
+              ))}
+            </div>
+          ) : (
+            <RestaurantDiscoveryMap
+              restaurants={filteredRestaurants}
+              customerLocation={showAllUnfiltered ? null : location}
+              radiusKm={location?.mode === "gps" && !showAllUnfiltered ? selectedRadius : null}
+            />
+          )}
+        </>
       )}
     </section>
   );

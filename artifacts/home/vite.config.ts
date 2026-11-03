@@ -29,6 +29,7 @@ function netlifyRedirectsPlugin() {
 
 const rawPort = process.env.PORT;
 const port = rawPort ? Number(rawPort) : 5174;
+const apiTarget = process.env.API_TARGET_URL || (process.env.APPLET_ID ? "http://localhost:3000" : "http://localhost:8080");
 
 export default defineConfig({
   base: "/",
@@ -57,11 +58,23 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: apiTarget,
+        changeOrigin: true,
+      },
+    },
   },
 
   preview: {
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: apiTarget,
+        changeOrigin: true,
+      },
+    },
   },
 });
