@@ -145,10 +145,23 @@ export default function StaffManagement() {
       setNewName("");
       setNewPhone("");
       setNewRole("waiter");
-      await fetchStaff();
 
-      // Automatically offer to generate PIN immediately
-      handleGeneratePin(res.staff.id);
+      // Generate PIN immediately and await response before refreshing staff list
+      try {
+        setGeneratingPinId(res.staff.id);
+        const pinData = await apiFetch<GeneratedPinData>(`/api/owner/staff/${res.staff.id}/pin`, {
+          method: "POST",
+        });
+        setPinModalData(pinData);
+      } catch (pinErr: any) {
+        toast.error(
+          `Staff member was created, but PIN generation failed: ${pinErr.message || "Unknown error"}. Please click "Generate PIN" in the table.`,
+        );
+      } finally {
+        setGeneratingPinId(null);
+      }
+
+      await fetchStaff();
     } catch (err: any) {
       toast.error(err.message || "Failed to create staff member");
     } finally {
@@ -235,7 +248,10 @@ export default function StaffManagement() {
         {/* Chef Mode Setting Card */}
         <div className="bg-card border border-border rounded-xl p-5 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="flex items-start sm:items-center gap-3">
+            <label
+              htmlFor="chef-mode-switch"
+              className="flex items-start sm:items-center gap-3 cursor-pointer select-none flex-1"
+            >
               <div className="h-10 w-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-600 shrink-0 mt-0.5 sm:mt-0">
                 <ChefHat className="h-5 w-5" />
               </div>
@@ -262,7 +278,7 @@ export default function StaffManagement() {
                   Controls whether the kitchen display system (KDS) is active for chefs or orders are handled exclusively by floor waiters.
                 </p>
               </div>
-            </div>
+            </label>
 
             <div className="flex items-center gap-3 self-end sm:self-auto">
               {updatingChefMode && (
@@ -604,13 +620,13 @@ export default function StaffManagement() {
                   How staff connects:
                 </div>
                 <p className="text-orange-900/80 pl-5">
-                  1. Staff opens the <strong>Bitebend Staff Dashboard</strong> on their phone.
+                  1. Staff opens <strong>/staff/connect</strong> on their phone or tablet browser.
                 </p>
                 <p className="text-orange-900/80 pl-5">
-                  2. They enter this 6-digit PIN. No email, password, or phone required.
+                  2. They enter this 6-digit PIN. No email, password, or phone number required.
                 </p>
                 <p className="text-orange-900/80 pl-5">
-                  3. They are instantly signed in to your restaurant.
+                  3. They are instantly signed in to their station dashboard ({pinModalData?.role === "chef" ? "Chef KDS" : "Waiter Dashboard"}).
                 </p>
               </div>
             </div>
