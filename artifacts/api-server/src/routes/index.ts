@@ -19,6 +19,7 @@ import adminPartnersRouter from "./adminPartners";
 import partnerPortalRouter from "./partnerPortal";
 import adminHardwareRouter from "./adminHardware";
 import restaurantsRouter from "./restaurants";
+import staffRouter from "./staff";
 
 const router: IRouter = Router();
 
@@ -42,5 +43,6 @@ router.use(adminPartnersRouter);
 router.use(partnerPortalRouter);
 router.use(adminHardwareRouter);
 router.use(restaurantsRouter);
+router.use(staffRouter);
 
 export default router;

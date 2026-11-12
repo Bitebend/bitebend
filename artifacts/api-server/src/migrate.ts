@@ -41,6 +41,10 @@ const REQUIRED_TABLES = [
   "partner_commissions",
   "partner_audit_logs",
   "restaurant_hardware_orders",
+  // 0038_waiter_chef_staff_workflow
+  "restaurant_staff",
+  "session_activity_logs",
+  "order_activity_logs",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
@@ -51,16 +55,23 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "bill_links",                    column: "short_id"         },
   { table: "restaurants",                   column: "razorpay_webhook_secret" },
   { table: "restaurants",                   column: "partner_id"       },
+  // 0038_waiter_chef_staff_workflow
+  { table: "restaurants",                   column: "chef_dashboard_enabled" },
   { table: "orders",                        column: "verification_method" },
   { table: "orders",                        column: "verified_by"      },
   { table: "orders",                        column: "verified_at"      },
   { table: "orders",                        column: "session_id"       },
+  // 0038_waiter_chef_staff_workflow
+  { table: "orders",                        column: "assigned_waiter_id" },
+  { table: "orders",                        column: "assignment_source" },
   { table: "table_sessions",               column: "restaurant_id"    },
   { table: "table_sessions",               column: "table_number"     },
   { table: "table_sessions",               column: "status"           },
   // 0019_takeaway_sessions
   { table: "table_sessions",               column: "session_type"     },
   { table: "table_sessions",               column: "customer_phone"   },
+  // 0038_waiter_chef_staff_workflow
+  { table: "table_sessions",               column: "assigned_waiter_id" },
   // 0016_session_bills
   { table: "session_bills",                column: "session_id"       },
   { table: "session_bills",                column: "restaurant_id"    },
@@ -85,6 +96,12 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "restaurant_hardware_orders",   column: "restaurant_id"    },
   { table: "restaurant_hardware_orders",   column: "stand_quantity"   },
   { table: "restaurant_hardware_orders",   column: "collection_status"},
+  // 0038_waiter_chef_staff_workflow
+  { table: "restaurant_staff",             column: "token_version"    },
+  { table: "session_activity_logs",        column: "action"           },
+  { table: "order_activity_logs",          column: "action"           },
+  // 0039_staff_pin_connection
+  { table: "restaurant_staff",             column: "connection_pin_digest" },
 ];
 
 /**

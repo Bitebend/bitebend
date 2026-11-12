@@ -56,6 +56,10 @@ const CustomerAnalytics  = lazyWithRetry(() => import("@/pages/CustomerAnalytics
 const WhatsAppConnect    = lazyWithRetry(() => import("@/pages/WhatsAppConnect"));
 const ResourcesCenter   = lazyWithRetry(() => import("@/pages/resources/ResourcesCenter"));
 const ResourcesManage   = lazyWithRetry(() => import("@/pages/resources/ResourcesManage"));
+const StaffManagement   = lazyWithRetry(() => import("@/pages/StaffManagement"));
+const StaffConnect      = lazyWithRetry(() => import("@/pages/staff/StaffConnect"));
+const WaiterHome        = lazyWithRetry(() => import("@/pages/staff/WaiterHome"));
+const ChefHome          = lazyWithRetry(() => import("@/pages/staff/ChefHome"));
 const Logout            = lazyWithRetry(() => import("@/pages/Logout"));
 const NotFound          = lazyWithRetry(() => import("@/pages/not-found"));
 
@@ -296,12 +300,16 @@ const RegisterPage_           = () => <RestaurantPublicRoute component={Register
 const DashboardPage           = () => <RestaurantRoute component={Dashboard} />;
 const MenuManagementPage      = () => <RestaurantRoute component={MenuManagement} />;
 const TablesManagementPage    = () => <RestaurantRoute component={TablesManagement} />;
+const StaffManagementPage     = () => <RestaurantRoute component={StaffManagement} />;
 const ProfilePage             = () => <RestaurantRoute component={Profile} />;
 const SubscriptionPage        = () => <RestaurantRoute component={Subscription} />;
 const CustomerAnalyticsPage   = () => <RestaurantRoute component={CustomerAnalytics} />;
 const WhatsAppConnectPage     = () => <RestaurantRoute component={WhatsAppConnect} />;
 const ResourcesCenterPage     = () => <ResourcesCenter />;
 const ResourcesManagePage     = () => <AdminRoute component={ResourcesManage} />;
+const StaffConnectPage        = () => <StaffConnect />;
+const WaiterHomePage          = () => <WaiterHome />;
+const ChefHomePage            = () => <ChefHome />;
 const RestaurantCatchAll      = () => <RestaurantRoute component={RestaurantToDashboard} />;
 const AdminLoginPage          = () => <AdminPublicRoute component={AdminLogin} />;
 const AdminForgotPasswordPage = () => <AdminForgotPassword />;
@@ -424,6 +432,7 @@ function Router() {
       <Route path="/restaurant/dashboard"    component={DashboardPage} />
       <Route path="/restaurant/menu"         component={MenuManagementPage} />
       <Route path="/restaurant/tables"       component={TablesManagementPage} />
+      <Route path="/restaurant/staff"        component={StaffManagementPage} />
       <Route path="/restaurant/profile"      component={ProfilePage} />
       <Route path="/restaurant/subscription"           component={SubscriptionPage} />
       <Route path="/restaurant/customers/analytics"    component={CustomerAnalyticsPage} />
@@ -475,7 +484,11 @@ function Router() {
       <Route path="/tables"       component={ToTables} />
       <Route path="/profile"      component={ToProfile} />
       <Route path="/subscription" component={ToSubscription} />
-      <Route path="/admin"        component={ToAdminDashboard} />
+      {/* ── Staff routes (PIN connection & station dashboards) ────────── */}
+      <Route path="/staff"                   component={() => <Redirect to="/staff/connect" />} />
+      <Route path="/staff/connect"           component={StaffConnectPage} />
+      <Route path="/staff/waiter"            component={WaiterHomePage} />
+      <Route path="/staff/chef"              component={ChefHomePage} />
 
       <Route component={NotFound} />
     </Switch>

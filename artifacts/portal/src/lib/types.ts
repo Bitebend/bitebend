@@ -332,6 +332,13 @@ export interface HistoryPage {
   totalPages: number;
 }
 
+export interface ActiveWaiter {
+  id: number;
+  name: string;
+  role: "waiter";
+  isActive: boolean;
+}
+
 export interface SessionSummary {
   id: number;
   /** Null for takeaway sessions */
@@ -340,6 +347,9 @@ export interface SessionSummary {
   /** Normalized phone used to group takeaway orders (e.g. "919876543210") */
   customerPhone: string | null;
   status: "active" | "awaiting_payment" | "awaiting_verification" | "paid" | "closed";
+  assignedWaiterId?: number | null;
+  assignedWaiterName?: string | null;
+  isWaiterInactive?: boolean;
   orderCount: number;
   itemCount: number;
   totalAmount: number;
@@ -355,6 +365,10 @@ export interface Order {
   sessionId: number | null;
   tableId: number | null;
   tableNumber: string | null;
+  assignedWaiterId?: number | null;
+  assignedWaiterName?: string | null;
+  assignmentSource?: "inherited" | "manual_override" | null;
+  isWaiterInactive?: boolean;
   customerName: string;
   customerPhone: string;
   status: "ordered" | "pending_payment" | "awaiting_confirmation" | "pending" | "confirmed" | "preparing" | "ready" | "completed" | "cancelled" | "payment_failed";

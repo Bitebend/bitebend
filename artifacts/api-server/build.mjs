@@ -51,6 +51,8 @@ async function buildAll() {
       { in: path.resolve(artifactDir, "src/migrate.ts"),        out: "migrate" },
       { in: path.resolve(artifactDir, "src/validate-db.ts"),    out: "validate-db" },
       { in: path.resolve(artifactDir, "src/e2e-partner-test.ts"), out: "e2e-partner-test" },
+      { in: path.resolve(artifactDir, "src/e2e-phase3a-test.ts"), out: "e2e-phase3a-test" },
+      { in: path.resolve(artifactDir, "src/e2e-phase4-test.ts"),  out: "e2e-phase4-test" },
     ],
     platform: "node",
     bundle: true,

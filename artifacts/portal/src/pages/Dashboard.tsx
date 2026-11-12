@@ -12,6 +12,7 @@ import type {
   SessionBill,
   ScreenshotInboxEntry,
   ScreenshotInboxPage,
+  ActiveWaiter,
 } from "@/lib/types";
 import { HistoryTab } from "@/pages/history/HistoryTab";
 import {
@@ -48,6 +49,10 @@ import {
   RotateCcw,
   RotateCw,
   ImageOff,
+  Volume2,
+  VolumeX,
+  Undo2,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -270,6 +275,99 @@ export default function Dashboard() {
   // View Bill modal — shows itemized bill for a session
   const [viewingBillSessionId, setViewingBillSessionId] = useState<number | null>(null);
 
+  // ── Waiter Assignment & Floor Management ──────────────────────────────────
+  const [activeWaiters, setActiveWaiters] = useState<ActiveWaiter[]>([]);
+  const [assigningSessionId, setAssigningSessionId] = useState<number | null>(null);
+  const [assigningOrderId, setAssigningOrderId] = useState<number | null>(null);
+  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("bb_sound_alerts_enabled") === "true";
+  });
+  const alertedOrderIdsRef = useRef<Set<number>>(new Set());
+  const lastAlertTimeRef = useRef<number>(0);
+
+  const playWarningSound = useCallback(() => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const audioCtx = new AudioContextClass();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.15); // A5
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.6);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.6);
+    } catch (err) {
+      console.error("Audio playback error", err);
+    }
+  }, []);
+
+  const toggleSoundAlerts = () => {
+    const next = !soundAlertsEnabled;
+    setSoundAlertsEnabled(next);
+    localStorage.setItem("bb_sound_alerts_enabled", String(next));
+    if (next) {
+      playWarningSound();
+      toast.success("Sound alerts enabled. You will hear an alert chime for unassigned orders waiting over 2 minutes.");
+    } else {
+      toast.info("Sound alerts disabled.");
+    }
+  };
+
+  const handleAssignSessionWaiter = async (sessionId: number, waiterId: number | null) => {
+    setAssigningSessionId(sessionId);
+    try {
+      await apiFetch(`/owner/sessions/${sessionId}/assign-waiter`, {
+        method: "POST",
+        body: JSON.stringify({ waiterId }),
+      });
+      toast.success(waiterId ? "Primary waiter assigned to table session" : "Session marked as unassigned");
+      await fetchData();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to assign waiter";
+      toast.error(message);
+    } finally {
+      setAssigningSessionId(null);
+    }
+  };
+
+  const handleAssignOrderWaiter = async (orderId: number, waiterId: number) => {
+    setAssigningOrderId(orderId);
+    try {
+      await apiFetch(`/owner/orders/${orderId}/assign-waiter`, {
+        method: "POST",
+        body: JSON.stringify({ waiterId }),
+      });
+      toast.success("Order waiter assigned (manual override)");
+      await fetchData();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to override order waiter";
+      toast.error(message);
+    } finally {
+      setAssigningOrderId(null);
+    }
+  };
+
+  const handleRevertOrderWaiter = async (orderId: number) => {
+    setAssigningOrderId(orderId);
+    try {
+      await apiFetch(`/owner/orders/${orderId}/revert-waiter`, {
+        method: "POST",
+      });
+      toast.success("Order waiter reverted to session inherited assignment");
+      await fetchData();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to revert order waiter";
+      toast.error(message);
+    } finally {
+      setAssigningOrderId(null);
+    }
+  };
+
   // ── Screenshot Inbox ──────────────────────────────────────────────────────
   const [screenshotInbox, setScreenshotInbox] = useState<ScreenshotInboxEntry[]>([]);
   const [inboxTotal, setInboxTotal] = useState(0);
@@ -298,18 +396,20 @@ export default function Dashboard() {
   const fetchData = useCallback(async () => {
     if (!user) return;
     try {
-      const [statsData, sessionsData, inboxData] =
+      const [statsData, sessionsData, inboxData, waitersData] =
         await Promise.all([
           apiFetch<DashboardStats>("/owner/stats"),
           apiFetch<SessionSummary[]>("/owner/sessions"),
           apiFetch<PaymentInboxResponse>(
             `/owner/screenshot-inbox?status=${paymentInboxStatus}`,
           ),
+          apiFetch<ActiveWaiter[]>("/owner/waiters"),
         ]);
       setStats(statsData);
       setSessions(sessionsData);
       setPaymentInbox(inboxData.entries);
       setPaymentInboxTotal(inboxData.total);
+      setActiveWaiters(waitersData || []);
       // Detect new orders added to existing sessions — localStorage-backed so badge survives refresh
       try {
         const storedCounts: Record<string, number> = JSON.parse(
@@ -359,6 +459,35 @@ export default function Dashboard() {
     const interval = setInterval(fetchData, 8000);
     return () => clearInterval(interval);
   }, [fetchData, user]);
+
+  // 120s Unassigned Order Audible Alert (debounced)
+  useEffect(() => {
+    if (!soundAlertsEnabled || sessions.length === 0) return;
+
+    const now = Date.now();
+    let hasOverdueUnassigned = false;
+
+    for (const s of sessions) {
+      for (const o of s.orders) {
+        if (
+          (o.status === "ordered" || o.status === "preparing" || o.status === "ready") &&
+          (o.assignedWaiterId === null || o.assignedWaiterId === undefined)
+        ) {
+          const orderAgeMs = now - new Date(o.createdAt).getTime();
+          if (orderAgeMs >= 120000 && !alertedOrderIdsRef.current.has(o.id)) {
+            hasOverdueUnassigned = true;
+            alertedOrderIdsRef.current.add(o.id);
+          }
+        }
+      }
+    }
+
+    if (hasOverdueUnassigned && now - lastAlertTimeRef.current > 60000) {
+      lastAlertTimeRef.current = now;
+      playWarningSound();
+      toast.warning("Unassigned Order Alert: An order has been waiting without an assigned waiter for over 2 minutes!");
+    }
+  }, [sessions, soundAlertsEnabled, playWarningSound]);
 
   const fetchInbox = useCallback(async () => {
     if (!user?.restaurantId) return;
@@ -1000,6 +1129,74 @@ export default function Dashboard() {
               {order.customerPhone}
             </p>
 
+            {/* Waiter Floor Assignment */}
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+                <User className="w-3 h-3 text-slate-400" />
+                Waiter:
+              </span>
+              <select
+                value={order.assignedWaiterId ?? ""}
+                disabled={assigningOrderId === order.id || order.status === "completed" || order.status === "cancelled"}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val) {
+                    handleAssignOrderWaiter(order.id, parseInt(val, 10));
+                  }
+                }}
+                className={cn(
+                  "text-xs rounded px-2 py-0.5 border font-medium cursor-pointer transition-colors focus:ring-1 focus:ring-blue-500",
+                  order.isWaiterInactive
+                    ? "bg-amber-50 text-amber-800 border-amber-300"
+                    : order.assignedWaiterId
+                      ? order.assignmentSource === "manual_override"
+                        ? "bg-purple-50 text-purple-800 border-purple-300 font-semibold"
+                        : "bg-blue-50 text-blue-800 border-blue-200"
+                      : "bg-slate-100 text-slate-600 border-slate-300",
+                )}
+              >
+                <option value="" disabled>
+                  {order.assignedWaiterId ? "— Change Waiter —" : "— Unassigned —"}
+                </option>
+                {activeWaiters.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+                {order.isWaiterInactive && order.assignedWaiterName && (
+                  <option value={order.assignedWaiterId!} disabled>
+                    {order.assignedWaiterName} (Deactivated)
+                  </option>
+                )}
+              </select>
+
+              {order.assignmentSource === "manual_override" && (
+                <span className="text-[10px] bg-purple-100 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
+                  Manual Override
+                </span>
+              )}
+
+              {order.isWaiterInactive && (
+                <span className="text-[10px] bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded font-semibold">
+                  Inactive Staff
+                </span>
+              )}
+
+              {order.assignmentSource === "manual_override" && order.status !== "completed" && order.status !== "cancelled" && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleRevertOrderWaiter(order.id)}
+                  disabled={assigningOrderId === order.id}
+                  className="h-6 px-1.5 text-[11px] text-slate-600 hover:text-blue-600 hover:bg-slate-200"
+                  title="Revert to session waiter"
+                >
+                  <Undo2 className="w-3 h-3 mr-1" />
+                  Revert
+                </Button>
+              )}
+            </div>
+
             {/* Error */}
             {orderError && (
               <div className="mt-2 flex items-center gap-1.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2.5 py-1.5">
@@ -1240,6 +1437,32 @@ export default function Dashboard() {
       s.orderCount > 0,
   );
 
+  const unassignedActiveOrdersCount = sessions.reduce((sum, s) => {
+    return (
+      sum +
+      s.orders.filter(
+        (o) =>
+          (o.status === "ordered" || o.status === "preparing" || o.status === "ready") &&
+          (o.assignedWaiterId === null || o.assignedWaiterId === undefined),
+      ).length
+    );
+  }, 0);
+
+  const inactiveStaffSessionsCount = sessions.filter(
+    (s) => (s.status === "active" || s.status === "awaiting_payment") && s.isWaiterInactive,
+  ).length;
+
+  const inactiveStaffOrdersCount = sessions.reduce((sum, s) => {
+    return (
+      sum +
+      s.orders.filter(
+        (o) =>
+          (o.status === "ordered" || o.status === "preparing" || o.status === "ready") &&
+          o.isWaiterInactive,
+      ).length
+    );
+  }, 0);
+
   // Bills available for manual screenshot attachment: must be in 'sent' or 'awaiting_verification'
   const availableBillsForAttach = sessions
     .filter((s) => s.bill && (s.bill.status === "sent" || s.bill.status === "awaiting_verification"))
@@ -1265,6 +1488,25 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={toggleSoundAlerts}
+              className={cn(
+                "text-xs h-8 border gap-1.5",
+                soundAlertsEnabled
+                  ? "bg-amber-50 text-amber-900 border-amber-300 font-medium"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              title={soundAlertsEnabled ? "Sound alerts are enabled" : "Enable sound alerts for unassigned orders"}
+            >
+              {soundAlertsEnabled ? (
+                <Volume2 className="w-3.5 h-3.5 text-amber-600" />
+              ) : (
+                <VolumeX className="w-3.5 h-3.5 text-muted-foreground" />
+              )}
+              <span className="hidden sm:inline">Sound: {soundAlertsEnabled ? "ON" : "OFF"}</span>
+            </Button>
             <div className="flex gap-1 bg-muted rounded-lg p-0.5">
               <button
                 onClick={() => setActiveTab("live")}
@@ -1780,6 +2022,55 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* ── Floor Operations / Waiter Attention Banner ── */}
+            {(unassignedActiveOrdersCount > 0 || inactiveStaffSessionsCount > 0 || inactiveStaffOrdersCount > 0) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start gap-3">
+                  <div className="h-9 w-9 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-600 flex items-center justify-center shrink-0 mt-0.5">
+                    <AlertTriangle className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-amber-900">
+                      Floor Operations Attention Needed
+                    </div>
+                    <div className="text-xs text-amber-800 space-y-0.5 mt-0.5">
+                      {unassignedActiveOrdersCount > 0 && (
+                        <div>
+                          • <strong>{unassignedActiveOrdersCount}</strong> active order{unassignedActiveOrdersCount === 1 ? " is" : "s are"} currently unassigned to any waiter.
+                        </div>
+                      )}
+                      {(inactiveStaffSessionsCount > 0 || inactiveStaffOrdersCount > 0) && (
+                        <div>
+                          • <strong>{inactiveStaffSessionsCount}</strong> session(s) and <strong>{inactiveStaffOrdersCount}</strong> order(s) are assigned to inactive staff members. Please reassign.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={toggleSoundAlerts}
+                    className={cn(
+                      "text-xs h-8 border",
+                      soundAlertsEnabled
+                        ? "bg-amber-100 text-amber-900 border-amber-300 font-semibold"
+                        : "bg-white text-slate-700 border-slate-300",
+                    )}
+                  >
+                    {soundAlertsEnabled ? (
+                      <Volume2 className="w-3.5 h-3.5 mr-1.5 text-amber-700" />
+                    ) : (
+                      <VolumeX className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
+                    )}
+                    Sound Alerts: {soundAlertsEnabled ? "ON" : "OFF"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {/* ── Table Sessions (active + awaiting payment) ─────────────────── */}
             <div className="bg-card rounded-xl border border-border overflow-hidden">
               <div className="px-4 py-3 border-b border-border flex items-center gap-2">
@@ -1942,6 +2233,51 @@ export default function Dashboard() {
                                           })}
                                         </span>
                                       </>
+                                    )}
+                                  </div>
+
+                                  {/* Primary Waiter Selector */}
+                                  <div
+                                    className="flex items-center gap-1.5 mt-2"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+                                      <User className="w-3 h-3 text-slate-400" />
+                                      Primary Waiter:
+                                    </span>
+                                    <select
+                                      value={session.assignedWaiterId ?? ""}
+                                      disabled={assigningSessionId === session.id}
+                                      onChange={(e) => {
+                                        e.stopPropagation();
+                                        const val = e.target.value;
+                                        handleAssignSessionWaiter(session.id, val ? parseInt(val, 10) : null);
+                                      }}
+                                      className={cn(
+                                        "text-xs rounded px-2 py-0.5 border font-medium cursor-pointer transition-colors focus:ring-1 focus:ring-blue-500",
+                                        session.isWaiterInactive
+                                          ? "bg-amber-50 text-amber-800 border-amber-300"
+                                          : session.assignedWaiterId
+                                            ? "bg-blue-50 text-blue-800 border-blue-200"
+                                            : "bg-slate-100 text-slate-600 border-slate-300",
+                                      )}
+                                    >
+                                      <option value="">— Unassigned —</option>
+                                      {activeWaiters.map((w) => (
+                                        <option key={w.id} value={w.id}>
+                                          {w.name}
+                                        </option>
+                                      ))}
+                                      {session.isWaiterInactive && session.assignedWaiterName && (
+                                        <option value={session.assignedWaiterId!} disabled>
+                                          {session.assignedWaiterName} (Deactivated)
+                                        </option>
+                                      )}
+                                    </select>
+                                    {session.isWaiterInactive && (
+                                      <span className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded font-semibold">
+                                        Inactive Staff
+                                      </span>
                                     )}
                                   </div>
                                 </div>

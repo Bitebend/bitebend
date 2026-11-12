@@ -2,6 +2,7 @@ import {
   boolean,
   check,
   doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -9,6 +10,7 @@ import {
   serial,
   text,
   timestamp,
+  unique,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -119,6 +121,7 @@ export const restaurants = pgTable("restaurants", {
   acceptedAt: timestamp("accepted_at"),
   whatsappStatus: text("whatsapp_status").notNull().default("disconnected"),
   whatsappPhone: text("whatsapp_phone"),
+  chefDashboardEnabled: boolean("chef_dashboard_enabled").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -186,6 +189,34 @@ export const restaurantTables = pgTable("restaurant_tables", {
   isOccupied: boolean("is_occupied").notNull().default(false),
 });
 
+export const restaurantStaff = pgTable(
+  "restaurant_staff",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    role: text("role", { enum: ["waiter", "chef"] }).notNull(),
+    pinHash: text("pin_hash"),
+    connectionPinDigest: text("connection_pin_digest"),
+    connectionPinExpiresAt: timestamp("connection_pin_expires_at", { withTimezone: true }),
+    connectionPinCreatedAt: timestamp("connection_pin_created_at", { withTimezone: true }),
+    tokenVersion: integer("token_version").notNull().default(1),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("restaurant_staff_restaurant_id_unique").on(t.restaurantId, t.id),
+    index("idx_restaurant_staff_restaurant").on(t.restaurantId),
+    index("idx_restaurant_staff_role").on(t.role),
+    index("idx_restaurant_staff_is_active").on(t.isActive),
+    index("idx_restaurant_staff_pin_digest").on(t.connectionPinDigest),
+  ],
+);
+
 export const tableSessions = pgTable(
   "table_sessions",
   {
@@ -214,17 +245,25 @@ export const tableSessions = pgTable(
      *  - WhatsApp screenshot matching unambiguity
      */
     customerPhone: text("customer_phone"),
+    assignedWaiterId: integer("assigned_waiter_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
+    unique("table_sessions_restaurant_id_id_unique").on(t.restaurantId, t.id),
     index("idx_table_sessions_restaurant_id").on(t.restaurantId),
     index("idx_table_sessions_status").on(t.status),
     index("idx_table_sessions_restaurant_status").on(t.restaurantId, t.status),
+    index("idx_table_sessions_assigned_waiter").on(t.restaurantId, t.assignedWaiterId),
     // Partial index: fast dine-in session lookup by phone (Rule 1 & Rule 3)
     index("idx_table_sessions_dine_in_phone").on(t.restaurantId, t.customerPhone, t.status).where(sql`${t.sessionType} = 'dine_in'`),
     // Partial index: fast takeaway session lookup by phone
     index("idx_table_sessions_takeaway_phone").on(t.restaurantId, t.customerPhone, t.status).where(sql`${t.sessionType} = 'takeaway'`),
+    foreignKey({
+      columns: [t.restaurantId, t.assignedWaiterId],
+      foreignColumns: [restaurantStaff.restaurantId, restaurantStaff.id],
+      name: "fk_table_sessions_staff",
+    }).onDelete("restrict"),
     check(
       "table_sessions_status_check",
       sql`${t.status} IN ('active','awaiting_payment','awaiting_verification','paid','closed')`,
@@ -246,6 +285,8 @@ export const orders = pgTable(
   tableId: integer("table_id"),
   tableNumber: text("table_number"),
   sessionId: integer("session_id").references(() => tableSessions.id, { onDelete: "set null" }),
+  assignedWaiterId: integer("assigned_waiter_id"),
+  assignmentSource: text("assignment_source", { enum: ["inherited", "manual_override"] }),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
   status: text("status", {
@@ -288,7 +329,94 @@ export const orders = pgTable(
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
+    unique("orders_restaurant_id_id_unique").on(t.restaurantId, t.id),
     index("idx_orders_session_id").on(t.sessionId),
+    index("idx_orders_assigned_waiter").on(t.restaurantId, t.assignedWaiterId),
+    foreignKey({
+      columns: [t.restaurantId, t.assignedWaiterId],
+      foreignColumns: [restaurantStaff.restaurantId, restaurantStaff.id],
+      name: "fk_orders_staff",
+    }).onDelete("restrict"),
+  ],
+);
+
+export const sessionActivityLogs = pgTable(
+  "session_activity_logs",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    sessionId: integer("session_id")
+      .notNull()
+      .references(() => tableSessions.id, { onDelete: "restrict" }),
+    action: text("action").notNull(),
+    actorType: text("actor_type", { enum: ["owner", "admin", "waiter", "chef", "system"] }).notNull(),
+    userActorId: integer("user_actor_id").references(() => users.id, { onDelete: "restrict" }),
+    staffActorId: integer("staff_actor_id"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_session_activity_session").on(t.sessionId),
+    index("idx_session_activity_restaurant").on(t.restaurantId),
+    index("idx_session_activity_created_at").on(t.createdAt),
+    foreignKey({
+      columns: [t.restaurantId, t.sessionId],
+      foreignColumns: [tableSessions.restaurantId, tableSessions.id],
+      name: "fk_session_activity_table_sessions",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.restaurantId, t.staffActorId],
+      foreignColumns: [restaurantStaff.restaurantId, restaurantStaff.id],
+      name: "fk_session_activity_restaurant_staff",
+    }).onDelete("restrict"),
+    check(
+      "session_activity_actor_check",
+      sql`(${t.userActorId} IS NOT NULL AND ${t.staffActorId} IS NULL) OR (${t.userActorId} IS NULL AND ${t.staffActorId} IS NOT NULL) OR (${t.userActorId} IS NULL AND ${t.staffActorId} IS NULL AND ${t.actorType} = 'system')`,
+    ),
+  ],
+);
+
+export const orderActivityLogs = pgTable(
+  "order_activity_logs",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    sessionId: integer("session_id").references(() => tableSessions.id, { onDelete: "restrict" }),
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "restrict" }),
+    action: text("action").notNull(),
+    previousStatus: text("previous_status"),
+    newStatus: text("new_status"),
+    actorType: text("actor_type", { enum: ["owner", "admin", "waiter", "chef", "system"] }).notNull(),
+    userActorId: integer("user_actor_id").references(() => users.id, { onDelete: "restrict" }),
+    staffActorId: integer("staff_actor_id"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_order_activity_order").on(t.orderId),
+    index("idx_order_activity_restaurant").on(t.restaurantId),
+    index("idx_order_activity_session").on(t.sessionId),
+    index("idx_order_activity_created_at").on(t.createdAt),
+    foreignKey({
+      columns: [t.restaurantId, t.orderId],
+      foreignColumns: [orders.restaurantId, orders.id],
+      name: "fk_order_activity_orders",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.restaurantId, t.staffActorId],
+      foreignColumns: [restaurantStaff.restaurantId, restaurantStaff.id],
+      name: "fk_order_activity_restaurant_staff",
+    }).onDelete("restrict"),
+    check(
+      "order_activity_actor_check",
+      sql`(${t.userActorId} IS NOT NULL AND ${t.staffActorId} IS NULL) OR (${t.userActorId} IS NULL AND ${t.staffActorId} IS NOT NULL) OR (${t.userActorId} IS NULL AND ${t.staffActorId} IS NULL AND ${t.actorType} = 'system')`,
+    ),
   ],
 );
 

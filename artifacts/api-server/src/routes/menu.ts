@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { restaurants, menuCategories, menuItems, restaurantTables, orders, orderItems, notifications, tableSessions, sessionBills } from "@workspace/db";
+import { restaurants, menuCategories, menuItems, restaurantTables, orders, orderItems, notifications, tableSessions, sessionBills, restaurantStaff } from "@workspace/db";
 import { eq, and, inArray, desc, ne } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import type { RequestHandler } from "express";
@@ -476,29 +476,37 @@ const placeOrder: RequestHandler = async (req, res) => {
   }
 
   let sessionId: number | null = null;
+  let order: typeof orders.$inferSelect;
+  let createdItems: (typeof orderItems.$inferSelect)[];
   const trimmedTableNumber = tableNumber?.trim() ?? null;
 
-  if (trimmedTableNumber) {
-    // ── Dine-in ────────────────────────────────────────────────────────────
-    // The whole read-then-write sequence below runs inside a single DB
-    // transaction, and the table is protected by a partial unique index
-    // (restaurant_id, table_number) WHERE session_type='dine_in' AND
-    // status='active' (migration 0025). This closes the race window where
-    // two customers scanning the same table at the same instant could both
-    // pass the "no active session yet" check before either INSERT lands —
-    // whichever request loses the race gets a unique-violation (23505),
-    // which we translate into the same TABLE_SESSION_CONFLICT response as
-    // the existing application-level check (RULE 3) below.
-    try {
-      sessionId = await db.transaction(async (tx) => {
-        // RULE 3 must run BEFORE RULE 1. Table ownership is checked first so
-        // that switching to a table already owned by a DIFFERENT phone is
+  try {
+    const txResult = await db.transaction(async (tx) => {
+      let resolvedSessionId: number;
+      let rawAssignedWaiterId: number | null = null;
+
+      if (trimmedTableNumber) {
+        // ── Dine-in ────────────────────────────────────────────────────────────
+        // The whole read-then-write sequence below runs inside a single DB
+        // transaction, and the table is protected by a partial unique index
+        // (restaurant_id, table_number) WHERE session_type='dine_in' AND
+        // status='active' (migration 0025). This closes the race window where
+        // two customers scanning the same table at the same instant could both
+        // pass the "no active session yet" check before either INSERT lands —
+        // whichever request loses the race gets a unique-violation (23505),
+        // which we translate into the same TABLE_SESSION_CONFLICT response as
+        // the existing application-level check (RULE 3) below.
+
+        // RULE 3 must run BEFORE RULE 1. Table ownership is checked first with FOR UPDATE
+        // so that switching to a table already owned by a DIFFERENT phone is
         // always rejected — even if the requesting phone already has its own
-        // active session on a different table. Checking phone-reuse first
-        // would let a phone bypass another table's active session simply by
-        // already having an unrelated session elsewhere (the bug this fixes).
+        // active session on a different table.
         const [tableOwnedSession] = await tx
-          .select({ id: tableSessions.id, customerPhone: tableSessions.customerPhone })
+          .select({
+            id: tableSessions.id,
+            customerPhone: tableSessions.customerPhone,
+            assignedWaiterId: tableSessions.assignedWaiterId,
+          })
           .from(tableSessions)
           .where(
             and(
@@ -508,7 +516,8 @@ const placeOrder: RequestHandler = async (req, res) => {
               eq(tableSessions.status, "active"),
             ),
           )
-          .limit(1);
+          .limit(1)
+          .for("update");
 
         if (tableOwnedSession) {
           if (tableOwnedSession.customerPhone !== null && tableOwnedSession.customerPhone !== normalizedPhone) {
@@ -539,163 +548,207 @@ const placeOrder: RequestHandler = async (req, res) => {
             );
           }
           // Table already owned by this same phone — direct reuse.
-          return tableOwnedSession.id;
-        }
+          resolvedSessionId = tableOwnedSession.id;
+          rawAssignedWaiterId = tableOwnedSession.assignedWaiterId;
+        } else {
+          // Requested table is free (no active session on it). Now check RULE 1 with FOR UPDATE:
+          // does this phone already own an ACTIVE dine-in session elsewhere in
+          // this restaurant? If so reuse it rather than fragmenting the phone's
+          // orders across two open sessions.
+          const [phoneOwnedSession] = await tx
+            .select({
+              id: tableSessions.id,
+              tableNumber: tableSessions.tableNumber,
+              assignedWaiterId: tableSessions.assignedWaiterId,
+            })
+            .from(tableSessions)
+            .where(
+              and(
+                eq(tableSessions.restaurantId, restaurantId),
+                eq(tableSessions.sessionType, "dine_in"),
+                eq(tableSessions.customerPhone, normalizedPhone),
+                eq(tableSessions.status, "active"),
+              ),
+            )
+            .orderBy(desc(tableSessions.createdAt))
+            .limit(1)
+            .for("update");
 
-        // Requested table is free (no active session on it). Now check RULE 1:
-        // does this phone already own an ACTIVE dine-in session elsewhere in
-        // this restaurant? If so reuse it rather than fragmenting the phone's
-        // orders across two open sessions.
-        const [phoneOwnedSession] = await tx
-          .select({ id: tableSessions.id, tableNumber: tableSessions.tableNumber })
+          if (phoneOwnedSession) {
+            // RULE 1: Reuse existing active session owned by this phone
+            req.log.info(
+              {
+                sessionId: phoneOwnedSession.id,
+                restaurantId,
+                requestedTable: trimmedTableNumber,
+                sessionTable: phoneOwnedSession.tableNumber,
+                customerPhone: normalizedPhone,
+                rule: "RULE_1_PHONE_SESSION_REUSE",
+              },
+              "[Session] Dine-in: reused phone-owned active session",
+            );
+            resolvedSessionId = phoneOwnedSession.id;
+            rawAssignedWaiterId = phoneOwnedSession.assignedWaiterId;
+          } else {
+            // No session for this table and no session for this phone — create new.
+            // RULE 2: Always persist customerPhone on the new session.
+            const [newSession] = await tx
+              .insert(tableSessions)
+              .values({
+                restaurantId,
+                tableNumber: trimmedTableNumber,
+                sessionType: "dine_in",
+                customerPhone: normalizedPhone,
+                status: "active",
+                updatedAt: new Date(),
+              })
+              .returning({ id: tableSessions.id });
+            req.log.info(
+              {
+                sessionId: newSession.id,
+                restaurantId,
+                tableNumber: trimmedTableNumber,
+                customerPhone: normalizedPhone,
+                rule: "RULE_2_PHONE_STORED",
+              },
+              "[Session] Dine-in: created new session with phone owner",
+            );
+            resolvedSessionId = newSession.id;
+            rawAssignedWaiterId = null;
+          }
+        }
+      } else {
+        // ── Takeaway ───────────────────────────────────────────────────────────
+        // Reuse any ACTIVE session for this phone with FOR UPDATE.
+        // RULE 5: Only 'active' sessions are reused — billed sessions are never reused.
+        const [existingTakeawaySession] = await tx
+          .select({ id: tableSessions.id, assignedWaiterId: tableSessions.assignedWaiterId })
           .from(tableSessions)
           .where(
             and(
               eq(tableSessions.restaurantId, restaurantId),
-              eq(tableSessions.sessionType, "dine_in"),
+              eq(tableSessions.sessionType, "takeaway"),
               eq(tableSessions.customerPhone, normalizedPhone),
               eq(tableSessions.status, "active"),
             ),
           )
           .orderBy(desc(tableSessions.createdAt))
-          .limit(1);
+          .limit(1)
+          .for("update");
 
-        if (phoneOwnedSession) {
-          // RULE 1: Reuse existing active session owned by this phone
+        if (existingTakeawaySession) {
+          resolvedSessionId = existingTakeawaySession.id;
+          rawAssignedWaiterId = existingTakeawaySession.assignedWaiterId;
           req.log.info(
-            {
-              sessionId: phoneOwnedSession.id,
+            { sessionId: resolvedSessionId, restaurantId, customerPhone: normalizedPhone },
+            "[Session] Takeaway: attached order to existing active session",
+          );
+        } else {
+          const [newSession] = await tx
+            .insert(tableSessions)
+            .values({
               restaurantId,
-              requestedTable: trimmedTableNumber,
-              sessionTable: phoneOwnedSession.tableNumber,
+              tableNumber: null,
+              sessionType: "takeaway",
               customerPhone: normalizedPhone,
-              rule: "RULE_1_PHONE_SESSION_REUSE",
-            },
-            "[Session] Dine-in: reused phone-owned active session",
-          );
-          return phoneOwnedSession.id;
-        }
-
-        // No session for this table and no session for this phone — create new.
-        // RULE 2: Always persist customerPhone on the new session.
-        // If a concurrent request wins the race and inserts first, the
-        // partial unique index rejects this insert with a 23505 error,
-        // caught below and converted to TABLE_SESSION_CONFLICT.
-        const [newSession] = await tx
-          .insert(tableSessions)
-          .values({
-            restaurantId,
-            tableNumber: trimmedTableNumber,
-            sessionType: "dine_in",
-            customerPhone: normalizedPhone,
-            status: "active",
-            updatedAt: new Date(),
-          })
-          .returning({ id: tableSessions.id });
-        req.log.info(
-          {
-            sessionId: newSession.id,
-            restaurantId,
-            tableNumber: trimmedTableNumber,
-            customerPhone: normalizedPhone,
-            rule: "RULE_2_PHONE_STORED",
-          },
-          "[Session] Dine-in: created new session with phone owner",
-        );
-        return newSession.id;
-      });
-    } catch (err) {
-      if (err instanceof TableSessionConflictError || isUniqueViolation(err)) {
-        if (isUniqueViolation(err)) {
-          req.log.warn(
-            { restaurantId, tableNumber: trimmedTableNumber, customerPhone: normalizedPhone, rule: "RULE_3_TABLE_CONFLICT_RACE" },
-            "[Session] Dine-in: concurrent insert race lost — rejecting order",
+              status: "active",
+              updatedAt: new Date(),
+            })
+            .returning({ id: tableSessions.id });
+          resolvedSessionId = newSession.id;
+          rawAssignedWaiterId = null;
+          req.log.info(
+            { sessionId: resolvedSessionId, restaurantId, customerPhone: normalizedPhone },
+            "[Session] Takeaway: created new session",
           );
         }
-        res.status(409).json({
-          error: "This table already has an active session. Please contact restaurant staff.",
-          code: "TABLE_SESSION_CONFLICT",
-        });
-        return;
       }
-      throw err;
-    }
-  } else {
-    // ── Takeaway ───────────────────────────────────────────────────────────
-    // Reuse any ACTIVE session for this phone.
-    // RULE 5: Only 'active' sessions are reused — billed sessions are never reused.
-    const [existingTakeawaySession] = await db
-      .select({ id: tableSessions.id })
-      .from(tableSessions)
-      .where(
-        and(
-          eq(tableSessions.restaurantId, restaurantId),
-          eq(tableSessions.sessionType, "takeaway"),
-          eq(tableSessions.customerPhone, normalizedPhone),
-          eq(tableSessions.status, "active"),
-        ),
-      )
-      .orderBy(desc(tableSessions.createdAt))
-      .limit(1);
 
-    if (existingTakeawaySession) {
-      sessionId = existingTakeawaySession.id;
-      req.log.info(
-        { sessionId, restaurantId, customerPhone: normalizedPhone },
-        "[Session] Takeaway: attached order to existing active session",
-      );
-    } else {
-      const [newSession] = await db
-        .insert(tableSessions)
+      // Active Staff Check under transaction:
+      // If the session has an assigned waiter, verify that waiter is still active and has role 'waiter'.
+      // If active, order inherits assignedWaiterId. If inactive or unassigned, assignedWaiterId is null.
+      let effectiveWaiterId: number | null = null;
+      if (rawAssignedWaiterId) {
+        const [activeWaiter] = await tx
+          .select({ id: restaurantStaff.id })
+          .from(restaurantStaff)
+          .where(
+            and(
+              eq(restaurantStaff.id, rawAssignedWaiterId),
+              eq(restaurantStaff.restaurantId, restaurantId),
+              eq(restaurantStaff.role, "waiter"),
+              eq(restaurantStaff.isActive, true),
+            ),
+          )
+          .limit(1);
+        if (activeWaiter) {
+          effectiveWaiterId = activeWaiter.id;
+        }
+      }
+
+      const [newOrder] = await tx
+        .insert(orders)
         .values({
           restaurantId,
-          tableNumber: null,
-          sessionType: "takeaway",
+          tableId: tableId ?? null,
+          tableNumber: tableNumber ?? null,
+          sessionId: resolvedSessionId,
+          assignedWaiterId: effectiveWaiterId,
+          assignmentSource: "inherited",
+          customerName,
           customerPhone: normalizedPhone,
-          status: "active",
+          notes: notes ?? null,
+          subtotal,
+          tax,
+          total,
+          status: "ordered",
+          paymentStatus: initialPaymentStatus,
+          paymentMethod: paymentMethod ?? null,
           updatedAt: new Date(),
         })
-        .returning({ id: tableSessions.id });
-      sessionId = newSession.id;
-      req.log.info(
-        { sessionId, restaurantId, customerPhone: normalizedPhone },
-        "[Session] Takeaway: created new session",
-      );
+        .returning();
+
+      const orderItemValues = items.map((item) => {
+        const dbItem = itemMap.get(item.menuItemId)!;
+        return {
+          orderId: newOrder.id,
+          menuItemId: item.menuItemId,
+          name: dbItem.name,
+          quantity: item.quantity,
+          unitPrice: dbItem.price,
+          isVeg: dbItem.isVeg,
+          notes: item.notes ?? null,
+        };
+      });
+
+      const newCreatedItems = await tx.insert(orderItems).values(orderItemValues).returning();
+
+      return {
+        sessionId: resolvedSessionId,
+        order: newOrder,
+        createdItems: newCreatedItems,
+      };
+    });
+
+    sessionId = txResult.sessionId;
+    order = txResult.order;
+    createdItems = txResult.createdItems;
+  } catch (err) {
+    if (err instanceof TableSessionConflictError || isUniqueViolation(err)) {
+      if (isUniqueViolation(err)) {
+        req.log.warn(
+          { restaurantId, tableNumber: trimmedTableNumber, customerPhone: normalizedPhone, rule: "RULE_3_TABLE_CONFLICT_RACE" },
+          "[Session] Dine-in: concurrent insert race lost — rejecting order",
+        );
+      }
+      res.status(409).json({
+        error: "This table already has an active session. Please contact restaurant staff.",
+        code: "TABLE_SESSION_CONFLICT",
+      });
+      return;
     }
+    throw err;
   }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const [order] = await db.insert(orders).values({
-    restaurantId,
-    tableId: tableId ?? null,
-    tableNumber: tableNumber ?? null,
-    sessionId,
-    customerName,
-    customerPhone: normalizedPhone,
-    notes: notes ?? null,
-    subtotal,
-    tax,
-    total,
-    status: "ordered",
-    paymentStatus: initialPaymentStatus,
-    paymentMethod: paymentMethod ?? null,
-    updatedAt: new Date(),
-  }).returning();
-
-  const orderItemValues = items.map((item) => {
-    const dbItem = itemMap.get(item.menuItemId)!;
-    return {
-      orderId: order.id,
-      menuItemId: item.menuItemId,
-      name: dbItem.name,
-      quantity: item.quantity,
-      unitPrice: dbItem.price,
-      isVeg: dbItem.isVeg,
-      notes: item.notes ?? null,
-    };
-  });
-
-  const createdItems = await db.insert(orderItems).values(orderItemValues).returning();
 
   // Mark table as occupied if tableId provided
   if (tableId) {

@@ -35,6 +35,10 @@ const REQUIRED_TABLES = [
   "partners",
   "partner_commissions",
   "partner_audit_logs",
+  // 0038_waiter_chef_staff_workflow
+  "restaurant_staff",
+  "session_activity_logs",
+  "order_activity_logs",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> = [
@@ -72,6 +76,16 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> 
   // 0031_partner_system
   { table: "partners",                   column: "referral_code",           note: "added in migration 0031"       },
   { table: "partner_commissions",        column: "subscription_transaction_id", note: "added in migration 0031" },
+  // 0038_waiter_chef_staff_workflow
+  { table: "restaurants",                 column: "chef_dashboard_enabled",  note: "added in migration 0038"       },
+  { table: "table_sessions",              column: "assigned_waiter_id",      note: "added in migration 0038"       },
+  { table: "orders",                      column: "assigned_waiter_id",      note: "added in migration 0038"       },
+  { table: "orders",                      column: "assignment_source",       note: "added in migration 0038"       },
+  { table: "restaurant_staff",           column: "token_version",           note: "added in migration 0038"       },
+  { table: "session_activity_logs",      column: "action",                  note: "added in migration 0038"       },
+  { table: "order_activity_logs",        column: "action",                  note: "added in migration 0038"       },
+  // 0039_staff_pin_connection
+  { table: "restaurant_staff",           column: "connection_pin_digest",   note: "added in migration 0039"       },
 ];
 
 const REQUIRED_INDEXES: Array<{ indexName: string; tableName: string }> = [

@@ -267,6 +267,20 @@
       "when": 1786348800000,
       "tag": "0037_restaurant_location_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786435200000,
+      "tag": "0038_waiter_chef_staff_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1786521600000,
+      "tag": "0039_staff_pin_connection",
+      "breakpoints": true
     }
   ]
 }

@@ -12,8 +12,11 @@ import {
   imageBlobs,
   tableSessions,
   sessionBills,
+  restaurantStaff,
+  sessionActivityLogs,
+  orderActivityLogs,
 } from "@workspace/db";
-import { eq, and, gte, lte, sql, desc, inArray, ne } from "drizzle-orm";
+import { eq, and, gte, lte, sql, desc, inArray, ne, gt, isNull, or } from "drizzle-orm";
 import { requireOwner } from "../middlewares/auth";
 import { logger } from "../lib/logger";
 import QRCode from "qrcode";
@@ -21,7 +24,8 @@ import bcrypt from "bcryptjs";
 import type { RequestHandler, Request, Response } from "express";
 import multer from "multer";
 import { extname } from "path";
-import { randomUUID } from "crypto";
+import { randomUUID, randomInt } from "crypto";
+import { hashPinDigest } from "../lib/staffToken";
 import sharp from "sharp";
 import { addConnection, removeConnection } from "../lib/orderEvents";
 import { extractPaymentData, matchPayment, isOcrConfigured } from "../services/ocr";
@@ -525,12 +529,29 @@ const listOrders: RequestHandler = async (req, res) => {
     itemsByOrder.get(item.orderId)!.push(item);
   }
 
-  res.json(allOrders.map((o) => ({
-    ...o,
-    paymentScreenshotUrl: null,          // excluded from list — fetch individually on demand
-    hasScreenshot: !!o.paymentScreenshotUrl,
-    items: itemsByOrder.get(o.id) ?? [],
-  })));
+  const staffRows = await db
+    .select({
+      id: restaurantStaff.id,
+      name: restaurantStaff.name,
+      role: restaurantStaff.role,
+      isActive: restaurantStaff.isActive,
+    })
+    .from(restaurantStaff)
+    .where(eq(restaurantStaff.restaurantId, user.restaurantId));
+
+  const staffMap = new Map(staffRows.map((s) => [s.id, s]));
+
+  res.json(allOrders.map((o) => {
+    const waiter = o.assignedWaiterId ? staffMap.get(o.assignedWaiterId) : null;
+    return {
+      ...o,
+      paymentScreenshotUrl: null,          // excluded from list — fetch individually on demand
+      hasScreenshot: !!o.paymentScreenshotUrl,
+      items: itemsByOrder.get(o.id) ?? [],
+      assignedWaiterName: waiter ? waiter.name : null,
+      isWaiterInactive: waiter ? !waiter.isActive : false,
+    };
+  }));
 };
 
 const getOwnerOrder: RequestHandler = async (req, res) => {
@@ -548,68 +569,117 @@ const getOwnerOrder: RequestHandler = async (req, res) => {
 
 const updateOrder: RequestHandler = async (req, res) => {
   const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(404).json({ error: "No restaurant found for this account" });
+    return;
+  }
   const orderId = parseInt(String(req.params.orderId));
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid order ID" });
+    return;
+  }
   const { status, paymentStatus, paymentMethod } = req.body as {
     status?: "ordered" | "preparing" | "ready" | "completed" | "cancelled";
     paymentStatus?: "unpaid" | "paid";
     paymentMethod?: string | null;
   };
 
-  // Strict transition validation when advancing order status
-  if (status && status !== "cancelled") {
-    const [existing] = await db
-      .select({ status: orders.status, paymentStatus: orders.paymentStatus, sessionId: orders.sessionId })
+  const result = await db.transaction(async (tx) => {
+    // 1. Lock restaurant row FOR UPDATE
+    const [resto] = await tx
+      .select({ id: restaurants.id, chefDashboardEnabled: restaurants.chefDashboardEnabled })
+      .from(restaurants)
+      .where(eq(restaurants.id, user.restaurantId!))
+      .limit(1)
+      .for("update");
+
+    if (!resto) {
+      return { status: 404, error: "Restaurant not found" };
+    }
+
+    // 2. Lock target order row FOR UPDATE
+    const [existing] = await tx
+      .select()
       .from(orders)
       .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
-      .limit(1);
-    if (!existing) { res.status(404).json({ error: "Order not found" }); return; }
+      .limit(1)
+      .for("update");
 
-    // Map legacy entry states to "ordered" for transition purposes
-    const LEGACY_ENTRY = new Set(["pending_payment", "awaiting_confirmation", "pending", "confirmed"]);
-    const currentNorm = LEGACY_ENTRY.has(existing.status) ? "ordered" : existing.status;
+    if (!existing) {
+      return { status: 404, error: "Order not found" };
+    }
 
-    const NEXT: Record<string, string> = { ordered: "preparing", preparing: "ready", ready: "completed" };
-    const expectedNext = NEXT[currentNorm];
+    // Strict transition validation when advancing order status
+    if (status && status !== "cancelled") {
+      // Map legacy entry states to "ordered" for transition purposes
+      const LEGACY_ENTRY = new Set(["pending_payment", "awaiting_confirmation", "pending", "confirmed"]);
+      const currentNorm = LEGACY_ENTRY.has(existing.status) ? "ordered" : existing.status;
 
-    if (!expectedNext) {
-      res.status(400).json({ error: `Cannot advance order from status: ${existing.status}` });
-      return;
+      const NEXT: Record<string, string> = { ordered: "preparing", preparing: "ready", ready: "completed" };
+      const expectedNext = NEXT[currentNorm];
+
+      if (!expectedNext) {
+        return { status: 400, error: `Cannot advance order from status: ${existing.status}` };
+      }
+      if (status !== expectedNext) {
+        return { status: 400, error: `Invalid transition: expected ${expectedNext} but got ${status}` };
+      }
+      // Payment guard: only enforce for orders without a sessionId (legacy data).
+      // All current orders are session-based; payment is handled at the session
+      // level via Generate Bill → Approve Payment / Mark Paid.
+      if (status === "completed" && existing.sessionId === null && existing.paymentStatus !== "paid") {
+        return { status: 400, error: "Please complete payment before closing the order" };
+      }
     }
-    if (status !== expectedNext) {
-      res.status(400).json({ error: `Invalid transition: expected ${expectedNext} but got ${status}` });
-      return;
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (status) updates.status = status;
+    if (paymentStatus) updates.paymentStatus = paymentStatus;
+    if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod;
+
+    const [order] = await tx
+      .update(orders)
+      .set(updates)
+      .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
+      .returning();
+
+    if (!order) {
+      return { status: 404, error: "Order not found" };
     }
-    // Payment guard: only enforce for orders without a sessionId (legacy data).
-    // All current orders are session-based; payment is handled at the session
-    // level via Generate Bill → Approve Payment / Mark Paid.
-    if (status === "completed" && existing.sessionId === null && existing.paymentStatus !== "paid") {
-      res.status(400).json({ error: "Please complete payment before closing the order" });
-      return;
+
+    // If status changed, insert order_activity_logs in the same transaction
+    if (status && status !== existing.status) {
+      await tx.insert(orderActivityLogs).values({
+        restaurantId: user.restaurantId!,
+        sessionId: order.sessionId,
+        orderId: order.id,
+        action: status === "cancelled" ? "order_cancelled" : "order_status_override",
+        previousStatus: existing.status,
+        newStatus: status,
+        actorType: "owner",
+        userActorId: user.id,
+        staffActorId: null,
+        metadata: { reason: "owner_override" },
+      });
     }
+
+    // Free the table when completed (known table occupancy defect preserved)
+    if (status === "completed" || status === "cancelled") {
+      if (order.tableId) {
+        await tx.update(restaurantTables).set({ isOccupied: false }).where(eq(restaurantTables.id, order.tableId));
+      }
+    }
+
+    const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+    return { status: 200, data: { ...order, items } };
+  });
+
+  if (result.error) {
+    res.status(result.status).json({ error: result.error });
+    return;
   }
 
-  const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (status) updates.status = status;
-  if (paymentStatus) updates.paymentStatus = paymentStatus;
-  if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod;
-
-  const [order] = await db
-    .update(orders)
-    .set(updates)
-    .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
-    .returning();
-
-  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-
-  // Free the table when completed
-  if (status === "completed" || status === "cancelled") {
-    if (order.tableId) {
-      await db.update(restaurantTables).set({ isOccupied: false }).where(eq(restaurantTables.id, order.tableId));
-    }
-  }
-
-  const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
-  res.json({ ...order, items });
+  res.json(result.data);
 };
 
 const verifyUpiPayment: RequestHandler = async (req, res) => {
@@ -1499,12 +1569,20 @@ const listSessions: RequestHandler = async (req, res) => {
 
   const sessionIds = sessionRows.map((s) => s.id);
 
-  const [sessionOrders, billRows] = await Promise.all([
+  const [sessionOrders, billRows, staffRows] = await Promise.all([
     db.select().from(orders).where(inArray(orders.sessionId, sessionIds)).orderBy(desc(orders.createdAt)),
     db.select().from(sessionBills).where(
       and(inArray(sessionBills.sessionId, sessionIds), ne(sessionBills.status, "cancelled" as const))
     ).orderBy(desc(sessionBills.createdAt)),
+    db.select({
+      id: restaurantStaff.id,
+      name: restaurantStaff.name,
+      role: restaurantStaff.role,
+      isActive: restaurantStaff.isActive,
+    }).from(restaurantStaff).where(eq(restaurantStaff.restaurantId, user.restaurantId)),
   ]);
+
+  const staffMap = new Map(staffRows.map((s) => [s.id, s]));
 
   const orderIds = sessionOrders.map((o) => o.id);
   const allItems = orderIds.length > 0
@@ -1517,12 +1595,17 @@ const listSessions: RequestHandler = async (req, res) => {
     itemsByOrder.get(item.orderId)!.push(item);
   }
 
-  const ordersWithItems = sessionOrders.map((o) => ({
-    ...o,
-    paymentScreenshotUrl: null,
-    hasScreenshot: !!o.paymentScreenshotUrl,
-    items: itemsByOrder.get(o.id) ?? [],
-  }));
+  const ordersWithItems = sessionOrders.map((o) => {
+    const waiter = o.assignedWaiterId ? staffMap.get(o.assignedWaiterId) : null;
+    return {
+      ...o,
+      paymentScreenshotUrl: null,
+      hasScreenshot: !!o.paymentScreenshotUrl,
+      items: itemsByOrder.get(o.id) ?? [],
+      assignedWaiterName: waiter ? waiter.name : null,
+      isWaiterInactive: waiter ? !waiter.isActive : false,
+    };
+  });
 
   const ordersBySession = new Map<number, typeof ordersWithItems>();
   for (const o of ordersWithItems) {
@@ -1546,6 +1629,7 @@ const listSessions: RequestHandler = async (req, res) => {
       );
       const totalAmount = sessionOrdersList.reduce((sum, o) => sum + o.total, 0);
       const bill = billBySession.get(session.id) ?? null;
+      const sessionWaiter = session.assignedWaiterId ? staffMap.get(session.assignedWaiterId) : null;
       return {
         id: session.id,
         tableNumber: session.tableNumber ?? null,
@@ -1554,6 +1638,9 @@ const listSessions: RequestHandler = async (req, res) => {
         status: session.status,
         createdAt: session.createdAt.toISOString(),
         updatedAt: session.updatedAt.toISOString(),
+        assignedWaiterId: session.assignedWaiterId ?? null,
+        assignedWaiterName: sessionWaiter ? sessionWaiter.name : null,
+        isWaiterInactive: sessionWaiter ? !sessionWaiter.isActive : false,
         orderCount: sessionOrdersList.length,
         itemCount,
         totalAmount,
@@ -2911,6 +2998,7 @@ router.get("/owner/orders/stream", requireOwner, streamOrders);
 router.get("/owner/orders", requireOwner, listOrders);
 router.get("/owner/orders/:orderId", requireOwner, getOwnerOrder);
 router.put("/owner/orders/:orderId", requireOwner, updateOrder);
+router.patch("/owner/orders/:orderId", requireOwner, updateOrder);
 router.post("/owner/orders/:orderId/verify-upi", requireOwner, verifyUpiPayment);
 router.post("/owner/orders/:orderId/reject-upi", requireOwner, rejectUpiPayment);
 router.get("/owner/orders/:orderId/whatsapp", requireOwner, getWhatsappBill);
@@ -3023,5 +3111,762 @@ router.post(
   },
   uploadImage,
 );
+
+// ── Owner Staff Management (Phase 2) ─────────────────────────────────────────
+
+const listStaff: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  const staffList = await db
+    .select({
+      id: restaurantStaff.id,
+      restaurantId: restaurantStaff.restaurantId,
+      name: restaurantStaff.name,
+      phone: restaurantStaff.phone,
+      role: restaurantStaff.role,
+      tokenVersion: restaurantStaff.tokenVersion,
+      isActive: restaurantStaff.isActive,
+      connectionPinExpiresAt: restaurantStaff.connectionPinExpiresAt,
+      createdAt: restaurantStaff.createdAt,
+      updatedAt: restaurantStaff.updatedAt,
+    })
+    .from(restaurantStaff)
+    .where(eq(restaurantStaff.restaurantId, user.restaurantId!))
+    .orderBy(desc(restaurantStaff.createdAt));
+
+  const now = new Date();
+  const formatted = staffList.map((s: {
+    id: number;
+    restaurantId: number;
+    name: string;
+    phone: string | null;
+    role: string;
+    tokenVersion: number;
+    isActive: boolean;
+    connectionPinExpiresAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) => ({
+    id: s.id,
+    restaurantId: s.restaurantId,
+    name: s.name,
+    phone: s.phone,
+    role: s.role,
+    isActive: s.isActive,
+    hasActivePin: Boolean(s.connectionPinExpiresAt && s.connectionPinExpiresAt > now),
+    pinExpiresAt: s.connectionPinExpiresAt,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  }));
+
+  res.json({ staff: formatted });
+};
+
+const createStaff: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  const { name, role, phone } = req.body as { name?: string; role?: string; phone?: string };
+
+  if (!name || typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "Staff member name is required" });
+    return;
+  }
+  if (!role || (role !== "waiter" && role !== "chef")) {
+    res.status(400).json({ error: "Role must be either 'waiter' or 'chef'" });
+    return;
+  }
+
+  const [created] = await db
+    .insert(restaurantStaff)
+    .values({
+      restaurantId: user.restaurantId!,
+      name: name.trim(),
+      role,
+      phone: phone?.trim() || null,
+      isActive: true,
+      tokenVersion: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning({
+      id: restaurantStaff.id,
+      restaurantId: restaurantStaff.restaurantId,
+      name: restaurantStaff.name,
+      phone: restaurantStaff.phone,
+      role: restaurantStaff.role,
+      isActive: restaurantStaff.isActive,
+      createdAt: restaurantStaff.createdAt,
+    });
+
+  req.log.info({ staffId: created.id, restaurantId: user.restaurantId, role: created.role }, "[Staff] Created new staff profile");
+  res.status(201).json({ staff: created });
+};
+
+const generateStaffPin: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  const staffId = parseInt(String(req.params.staffId), 10);
+  if (isNaN(staffId)) {
+    res.status(400).json({ error: "Invalid staff ID" });
+    return;
+  }
+
+  const [staff] = await db
+    .select()
+    .from(restaurantStaff)
+    .where(and(eq(restaurantStaff.id, staffId), eq(restaurantStaff.restaurantId, user.restaurantId!)))
+    .limit(1);
+
+  if (!staff) {
+    res.status(404).json({ error: "Staff member not found" });
+    return;
+  }
+
+  // Generate random 6-digit connection PIN (100000 - 999999)
+  let pin = "";
+  let digest = "";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const rawNum = randomInt(100000, 1000000);
+    pin = String(rawNum);
+    digest = hashPinDigest(pin);
+
+    const [existing] = await db
+      .select({ id: restaurantStaff.id })
+      .from(restaurantStaff)
+      .where(
+        and(
+          eq(restaurantStaff.connectionPinDigest, digest),
+          gt(restaurantStaff.connectionPinExpiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+
+    if (!existing) break;
+  }
+
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await db
+    .update(restaurantStaff)
+    .set({
+      connectionPinDigest: digest,
+      connectionPinExpiresAt: expiresAt,
+      connectionPinCreatedAt: new Date(),
+      isActive: true, // Re-enable staff if previously disconnected
+      updatedAt: new Date(),
+    })
+    .where(eq(restaurantStaff.id, staff.id));
+
+  req.log.info({ staffId: staff.id, restaurantId: user.restaurantId }, "[Staff] Generated new connection PIN");
+
+  // PIN is returned to the owner ONCE. Never logged, never stored plaintext in the DB.
+  res.json({
+    pin,
+    expiresAt,
+    staffId: staff.id,
+    name: staff.name,
+    role: staff.role,
+  });
+};
+
+const disconnectStaff: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  const staffId = parseInt(String(req.params.staffId), 10);
+  if (isNaN(staffId)) {
+    res.status(400).json({ error: "Invalid staff ID" });
+    return;
+  }
+
+  const [staff] = await db
+    .select()
+    .from(restaurantStaff)
+    .where(and(eq(restaurantStaff.id, staffId), eq(restaurantStaff.restaurantId, user.restaurantId!)))
+    .limit(1);
+
+  if (!staff) {
+    res.status(404).json({ error: "Staff member not found" });
+    return;
+  }
+
+  // Disconnect immediately revokes tokens (tokenVersion + 1) and disables access
+  await db
+    .update(restaurantStaff)
+    .set({
+      isActive: false,
+      tokenVersion: staff.tokenVersion + 1,
+      connectionPinDigest: null,
+      connectionPinExpiresAt: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(restaurantStaff.id, staff.id));
+
+  req.log.info({ staffId: staff.id, restaurantId: user.restaurantId }, "[Staff] Disconnected staff member");
+  res.json({ success: true, message: "Staff member disconnected and tokens revoked" });
+};
+
+const reconnectStaff: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  const staffId = parseInt(String(req.params.staffId), 10);
+  if (isNaN(staffId)) {
+    res.status(400).json({ error: "Invalid staff ID" });
+    return;
+  }
+
+  const [staff] = await db
+    .select()
+    .from(restaurantStaff)
+    .where(and(eq(restaurantStaff.id, staffId), eq(restaurantStaff.restaurantId, user.restaurantId!)))
+    .limit(1);
+
+  if (!staff) {
+    res.status(404).json({ error: "Staff member not found" });
+    return;
+  }
+
+  await db
+    .update(restaurantStaff)
+    .set({
+      isActive: true,
+      updatedAt: new Date(),
+    })
+    .where(eq(restaurantStaff.id, staff.id));
+
+  req.log.info({ staffId: staff.id, restaurantId: user.restaurantId }, "[Staff] Re-enabled staff member");
+  res.json({ success: true, message: "Staff member re-enabled. Generate a PIN to connect." });
+};
+
+/**
+ * GET /owner/waiters
+ * Returns active waiters only for owner floor management dropdowns.
+ */
+const listWaiters: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.json([]);
+    return;
+  }
+
+  const waiters = await db
+    .select({
+      id: restaurantStaff.id,
+      name: restaurantStaff.name,
+      role: restaurantStaff.role,
+      isActive: restaurantStaff.isActive,
+    })
+    .from(restaurantStaff)
+    .where(
+      and(
+        eq(restaurantStaff.restaurantId, user.restaurantId),
+        eq(restaurantStaff.role, "waiter"),
+        eq(restaurantStaff.isActive, true),
+      ),
+    )
+    .orderBy(restaurantStaff.name);
+
+  res.json(waiters);
+};
+
+/**
+ * POST /owner/sessions/:sessionId/assign-waiter
+ * Sets table_sessions.assigned_waiter_id and cascades to active orders with assignment_source = 'inherited'.
+ * Records to session_activity_logs.
+ */
+const assignSessionWaiter: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const sessionId = parseInt(String(req.params.sessionId), 10);
+  if (isNaN(sessionId)) {
+    res.status(400).json({ error: "Invalid session ID" });
+    return;
+  }
+
+  const { waiterId } = req.body as { waiterId: number | null };
+
+  // Validate waiter if provided
+  let selectedWaiterName: string | null = null;
+  if (waiterId !== null && waiterId !== undefined) {
+    if (typeof waiterId !== "number") {
+      res.status(400).json({ error: "waiterId must be a number or null" });
+      return;
+    }
+
+    const [waiter] = await db
+      .select({ id: restaurantStaff.id, name: restaurantStaff.name, role: restaurantStaff.role, isActive: restaurantStaff.isActive })
+      .from(restaurantStaff)
+      .where(
+        and(
+          eq(restaurantStaff.id, waiterId),
+          eq(restaurantStaff.restaurantId, user.restaurantId),
+          eq(restaurantStaff.role, "waiter"),
+          eq(restaurantStaff.isActive, true),
+        ),
+      )
+      .limit(1);
+
+    if (!waiter) {
+      res.status(400).json({ error: "Selected staff member is not an active waiter in this restaurant" });
+      return;
+    }
+    selectedWaiterName = waiter.name;
+  }
+
+  const targetWaiterId = (waiterId === undefined || waiterId === null) ? null : waiterId;
+
+  // Run assignment transaction
+  const result = await db.transaction(async (tx) => {
+    // Step 1: Lock table_sessions row first
+    const [session] = await tx
+      .select()
+      .from(tableSessions)
+      .where(and(eq(tableSessions.id, sessionId), eq(tableSessions.restaurantId, user.restaurantId!)))
+      .limit(1)
+      .for("update");
+
+    if (!session) {
+      return null;
+    }
+
+    const previousWaiterId = session.assignedWaiterId;
+
+    // Step 2: Update session primary waiter
+    await tx
+      .update(tableSessions)
+      .set({
+        assignedWaiterId: targetWaiterId,
+        updatedAt: new Date(),
+      })
+      .where(eq(tableSessions.id, session.id));
+
+    // Step 3: Atomic single-statement conditional SQL update on active inherited orders
+    // Active orders: 'ordered', 'preparing', 'ready'
+    // Manual overrides and completed/cancelled orders are strictly preserved!
+    const cascadedOrders = await tx
+      .update(orders)
+      .set({
+        assignedWaiterId: targetWaiterId,
+        assignmentSource: "inherited",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(orders.sessionId, session.id),
+          eq(orders.restaurantId, user.restaurantId!),
+          inArray(orders.status, ["ordered", "preparing", "ready"]),
+          or(eq(orders.assignmentSource, "inherited"), isNull(orders.assignmentSource)),
+        ),
+      )
+      .returning({ id: orders.id });
+
+    // Step 4: Insert session activity log in same transaction
+    await tx.insert(sessionActivityLogs).values({
+      restaurantId: user.restaurantId!,
+      sessionId: session.id,
+      action: previousWaiterId !== null ? "session_waiter_reassigned" : "session_waiter_assigned",
+      actorType: "owner",
+      userActorId: user.id,
+      staffActorId: null,
+      metadata: {
+        previousWaiterId,
+        newWaiterId: targetWaiterId,
+        waiterName: selectedWaiterName,
+        cascadedOrdersCount: cascadedOrders.length,
+      },
+      createdAt: new Date(),
+    });
+
+    return {
+      sessionId: session.id,
+      assignedWaiterId: targetWaiterId,
+      cascadedOrdersCount: cascadedOrders.length,
+    };
+  });
+
+  if (!result) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  req.log.info(
+    { sessionId, targetWaiterId, cascadedCount: result.cascadedOrdersCount, restaurantId: user.restaurantId },
+    "[WaiterAssignment] Session waiter assigned",
+  );
+  res.json({ success: true, ...result });
+};
+
+/**
+ * POST /owner/orders/:orderId/assign-waiter
+ * Manual override for an individual order.
+ * Sets orders.assigned_waiter_id and assignment_source = 'manual_override'.
+ * Preserves completed/cancelled orders.
+ * Records to order_activity_logs.
+ * Uses consistent session-first locking protocol (table_sessions -> orders).
+ */
+const assignOrderWaiter: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const orderId = parseInt(String(req.params.orderId), 10);
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid order ID" });
+    return;
+  }
+
+  const { waiterId } = req.body as { waiterId: number };
+  if (!waiterId || typeof waiterId !== "number") {
+    res.status(400).json({ error: "A valid numeric waiterId is required" });
+    return;
+  }
+
+  const [waiter] = await db
+    .select({ id: restaurantStaff.id, name: restaurantStaff.name, role: restaurantStaff.role, isActive: restaurantStaff.isActive })
+    .from(restaurantStaff)
+    .where(
+      and(
+        eq(restaurantStaff.id, waiterId),
+        eq(restaurantStaff.restaurantId, user.restaurantId),
+        eq(restaurantStaff.role, "waiter"),
+        eq(restaurantStaff.isActive, true),
+      ),
+    )
+    .limit(1);
+
+  if (!waiter) {
+    res.status(400).json({ error: "Selected staff member is not an active waiter in this restaurant" });
+    return;
+  }
+
+  const result = await db.transaction(async (tx) => {
+    // Consistent lock hierarchy: Session -> Order -> Mutation/Log
+    // Step 1: Pre-lookup order to determine its session ID
+    const [orderLookup] = await tx
+      .select({ id: orders.id, sessionId: orders.sessionId })
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
+      .limit(1);
+
+    if (!orderLookup) {
+      return { status: 404, error: "Order not found", data: null };
+    }
+
+    // Step 2: If order belongs to a session, lock the parent session row first
+    if (orderLookup.sessionId) {
+      await tx
+        .select({ id: tableSessions.id })
+        .from(tableSessions)
+        .where(and(eq(tableSessions.id, orderLookup.sessionId), eq(tableSessions.restaurantId, user.restaurantId!)))
+        .limit(1)
+        .for("update");
+    }
+
+    // Step 3: Lock the target order row second
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
+      .limit(1)
+      .for("update");
+
+    if (!order) {
+      return { status: 404, error: "Order not found", data: null };
+    }
+
+    if (order.status === "completed" || order.status === "cancelled") {
+      return { status: 400, error: `Cannot reassign ${order.status} orders`, data: null };
+    }
+
+    const previousWaiterId = order.assignedWaiterId;
+    const previousSource = order.assignmentSource;
+
+    await tx
+      .update(orders)
+      .set({
+        assignedWaiterId: waiter.id,
+        assignmentSource: "manual_override",
+        updatedAt: new Date(),
+      })
+      .where(eq(orders.id, order.id));
+
+    await tx.insert(orderActivityLogs).values({
+      restaurantId: user.restaurantId!,
+      sessionId: order.sessionId ?? null,
+      orderId: order.id,
+      action: "order_waiter_override",
+      previousStatus: order.status,
+      newStatus: order.status,
+      actorType: "owner",
+      userActorId: user.id,
+      staffActorId: null,
+      metadata: {
+        previousWaiterId,
+        newWaiterId: waiter.id,
+        waiterName: waiter.name,
+        previousSource,
+      },
+      createdAt: new Date(),
+    });
+
+    return {
+      status: 200,
+      error: null,
+      data: {
+        success: true,
+        orderId: order.id,
+        assignedWaiterId: waiter.id,
+        assignedWaiterName: waiter.name,
+        assignmentSource: "manual_override",
+      },
+    };
+  });
+
+  if (result.error) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+
+  req.log.info({ orderId, waiterId: waiter.id, restaurantId: user.restaurantId }, "[WaiterAssignment] Order waiter manually overridden");
+  res.json(result.data);
+};
+
+/**
+ * POST /owner/orders/:orderId/revert-waiter
+ * Reverts an overridden order back to session inherited waiter.
+ * If session waiter is inactive or session unassigned, assignedWaiterId becomes null.
+ * Sets assignment_source = 'inherited'.
+ * Records to order_activity_logs.
+ * Uses consistent session-first locking protocol (table_sessions -> orders).
+ */
+const revertOrderWaiter: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const orderId = parseInt(String(req.params.orderId), 10);
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid order ID" });
+    return;
+  }
+
+  const result = await db.transaction(async (tx) => {
+    // Consistent lock hierarchy: Session -> Order -> Mutation/Log
+    // Step 1: Pre-lookup order to determine its session ID
+    const [orderLookup] = await tx
+      .select({ id: orders.id, sessionId: orders.sessionId })
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
+      .limit(1);
+
+    if (!orderLookup) {
+      return { status: 404, error: "Order not found", data: null };
+    }
+
+    let sessionAssignedWaiterId: number | null = null;
+
+    // Step 2: If order belongs to a session, lock the parent session row first
+    if (orderLookup.sessionId) {
+      const [session] = await tx
+        .select({ id: tableSessions.id, assignedWaiterId: tableSessions.assignedWaiterId })
+        .from(tableSessions)
+        .where(and(eq(tableSessions.id, orderLookup.sessionId), eq(tableSessions.restaurantId, user.restaurantId!)))
+        .limit(1)
+        .for("update");
+
+      if (session) {
+        sessionAssignedWaiterId = session.assignedWaiterId;
+      }
+    }
+
+    // Step 3: Lock the target order row second
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.restaurantId, user.restaurantId!)))
+      .limit(1)
+      .for("update");
+
+    if (!order) {
+      return { status: 404, error: "Order not found", data: null };
+    }
+
+    if (order.status === "completed" || order.status === "cancelled") {
+      return { status: 400, error: `Cannot reassign ${order.status} orders`, data: null };
+    }
+
+    let targetWaiterId: number | null = null;
+    let targetWaiterName: string | null = null;
+
+    if (sessionAssignedWaiterId) {
+      const [activeWaiter] = await tx
+        .select({ id: restaurantStaff.id, name: restaurantStaff.name })
+        .from(restaurantStaff)
+        .where(
+          and(
+            eq(restaurantStaff.id, sessionAssignedWaiterId),
+            eq(restaurantStaff.restaurantId, user.restaurantId!),
+            eq(restaurantStaff.role, "waiter"),
+            eq(restaurantStaff.isActive, true),
+          ),
+        )
+        .limit(1);
+
+      if (activeWaiter) {
+        targetWaiterId = activeWaiter.id;
+        targetWaiterName = activeWaiter.name;
+      }
+    }
+
+    const previousWaiterId = order.assignedWaiterId;
+
+    await tx
+      .update(orders)
+      .set({
+        assignedWaiterId: targetWaiterId,
+        assignmentSource: "inherited",
+        updatedAt: new Date(),
+      })
+      .where(eq(orders.id, order.id));
+
+    await tx.insert(orderActivityLogs).values({
+      restaurantId: user.restaurantId!,
+      sessionId: order.sessionId ?? null,
+      orderId: order.id,
+      action: "order_waiter_reverted",
+      previousStatus: order.status,
+      newStatus: order.status,
+      actorType: "owner",
+      userActorId: user.id,
+      staffActorId: null,
+      metadata: {
+        previousWaiterId,
+        newWaiterId: targetWaiterId,
+        waiterName: targetWaiterName,
+        assignmentSource: "inherited",
+      },
+      createdAt: new Date(),
+    });
+
+    return {
+      status: 200,
+      error: null,
+      data: {
+        success: true,
+        orderId: order.id,
+        assignedWaiterId: targetWaiterId,
+        assignedWaiterName: targetWaiterName,
+        assignmentSource: "inherited",
+      },
+    };
+  });
+
+  if (result.error) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+
+  req.log.info({ orderId, targetWaiterId: result.data.assignedWaiterId, restaurantId: user.restaurantId }, "[WaiterAssignment] Order waiter reverted to inherited");
+  res.json(result.data);
+};
+
+/**
+ * GET /api/owner/chef-mode
+ * Returns the current Chef Mode status (chefDashboardEnabled) for the authenticated owner's restaurant.
+ */
+const getChefMode: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(404).json({ error: "No restaurant found for this account" });
+    return;
+  }
+
+  const [restaurant] = await db
+    .select({ chefDashboardEnabled: restaurants.chefDashboardEnabled })
+    .from(restaurants)
+    .where(eq(restaurants.id, user.restaurantId))
+    .limit(1);
+
+  if (!restaurant) {
+    res.status(404).json({ error: "Restaurant not found" });
+    return;
+  }
+
+  res.json({ chefDashboardEnabled: Boolean(restaurant.chefDashboardEnabled) });
+};
+
+/**
+ * PATCH /api/owner/chef-mode
+ * Updates the Chef Mode status (chefDashboardEnabled) for the authenticated owner's restaurant.
+ * Strictly validates boolean input.
+ * Executes within a transaction locking the restaurant row with FOR UPDATE as the serialization point.
+ */
+const updateChefMode: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(404).json({ error: "No restaurant found for this account" });
+    return;
+  }
+
+  const { chefDashboardEnabled } = req.body as { chefDashboardEnabled?: unknown };
+  if (typeof chefDashboardEnabled !== "boolean") {
+    res.status(400).json({ error: "chefDashboardEnabled must be a boolean (true or false)" });
+    return;
+  }
+
+  const result = await db.transaction(async (tx) => {
+    // Acquire row-level lock on the restaurant row as the serialization point
+    const [resto] = await tx
+      .select({ id: restaurants.id, chefDashboardEnabled: restaurants.chefDashboardEnabled })
+      .from(restaurants)
+      .where(eq(restaurants.id, user.restaurantId))
+      .limit(1)
+      .for("update");
+
+    if (!resto) {
+      return { status: 404, error: "Restaurant not found", data: null };
+    }
+
+    const [updated] = await tx
+      .update(restaurants)
+      .set({
+        chefDashboardEnabled,
+        updatedAt: new Date(),
+      })
+      .where(eq(restaurants.id, user.restaurantId))
+      .returning({ chefDashboardEnabled: restaurants.chefDashboardEnabled });
+
+    return {
+      status: 200,
+      error: null,
+      data: { chefDashboardEnabled: Boolean(updated.chefDashboardEnabled) },
+    };
+  });
+
+  if (result.error) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+
+  req.log.info(
+    { restaurantId: user.restaurantId, chefDashboardEnabled: result.data!.chefDashboardEnabled },
+    "[ChefMode] Owner updated chef_dashboard_enabled setting",
+  );
+  res.json(result.data);
+};
+
+router.get("/owner/staff", requireOwner, listStaff);
+router.post("/owner/staff", requireOwner, createStaff);
+router.post("/owner/staff/:staffId/pin", requireOwner, generateStaffPin);
+router.post("/owner/staff/:staffId/disconnect", requireOwner, disconnectStaff);
+router.post("/owner/staff/:staffId/reconnect", requireOwner, reconnectStaff);
+router.get("/owner/waiters", requireOwner, listWaiters);
+router.post("/owner/sessions/:sessionId/assign-waiter", requireOwner, assignSessionWaiter);
+router.post("/owner/orders/:orderId/assign-waiter", requireOwner, assignOrderWaiter);
+router.post("/owner/orders/:orderId/revert-waiter", requireOwner, revertOrderWaiter);
+router.get("/owner/chef-mode", requireOwner, getChefMode);
+router.patch("/owner/chef-mode", requireOwner, updateChefMode);
 
 export default router;

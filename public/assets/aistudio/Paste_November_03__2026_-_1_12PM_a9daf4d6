@@ -1,0 +1,1660 @@
+# Bitebend — Waiter + Optional Chef Workflow
+## STRICT READ-ONLY ARCHITECTURE AUDIT
+
+You are auditing the existing **Bitebend** codebase before any implementation is authorized.
+
+This is a **STRICT READ-ONLY ARCHITECTURE AUDIT**.
+
+Your job is NOT to implement the feature.
+
+Your job is to inspect the actual existing repository, database/schema definitions, authentication/authorization architecture, restaurant dashboard, customer ordering flow, order lifecycle, billing/session lifecycle, realtime mechanisms, notifications, and related code, and then produce an evidence-based implementation assessment for a proposed:
+
+**Waiter Assignment + Waiter Dashboard + Optional Chef Dashboard + Staff Notifications workflow.**
+
+---
+
+# 0. ABSOLUTE RULE — READ ONLY
+
+You MUST NOT:
+
+- modify any source file;
+- create any source file;
+- delete any file;
+- rename or move any file;
+- run migrations;
+- modify database schema;
+- modify database data;
+- create database records;
+- alter Supabase policies;
+- alter RLS;
+- alter authentication;
+- change environment variables;
+- install packages;
+- update dependencies;
+- run destructive commands;
+- commit anything;
+- push anything;
+- generate implementation code into the repository;
+- “quick fix” anything you discover;
+- refactor anything;
+- format files in a way that changes them.
+
+Do NOT implement the Waiter/Chef feature.
+
+Do NOT make even a harmless code change.
+
+This phase is inspection and architecture analysis only.
+
+At the end, explicitly confirm:
+
+> ZERO FILES CHANGED  
+> ZERO DATABASE CHANGES  
+> ZERO MIGRATIONS EXECUTED  
+> ZERO IMPLEMENTATION PERFORMED
+
+If you accidentally change anything, report it immediately and do NOT conceal it.
+
+---
+
+# 1. BUSINESS CONTEXT
+
+Bitebend currently has a restaurant ordering workflow.
+
+A customer places an order.
+
+The restaurant receives the order in the Restaurant Dashboard.
+
+The restaurant can accept/process that order.
+
+The order progresses through existing order statuses/stages until it is eventually completed.
+
+A customer/table may place multiple orders during the same dining/session lifecycle.
+
+Those individual orders are processed independently, while billing may remain associated with the customer's/table's larger session until the final bill is generated.
+
+We now want to investigate adding a staff execution layer.
+
+The proposed roles are:
+
+1. Restaurant Owner/Admin/Dashboard
+2. Waiter
+3. Chef — OPTIONAL per restaurant
+
+The existing Restaurant Dashboard should retain full operational control.
+
+---
+
+# 2. PROPOSED HIGH-LEVEL WORKFLOW
+
+This is NOT an implementation instruction.
+
+Use this proposed workflow only to evaluate compatibility with the existing architecture.
+
+## 2.1 Initial order
+
+Customer places order.
+
+Restaurant Dashboard receives it.
+
+Restaurant accepts the order.
+
+Restaurant assigns the accepted order to a waiter.
+
+Ideally, the architecture should also be evaluated for allowing:
+
+**Accepted but temporarily Unassigned**
+
+so acceptance is not blocked if a waiter cannot immediately be selected.
+
+---
+
+# 3. PROPOSED WAITER FLOW
+
+The assigned waiter should eventually have a limited operational interface.
+
+Potential actions:
+
+- view orders assigned to that waiter;
+- Mark Preparing;
+- Mark Ready / Ready to Serve where applicable;
+- Mark Completed after serving the customer.
+
+The waiter must NOT automatically receive full Restaurant Dashboard privileges.
+
+Investigate how this can be enforced at both UI and backend/data-access levels.
+
+Do NOT assume hiding frontend buttons is sufficient authorization.
+
+---
+
+# 4. OPTIONAL CHEF MODE
+
+Chef functionality should be optional at restaurant level.
+
+We need to evaluate two workflows.
+
+## MODE A — Chef Dashboard Disabled
+
+Restaurant accepts order.
+
+Restaurant assigns waiter.
+
+Waiter receives assignment.
+
+Waiter places the order with the kitchen through the restaurant's normal process.
+
+Waiter presses:
+
+**Mark Preparing**
+
+Then, when food becomes ready:
+
+**Mark Ready / Ready to Serve**
+
+Waiter serves the customer.
+
+Waiter presses:
+
+**Mark Completed**
+
+Restaurant Dashboard should reflect every status change.
+
+---
+
+## MODE B — Chef Dashboard Enabled
+
+Restaurant accepts order.
+
+Restaurant assigns waiter.
+
+Waiter receives assignment.
+
+Waiter presses:
+
+**Mark Preparing**
+
+At this point:
+
+- kitchen/chef should be notified;
+- order should appear in the Chef interface;
+- chef can inspect the relevant order information.
+
+Chef should have only the necessary kitchen action.
+
+Proposed Chef action:
+
+**Mark Ready / Ready to Serve**
+
+After Chef marks it Ready:
+
+- Restaurant Dashboard reflects Ready;
+- assigned waiter is notified;
+- waiter collects the food;
+- waiter serves the customer;
+- waiter presses Mark Completed.
+
+Chef should NOT normally be able to:
+
+- accept customer orders;
+- assign waiters;
+- mark orders completed;
+- generate bills;
+- modify restaurant settings;
+- gain Restaurant Dashboard administrative access.
+
+Determine how the existing architecture can enforce this.
+
+---
+
+# 5. RESTAURANT DASHBOARD
+
+Restaurant Dashboard should remain the master operational interface.
+
+Conceptually it should retain the ability to:
+
+- Accept orders;
+- assign waiter;
+- reassign waiter;
+- see assigned waiter;
+- Mark Preparing;
+- Mark Ready;
+- Mark Completed;
+- observe order state;
+- override operational workflow where safely permitted.
+
+DO NOT implement this.
+
+Audit whether the existing architecture supports it and what would need to change.
+
+---
+
+# 6. STAFF MANAGEMENT CONCEPT
+
+A restaurant may have multiple staff members.
+
+Potential roles:
+
+- Waiter
+- Chef
+
+We need to know whether the existing codebase already contains ANY concept of:
+
+- staff;
+- restaurant users;
+- employees;
+- members;
+- roles;
+- restaurant membership;
+- user-to-restaurant relationships;
+- permissions;
+- secondary restaurant accounts;
+- invitations;
+- staff authentication.
+
+Search comprehensively.
+
+Do NOT assume none exists simply because it is not visible in the UI.
+
+Report exact evidence.
+
+Potential future staff attributes may include:
+
+- staff ID;
+- restaurant ID;
+- name;
+- role;
+- active/inactive;
+- authentication identity;
+- availability/duty state.
+
+These are concepts only.
+
+Do NOT create a schema.
+
+Instead determine what existing models can potentially be reused.
+
+---
+
+# 7. ORDER ASSIGNMENT
+
+Audit whether an order currently has any equivalent of:
+
+- assigned user;
+- assigned staff;
+- waiter ID;
+- handler;
+- owner;
+- processor;
+- accepted_by;
+- prepared_by;
+- completed_by;
+- status_updated_by.
+
+Search database definitions AND application code.
+
+Determine whether waiter assignment would require:
+
+- extending an existing model;
+- introducing a new relationship;
+- or using an existing relationship.
+
+Do NOT choose an implementation prematurely.
+
+Report alternatives supported by actual code evidence.
+
+---
+
+# 8. CURRENT ORDER STATE MACHINE — CRITICAL
+
+Map the ACTUAL existing order lifecycle.
+
+Do not infer it from UI labels alone.
+
+Find every status/value used by:
+
+- database;
+- TypeScript types/interfaces;
+- frontend;
+- backend/API;
+- hooks;
+- services;
+- Supabase queries;
+- realtime subscriptions;
+- Restaurant Dashboard;
+- customer menu/order views;
+- billing;
+- analytics if applicable.
+
+Produce the authoritative current lifecycle.
+
+For example, DO NOT assume it is:
+
+Pending → Accepted → Preparing → Ready → Completed
+
+unless the repository proves that.
+
+Report:
+
+- exact persisted status values;
+- exact UI labels;
+- where transitions occur;
+- which component/function triggers each transition;
+- whether transition validation exists;
+- whether arbitrary status jumps are possible;
+- whether completed orders can be reopened;
+- whether status transitions are protected server-side or only UI-side.
+
+Provide exact file paths and relevant symbols/functions.
+
+---
+
+# 9. ORDER vs DINING SESSION vs BILLING
+
+This is one of the most important audit sections.
+
+Investigate how Bitebend represents:
+
+- customer;
+- table;
+- QR session;
+- dining session;
+- cart/order;
+- individual order;
+- multiple orders from same customer/table;
+- running bill;
+- bill generation;
+- completed orders;
+- payment;
+- session closure.
+
+Determine precisely:
+
+If the same customer/table places:
+
+Order #1  
+Order #2  
+Order #3
+
+before generating the bill:
+
+Are these three separate order records?
+
+How are they grouped?
+
+What is the common identifier?
+
+Does billing aggregate them?
+
+Does completing one order affect billing?
+
+Does bill generation mutate order status?
+
+Does bill generation close a table/session?
+
+Could waiter assignment/status updates accidentally interfere with billing?
+
+We need an explicit data-flow explanation.
+
+---
+
+# 10. EXISTING AUTHENTICATION ARCHITECTURE
+
+Audit all authentication relevant to:
+
+- customer;
+- restaurant;
+- restaurant owner;
+- admin;
+- super admin;
+- any existing secondary users.
+
+Determine:
+
+- authentication provider;
+- login architecture;
+- session management;
+- role storage;
+- route guards;
+- protected routes;
+- authorization checks;
+- restaurant ownership verification.
+
+Report exact relevant files.
+
+---
+
+# 11. AUTHORIZATION / PERMISSION MODEL
+
+This section is CRITICAL.
+
+We want eventually to enforce approximately:
+
+### Restaurant/Admin
+
+Full operational order control.
+
+### Waiter
+
+Only allowed operational actions, potentially:
+
+- view assigned/eligible orders;
+- Mark Preparing;
+- Mark Ready when Chef Mode is disabled;
+- Mark Completed.
+
+### Chef
+
+Only kitchen-relevant orders and:
+
+- Mark Ready.
+
+Audit whether the current architecture can securely enforce this.
+
+Check:
+
+- frontend guards;
+- backend/API validation;
+- Supabase RLS;
+- database policies;
+- RPC/functions;
+- role checks;
+- restaurant_id scoping.
+
+Identify any scenario where a malicious waiter could manually call an API/query and update something that the UI hides.
+
+Do NOT fix it.
+
+Report it.
+
+---
+
+# 12. MULTI-TENANT RESTAURANT ISOLATION
+
+Determine how Bitebend prevents Restaurant A from accessing Restaurant B's:
+
+- orders;
+- tables;
+- bills;
+- customers;
+- settings;
+- future staff.
+
+Identify the exact tenant key, likely restaurant ID or equivalent.
+
+Audit all relevant RLS/policy/application filtering.
+
+Explain how future waiter/chef accounts could safely remain restricted to exactly one or authorized restaurants.
+
+Do not assume one user can belong to only one restaurant unless the schema proves it.
+
+---
+
+# 13. REALTIME ARCHITECTURE
+
+Determine whether Restaurant Dashboard currently receives orders/status changes through:
+
+- Supabase Realtime;
+- websocket;
+- polling;
+- refetch;
+- React Query invalidation;
+- manual refresh;
+- another mechanism.
+
+Trace the exact flow.
+
+Example questions:
+
+Customer places order → how does Restaurant Dashboard discover it?
+
+Restaurant changes status → how does customer UI discover it?
+
+If waiter changes status → could Restaurant Dashboard update automatically using existing mechanisms?
+
+If chef marks Ready → could Waiter Dashboard update automatically?
+
+Identify existing subscriptions/hooks/channels and their filters.
+
+---
+
+# 14. CURRENT NOTIFICATION INFRASTRUCTURE
+
+Search comprehensively for:
+
+- notifications;
+- notification tables;
+- in-app notifications;
+- push notifications;
+- browser notifications;
+- service workers;
+- PWA push;
+- Firebase;
+- FCM;
+- Web Push;
+- Supabase realtime notification patterns;
+- toast alerts;
+- audio alerts;
+- unread badges;
+- notification counts.
+
+Determine what actually exists today.
+
+Separate:
+
+1. transient UI toast;
+2. persistent in-app notification;
+3. realtime event;
+4. browser/device push notification.
+
+Do NOT treat these as the same thing.
+
+---
+
+# 15. PROPOSED EVENT/NOTIFICATION REQUIREMENTS
+
+Evaluate how the existing architecture could support events such as:
+
+### Restaurant → Waiter
+
+New order assigned.
+
+Example concept:
+
+"New order assigned — Table 5 / Order #128"
+
+### Waiter → Chef
+
+When waiter presses Mark Preparing and Chef Mode is enabled:
+
+"New kitchen order — Table 5 / Order #128"
+
+### Chef → Waiter
+
+When chef marks Ready:
+
+"Order #128 is ready for pickup — Table 5"
+
+The notification should ideally be an alert mechanism, NOT the authoritative workflow state.
+
+Audit whether this principle fits the current system.
+
+The order/database state should remain the source of truth.
+
+If a notification fails, the correct order state should still be visible after realtime update/refetch.
+
+---
+
+# 16. CHEF MODE CONFIGURATION
+
+Search existing restaurant settings/configuration.
+
+Determine where an optional setting such as:
+
+Chef Dashboard Enabled = true/false
+
+could conceptually belong.
+
+Do NOT add it.
+
+Report:
+
+- current restaurant settings model;
+- existing feature flags;
+- existing booleans/config objects;
+- existing settings UI;
+- safest architectural location based on current design.
+
+Also evaluate whether the setting should affect permissions, UI, or workflow behavior.
+
+---
+
+# 17. STATUS OWNERSHIP
+
+Analyze the implications of these proposed permissions.
+
+When Chef Mode is OFF:
+
+Waiter may:
+
+Preparing → Ready → Completed
+
+When Chef Mode is ON:
+
+Waiter:
+
+Preparing → [wait]
+
+Chef:
+
+Ready
+
+Waiter:
+
+Completed
+
+Restaurant Dashboard:
+
+Full operational override.
+
+Determine whether the existing state architecture can express this cleanly.
+
+Pay special attention to race conditions such as:
+
+- waiter and restaurant changing status simultaneously;
+- chef and restaurant marking Ready simultaneously;
+- waiter attempting Ready while Chef Mode is enabled;
+- order being reassigned during preparation;
+- Completed being submitted twice.
+
+---
+
+# 18. ORDER REASSIGNMENT
+
+Evaluate the architecture needed for:
+
+Order accepted → Waiter A assigned.
+
+Then:
+
+Waiter A becomes unavailable.
+
+Restaurant reassigns order to Waiter B.
+
+Investigate:
+
+- whether assignment history should matter;
+- how old waiter access could be revoked;
+- whether new waiter should receive notification;
+- whether status remains unchanged;
+- whether completed orders should be reassignable.
+
+Do not implement.
+
+---
+
+# 19. UNASSIGNED ORDERS
+
+Evaluate whether the following is safe:
+
+Restaurant accepts an order without immediately assigning a waiter.
+
+Order becomes:
+
+**Accepted — Unassigned**
+
+Restaurant can assign it later.
+
+Determine:
+
+- compatibility with current status system;
+- whether assignment needs to be independent of order status;
+- whether existing dashboard filters could accommodate it;
+- risks of forgotten/unassigned orders.
+
+---
+
+# 20. ACTIVITY / AUDIT HISTORY
+
+Investigate whether Bitebend currently stores history for:
+
+- status changes;
+- order events;
+- user actions;
+- payments;
+- admin actions;
+- timestamps.
+
+We may eventually want an order timeline such as:
+
+12:31 — Order placed  
+12:32 — Accepted by Restaurant  
+12:32 — Assigned to Rahul  
+12:34 — Preparing by Rahul  
+12:46 — Ready by Chef  
+12:47 — Waiter notified  
+12:51 — Completed by Rahul
+
+Do NOT create this.
+
+Determine whether current timestamps/logs already make any of this possible.
+
+Explain whether proper future audit history would require a new event/history model.
+
+---
+
+# 21. STAFF DASHBOARD ARCHITECTURE
+
+Analyze the safest way to expose waiter/chef interfaces.
+
+Consider actual existing repository architecture before recommending anything.
+
+Evaluate possibilities such as:
+
+- separate routes inside existing restaurant application;
+- separate staff portal;
+- role-based dashboard within existing portal;
+- shared order components with permission-aware actions.
+
+Do NOT decide based on preference alone.
+
+Use existing application boundaries, auth architecture and deployment structure as evidence.
+
+---
+
+# 22. MOBILE-FIRST REQUIREMENT
+
+Waiters and chefs will likely use phones.
+
+Audit whether the existing dashboard/component architecture is suitable for:
+
+- small mobile screens;
+- touch controls;
+- fast status actions;
+- live updates;
+- notification badges.
+
+Identify reusable mobile components if any.
+
+Do not redesign the UI yet.
+
+---
+
+# 23. SECURITY THREAT REVIEW
+
+Perform a targeted threat review for the proposed staff system.
+
+At minimum investigate:
+
+- IDOR;
+- cross-restaurant order access;
+- waiter accessing another waiter's orders;
+- chef accessing non-kitchen orders;
+- waiter calling restaurant-admin endpoints;
+- role manipulation;
+- restaurant_id manipulation;
+- direct Supabase table writes;
+- unauthorized status transitions;
+- assignment tampering;
+- client-side-only authorization;
+- stale sessions after staff deactivation.
+
+Rate findings:
+
+CRITICAL  
+HIGH  
+MEDIUM  
+LOW
+
+Do not exploit production systems.
+
+Use repository/static architecture evidence only.
+
+---
+
+# 24. CONCURRENCY / IDEMPOTENCY REVIEW
+
+Analyze how current order updates behave when multiple clients act at once.
+
+Investigate:
+
+- optimistic updates;
+- last-write-wins behavior;
+- conditional updates;
+- updated_at/version fields;
+- transactions;
+- RPC usage;
+- duplicate actions.
+
+Example:
+
+Chef marks Ready at 12:40:01.
+
+Restaurant simultaneously marks Completed at 12:40:01.
+
+What would happen with the current architecture?
+
+Do not simulate destructive writes.
+
+Analyze from code/schema only.
+
+---
+
+# 25. OFFLINE / DISCONNECTED BEHAVIOR
+
+Determine what happens if:
+
+- waiter loses internet;
+- chef loses internet;
+- dashboard reconnects;
+- realtime event is missed;
+- browser is backgrounded;
+- notification is missed.
+
+Does current architecture refetch authoritative state?
+
+Could stale status remain visible?
+
+Report findings.
+
+---
+
+# 26. EXISTING COMPONENT REUSE
+
+Identify components/hooks/services that could potentially be reused for:
+
+- order cards;
+- status badges;
+- status actions;
+- tables;
+- restaurant context;
+- auth;
+- realtime;
+- notifications;
+- mobile layout.
+
+Provide exact paths.
+
+Do NOT refactor them.
+
+---
+
+# 27. DATABASE IMPACT ANALYSIS
+
+Without modifying anything, determine what data capabilities are missing for this feature.
+
+Classify potential needs as:
+
+### Already Exists
+
+Can be reused directly.
+
+### Existing Model Can Likely Be Extended
+
+Would require a future schema change.
+
+### New Concept Likely Required
+
+No appropriate existing model.
+
+Consider, based on actual repository evidence:
+
+- restaurant staff;
+- staff role;
+- staff authentication;
+- waiter assignment;
+- chef mode;
+- assignment timestamps;
+- assigned_by;
+- status actor;
+- notification recipient;
+- persistent notifications;
+- activity history.
+
+Do NOT write or execute SQL.
+
+---
+
+# 28. EXISTING RLS/POLICY IMPACT
+
+Inspect existing policies/migrations/schema files.
+
+For every relevant table, explain:
+
+- who can SELECT;
+- who can INSERT;
+- who can UPDATE;
+- who can DELETE;
+- how restaurant ownership is validated.
+
+Then analyze how waiter/chef roles would affect those policies.
+
+Again:
+
+DO NOT modify RLS.
+
+---
+
+# 29. BILLING SAFETY ANALYSIS
+
+The waiter/chef feature must NOT accidentally break billing.
+
+Audit dependencies between:
+
+- order status;
+- completed status;
+- bill generation;
+- payment state;
+- table/session state.
+
+Determine whether changing who marks Completed could have side effects.
+
+Identify every function/component/query that treats `completed` specially.
+
+This section must be evidence-based.
+
+---
+
+# 30. CUSTOMER EXPERIENCE IMPACT
+
+Determine what order statuses the customer currently sees.
+
+If Restaurant/Waiter/Chef updates the same underlying order status:
+
+Will customer UI automatically display it?
+
+Would exposing internal staff statuses unintentionally change customer-facing wording?
+
+Should internal operational state potentially be separate from customer-facing state?
+
+Do NOT implement.
+
+Analyze based on existing code.
+
+---
+
+# 31. ANALYTICS / REPORTING IMPACT
+
+Search for analytics, reporting, order metrics, sales totals and dashboard counts that depend on statuses.
+
+Determine whether introducing/reinterpreting:
+
+Preparing  
+Ready  
+Completed
+
+could alter:
+
+- revenue;
+- order counts;
+- completed order metrics;
+- sales reports;
+- dashboard summaries.
+
+Report every discovered dependency.
+
+---
+
+# 32. DELETE / DEACTIVATE STAFF EDGE CASE
+
+Analyze future behavior if:
+
+- waiter has active assigned orders;
+- restaurant deactivates waiter;
+- waiter account is deleted;
+- chef is disabled while kitchen orders are active.
+
+Determine what architecture constraints will be required.
+
+Do NOT implement them.
+
+---
+
+# 33. ROLE CHANGE EDGE CASE
+
+Consider:
+
+Waiter → Chef
+
+Chef → Waiter
+
+Active → Inactive
+
+What existing authentication/session architecture means for permission refresh.
+
+Could an already logged-in user retain old privileges?
+
+Report.
+
+---
+
+# 34. MULTIPLE CHEFS
+
+Although first implementation may not require chef assignment, analyze whether the proposed architecture would accidentally prevent future support for:
+
+- multiple chefs;
+- kitchen stations;
+- shared kitchen queue.
+
+Do NOT over-engineer a solution.
+
+Simply identify whether any proposed architectural direction would create a dead end.
+
+---
+
+# 35. MULTIPLE WAITERS
+
+Restaurant must support multiple waiters.
+
+Audit what will be required for:
+
+- list of active waiters;
+- assignment;
+- reassignment;
+- filtering;
+- waiter-specific order visibility.
+
+Determine whether current query patterns can support this efficiently.
+
+---
+
+# 36. PERFORMANCE REVIEW
+
+Estimate impact of staff dashboards on:
+
+- realtime subscriptions;
+- order queries;
+- restaurant dashboard queries;
+- notification queries;
+- mobile clients.
+
+Look for potential N+1 queries or broad unfiltered realtime subscriptions.
+
+No premature optimization.
+
+Only identify actual architectural concerns.
+
+---
+
+# 37. REQUIRED CURRENT-STATE ARCHITECTURE MAP
+
+Provide a concise architecture map showing the CURRENT system only.
+
+For example:
+
+Customer Menu
+↓
+Order Creation Service
+↓
+Database
+↓
+Restaurant Dashboard
+↓
+Status Update
+↓
+Billing / Customer State
+
+But use actual repository components/services/tables.
+
+Include exact paths/names.
+
+---
+
+# 38. REQUIRED PROPOSED ARCHITECTURE MAP
+
+After auditing the current system, provide a conceptual future map.
+
+Example only:
+
+Customer
+↓
+Order
+↓
+Restaurant Dashboard
+↓
+Waiter Assignment
+↓
+Waiter
+↓
+Preparing
+↓
+Chef Queue (if enabled)
+↓
+Ready
+↓
+Waiter
+↓
+Completed
+↓
+Existing Billing Lifecycle
+
+Clearly distinguish:
+
+**Existing components**
+
+from
+
+**Potential new components**.
+
+Do NOT implement.
+
+---
+
+# 39. REQUIRED STATE TRANSITION MATRIX
+
+Create a proposed compatibility matrix based on audit findings.
+
+Format similar to:
+
+| Current State | Action | Restaurant | Waiter | Chef | Proposed Next State |
+|---|---|---:|---:|---:|---|
+| New | Accept | Yes | No | No | Accepted |
+| Accepted | Assign Waiter | Yes | No | No | Accepted |
+| Accepted | Mark Preparing | Yes | Assigned waiter | No | Preparing |
+| Preparing | Mark Ready — Chef OFF | Yes | Assigned waiter | No | Ready |
+| Preparing | Mark Ready — Chef ON | Yes | Normally No | Yes | Ready |
+| Ready | Mark Completed | Yes | Assigned waiter | No | Completed |
+
+BUT:
+
+Do not blindly use this example.
+
+Adjust it according to the ACTUAL existing statuses and architecture.
+
+Clearly identify where a proposed state does not currently exist.
+
+---
+
+# 40. REQUIRED PERMISSION MATRIX
+
+Produce a matrix covering at minimum:
+
+- View restaurant orders
+- View assigned orders
+- Accept
+- Assign waiter
+- Reassign waiter
+- Preparing
+- Ready
+- Completed
+- Generate bill
+- Restaurant settings
+- Staff management
+- Chef mode configuration
+
+Across:
+
+- Restaurant Owner/Admin
+- Waiter
+- Chef
+- Customer
+- Super Admin if relevant
+
+Distinguish:
+
+**Current permission**
+
+vs
+
+**Proposed future permission**.
+
+---
+
+# 41. REQUIRED DATA MODEL GAP TABLE
+
+Provide:
+
+| Capability | Exists Today? | Existing Location | Gap | Likely Change Category |
+|---|---|---|---|---|
+
+Cover:
+
+- staff identity;
+- role;
+- restaurant membership;
+- waiter assignment;
+- chef mode;
+- order actor;
+- notifications;
+- order history;
+- reassignment;
+- active/inactive staff.
+
+No SQL.
+
+---
+
+# 42. REQUIRED FILE IMPACT MAP
+
+Do NOT change files.
+
+Instead identify files that would LIKELY be involved in a future implementation.
+
+Classify:
+
+### Definitely Relevant
+Existing files directly involved.
+
+### Likely Relevant
+Probably need modification.
+
+### Potential New Files
+May be needed.
+
+For each, explain WHY.
+
+Do not invent paths for new files as though they already exist.
+
+Clearly label hypothetical paths/components as hypothetical.
+
+---
+
+# 43. REQUIRED MIGRATION IMPACT ASSESSMENT
+
+Do NOT create migrations.
+
+State whether implementation is likely to require:
+
+- no migration;
+- small migration;
+- moderate migration;
+- significant migration.
+
+Explain why.
+
+List conceptual schema requirements only.
+
+---
+
+# 44. REQUIRED IMPLEMENTATION PHASE RECOMMENDATION
+
+Do not implement anything.
+
+Based on actual findings, recommend a safe phased implementation plan.
+
+For example only:
+
+P1 — Staff identity / authorization foundation  
+P2 — Waiter assignment  
+P3 — Waiter dashboard  
+P4 — Chef mode  
+P5 — Notifications  
+P6 — Audit timeline  
+P7 — hardening / race conditions
+
+Change these phases if repository evidence suggests a safer sequence.
+
+For every phase provide:
+
+- scope;
+- dependencies;
+- risk;
+- verification requirements;
+- rollback considerations.
+
+---
+
+# 45. MINIMUM VIABLE VERSION vs FUTURE ENHANCEMENTS
+
+Separate:
+
+## MVP
+
+Only what is necessary to safely support the requested workflow.
+
+## Later Enhancements
+
+Examples might include:
+
+- waiter workload count;
+- automatic assignment;
+- kitchen stations;
+- service-time analytics;
+- sound alerts;
+- push notifications;
+- staff performance analytics.
+
+Do not let optional future features inflate the MVP.
+
+---
+
+# 46. QUESTIONS / DECISIONS REQUIRED BEFORE IMPLEMENTATION
+
+After inspecting the repository, list ONLY decisions that genuinely require product-owner input.
+
+Do not ask questions that can be answered by inspecting code.
+
+Examples could include:
+
+- Should waiter be allowed to mark Ready when Chef Mode is ON?
+- Should completed orders ever be reopenable?
+- Should a waiter see only assigned orders or all restaurant orders?
+- Should waiter reassignment be allowed after Preparing?
+- Should staff use individual login credentials?
+
+But only ask questions that remain relevant after the audit.
+
+---
+
+# 47. DO NOT ASSUME — VERIFY
+
+You MUST verify all claims from actual code.
+
+For every important conclusion provide:
+
+- exact file path;
+- relevant component/hook/function/table/type/policy name;
+- short explanation of evidence.
+
+Avoid unsupported phrases such as:
+
+"probably"
+"likely currently"
+"should already"
+
+unless explicitly discussing a future design option.
+
+Current-state findings must be evidence-based.
+
+---
+
+# 48. SEARCH SCOPE
+
+Search the entire relevant repository, including where applicable:
+
+- restaurant dashboard;
+- menu/customer application;
+- portal;
+- admin;
+- super-admin;
+- shared packages;
+- hooks;
+- contexts;
+- services;
+- API;
+- Supabase;
+- migrations;
+- schema;
+- SQL;
+- edge functions;
+- types;
+- utilities;
+- notification code;
+- realtime code;
+- billing code;
+- order code;
+- authentication code;
+- routing;
+- package configuration.
+
+Do not restrict inspection to the obvious Restaurant Dashboard page.
+
+---
+
+# 49. GIT / WORKTREE SAFETY
+
+At the beginning and end of the audit, inspect repository state using read-only Git commands if available.
+
+Report:
+
+- repository root;
+- current branch;
+- HEAD commit;
+- `git status --short`.
+
+Do NOT:
+
+- checkout;
+- switch branch;
+- reset;
+- restore;
+- stash;
+- clean;
+- commit;
+- push;
+- pull;
+- merge;
+- rebase.
+
+If pre-existing uncommitted changes exist, identify them as:
+
+**PRE-EXISTING — NOT CREATED BY THIS AUDIT**
+
+Do not touch them.
+
+---
+
+# 50. FINAL REPORT FORMAT
+
+Return the final report in this exact high-level structure:
+
+## A. Executive Result
+
+Overall feasibility:
+
+**SAFE / SAFE WITH REQUIRED FOUNDATION / HIGH-RISK WITHOUT ARCHITECTURAL CHANGES**
+
+Explain briefly.
+
+---
+
+## B. Read-Only Compliance
+
+Report:
+
+- Files changed
+- Files created
+- Files deleted
+- DB changes
+- Migrations executed
+- Git changes
+
+Expected:
+
+**NONE**
+
+---
+
+## C. Current Bitebend Architecture Map
+
+Evidence-based current system.
+
+---
+
+## D. Current Order Lifecycle
+
+Exact statuses and transitions.
+
+---
+
+## E. Multi-Order / Session / Billing Architecture
+
+Explain how multiple orders and final billing currently work.
+
+---
+
+## F. Authentication & Authorization Findings
+
+Include exact files/policies.
+
+---
+
+## G. Restaurant Multi-Tenant Isolation
+
+Explain restaurant scoping and security.
+
+---
+
+## H. Realtime Architecture
+
+Exact existing mechanism.
+
+---
+
+## I. Notification Architecture
+
+What actually exists vs what does not.
+
+---
+
+## J. Existing Staff / Role Capabilities
+
+Evidence-based findings.
+
+---
+
+## K. Waiter Assignment Compatibility
+
+How safely it could fit.
+
+---
+
+## L. Optional Chef Mode Compatibility
+
+How safely it could fit.
+
+---
+
+## M. Proposed State Transition Matrix
+
+Restaurant vs Waiter vs Chef.
+
+---
+
+## N. Proposed Permission Matrix
+
+Current vs future permissions.
+
+---
+
+## O. Data Model Gap Analysis
+
+Use the required table.
+
+---
+
+## P. RLS / Security Impact
+
+Include threat severity.
+
+---
+
+## Q. Billing Safety Analysis
+
+Identify every relevant dependency.
+
+---
+
+## R. Realtime & Concurrency Risks
+
+Including simultaneous updates.
+
+---
+
+## S. Notification/Event Flow Recommendation
+
+Restaurant → Waiter → Chef → Waiter.
+
+---
+
+## T. Edge Cases
+
+Include at minimum:
+
+- waiter reassignment;
+- unassigned orders;
+- waiter deactivation;
+- Chef Mode toggling;
+- multiple orders per table/session;
+- missed notifications;
+- disconnected clients;
+- duplicate status updates;
+- simultaneous status changes.
+
+---
+
+## U. Existing Components That Can Be Reused
+
+Exact paths.
+
+---
+
+## V. File Impact Map
+
+No modifications — planning only.
+
+---
+
+## W. Database / Migration Impact
+
+Conceptual only.
+
+---
+
+## X. MVP Boundary
+
+What first safe version actually needs.
+
+---
+
+## Y. Future Enhancements
+
+Keep separate from MVP.
+
+---
+
+## Z. Recommended Implementation Phases
+
+Ordered by dependency and safety.
+
+---
+
+## AA. Product Decisions Required
+
+Only unresolved product-owner decisions.
+
+---
+
+## AB. Critical Blockers
+
+Anything that MUST be fixed/designed before implementation.
+
+If none, explicitly say:
+
+**No critical blocker identified.**
+
+---
+
+## AC. Final Architecture Recommendation
+
+Give the recommended architecture based on repository evidence.
+
+Explicitly answer:
+
+1. Should Waiter/Chef use the existing restaurant application or a separate interface?
+2. Should staff use individual authenticated identities?
+3. Should waiter assignment be independent of order status?
+4. Should Chef Mode be restaurant-level configuration?
+5. What should remain the single source of truth?
+6. Where must authorization be enforced?
+7. How should notifications relate to authoritative order state?
+8. How should existing billing remain isolated from staff workflow?
+9. What is the safest implementation order?
+10. What should NOT be implemented in the MVP?
+
+---
+
+## AD. Final Read-Only Verification
+
+Finish with:
+
+**WAITer + OPTIONAL CHEF STRICT READ-ONLY AUDIT COMPLETE**
+
+Then explicitly state:
+
+- ZERO FILES CHANGED
+- ZERO FILES CREATED
+- ZERO FILES DELETED
+- ZERO DATABASE CHANGES
+- ZERO MIGRATIONS EXECUTED
+- ZERO RLS/POLICY CHANGES
+- ZERO COMMITS
+- ZERO PUSHES
+- ZERO IMPLEMENTATION PERFORMED
+
+Also report final:
+
+- branch;
+- HEAD;
+- git status.
+
+---
+
+# FINAL INSTRUCTION
+
+Do not begin implementation after completing the audit.
+
+Do not ask for permission to automatically proceed.
+
+Stop after delivering the report.
+
+The purpose of this phase is to allow us to review the architecture together and define a separate, controlled implementation rule only after the audit has been reviewed.
