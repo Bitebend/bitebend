@@ -24,6 +24,29 @@ export function resolveImageUrl<T extends string | null | undefined>(url: T): T 
   return url;
 }
 
+/**
+ * Normalizes any returned payment screenshot payload (data URI, /api path, HTTP URL,
+ * or raw base64 string) into a clean browser-renderable <img src>. Returns null if empty/invalid.
+ */
+export function normalizeScreenshotSrc(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("blob:")) return trimmed;
+  if (trimmed.startsWith("/api/")) return resolveImageUrl(trimmed);
+  if (trimmed.startsWith("data:")) {
+    const match = trimmed.match(/^data:([^;,]+)?(?:;[^,]*)?,(.*)$/is);
+    if (!match) return null;
+    const payload = (match[2] ?? "").replace(/\s+/g, "");
+    if (!payload) return null;
+    const rawMime = (match[1] ?? "image/jpeg").trim().toLowerCase();
+    const mime = rawMime.startsWith("image/") ? rawMime : "image/jpeg";
+    return `data:${mime};base64,${payload}`;
+  }
+  const cleanBase64 = trimmed.replace(/\s+/g, "");
+  return cleanBase64 ? `data:image/jpeg;base64,${cleanBase64}` : null;
+}
+
 const TOKEN_KEY = "bitebend_auth_token";
 
 export function getAuthToken(): string | null {

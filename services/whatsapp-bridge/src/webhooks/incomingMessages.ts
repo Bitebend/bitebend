@@ -28,11 +28,26 @@ import {
   getClientSyncInfo,
   reportClientFailure,
   probeMsgIdb,
+  resolveLidPhone,
   type MediaHints,
 } from '../services/whatsappClient';
-import { enqueueMedia } from '../services/mediaQueue';
+import { enqueueMedia, enqueuePaymentScreenshotWebhook } from '../services/mediaQueue';
 
 const IMAGE_URL_REGEX = /https?:\/\/[^\s]+\.(jpe?g|png)/i;
+const IMAGE_FILENAME_REGEX = /\.(png|jpe?g|webp|gif)$/i;
+
+export function isIncomingScreenshotMessage(msg: Message): boolean {
+  if (msg.type === MessageTypes.IMAGE) return true;
+  if (msg.type === MessageTypes.DOCUMENT) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d = (msg as any)._data;
+    const mime = String(d?.mimetype ?? '').toLowerCase();
+    const filename = String(d?.filename ?? msg.body ?? '').trim();
+    if (mime.startsWith('image/')) return true;
+    if (IMAGE_FILENAME_REGEX.test(filename)) return true;
+  }
+  return false;
+}
 
 // ── Media hints extraction ─────────────────────────────────────────────────────
 
@@ -51,11 +66,11 @@ function extractMediaHints(msg: Message): MediaHints | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const d = (msg as any)._data;
   if (!d || !d.directPath || !d.mediaKey) return null;
-  const rawMime = d.mimetype ? String(d.mimetype) : '';
+  const rawMime = d.mimetype ? String(d.mimetype).split(';')[0].trim().toLowerCase() : '';
   const rawType = d.type ? String(d.type) : 'image';
   const mime = (rawMime && rawMime !== 'application/octet-stream')
     ? rawMime
-    : (rawType === 'image' || !rawType ? 'image/jpeg' : (rawMime || 'image/jpeg'));
+    : (rawType === 'image' || rawType === 'document' || !rawType ? 'image/jpeg' : (rawMime || 'image/jpeg'));
   return {
     directPath:        String(d.directPath),
     mediaKey:          String(d.mediaKey),
@@ -86,16 +101,28 @@ const STALE_CONTEXT_RE =
  *   @lid   — Linked Device ID (multi-device): must resolve via getContact()
  *            because the raw LID value is NOT a phone number.
  */
-async function resolvePhone(msg: Message): Promise<string> {
+async function resolvePhone(restaurantId: number, msg: Message): Promise<string> {
   const raw = msg.from;
   if (raw.endsWith('@c.us')) return raw.replace('@c.us', '');
   if (raw.endsWith('@lid')) {
     try {
       const contact = await msg.getContact();
-      const resolved = contact.number || contact.id.user;
-      logger.debug(`Resolved @lid ${raw} → phone ${resolved}`);
-      return resolved;
+      const contactNumber = contact.number ? contact.number.replace(/\D/g, '') : '';
+      if (contactNumber.length >= 10) {
+        logger.debug(`Resolved @lid ${raw} → contact.number ${contactNumber}`);
+        return contactNumber;
+      }
+      const lidResolved = await resolveLidPhone(restaurantId, raw);
+      if (lidResolved) {
+        logger.debug(`Resolved @lid ${raw} → getContactLidAndPhone ${lidResolved}`);
+        return lidResolved;
+      }
+      const fallback = contact.id.user;
+      logger.debug(`Resolved @lid ${raw} → fallback ${fallback}`);
+      return fallback;
     } catch (err) {
+      const lidResolved = await resolveLidPhone(restaurantId, raw);
+      if (lidResolved) return lidResolved;
       logger.warn(`Could not resolve @lid to phone: ${raw}`, {
         error: (err as Error).message,
       });
@@ -271,7 +298,7 @@ export async function handleIncomingMessage(restaurantId: number, msg: Message):
     return;
   }
 
-  const customerPhone = await resolvePhone(msg);
+  const customerPhone = await resolvePhone(restaurantId, msg);
   const timestamp = new Date(msg.timestamp * 1000).toISOString();
 
   logger.info(`Incoming message from ${customerPhone} → restaurant ${restaurantId}`, {
@@ -279,7 +306,7 @@ export async function handleIncomingMessage(restaurantId: number, msg: Message):
     type:    msg.type,
   });
 
-  if (msg.type === MessageTypes.IMAGE) {
+  if (isIncomingScreenshotMessage(msg)) {
     // Log raw _data at event-fire time for root-cause tracing.
     logRawMessageData(msg);
 
@@ -372,25 +399,25 @@ export async function handleIncomingMessage(restaurantId: number, msg: Message):
     // For @lid senders, mediaHints short-circuits the broken IDB lookup (step 0.5).
     const media = await downloadMediaWithRetry(msg, restaurantId, mediaHints);
 
-    if (!media) {
-      // All inline retries exhausted — enqueue for background retry (never discard).
+    if (!media || !media.data || media.data.length === 0) {
+      // All inline retries exhausted (or empty payload) — enqueue for background retry (never discard).
       enqueueMedia(restaurantId, msg, customerPhone, timestamp, mediaHints);
       return;
     }
 
     // Send base64 data URL directly in the webhook payload.
-    // The API server's /whatsapp/payment-screenshot handler already accepts
-    // "data:" URIs natively (no extra fetch needed).  This eliminates the
-    // fragile HTTP round-trip from the API server back to the bridge just
-    // to retrieve a file that is already in memory.
-    const dataUrl = `data:${media.mimetype};base64,${media.data}`;
+    const cleanMime = String(media.mimetype || 'image/jpeg').split(';')[0].trim().toLowerCase() || 'image/jpeg';
+    const dataUrl = `data:${cleanMime};base64,${media.data}`;
 
-    // Webhook delivery is never retried — only the download is resilient.
     await sendWebhook({ restaurantId, customerPhone, messageType: 'image', imageUrl: dataUrl, timestamp });
     // Pass msg.from as senderJid — this is the raw WhatsApp JID (@c.us or @lid)
     // that the API server stores and matches against session_bills.chat_jid for
     // Priority 0 (deterministic) screenshot matching.
-    await sendPaymentScreenshotWebhook({ restaurantId, customerPhone, imageUrl: dataUrl, timestamp, senderJid: msg.from });
+    const webhookPayload = { restaurantId, customerPhone, imageUrl: dataUrl, timestamp, senderJid: msg.from };
+    const delivered = await sendPaymentScreenshotWebhook(webhookPayload);
+    if (!delivered) {
+      enqueuePaymentScreenshotWebhook(webhookPayload);
+    }
     return;
   }
 
@@ -400,7 +427,11 @@ export async function handleIncomingMessage(restaurantId: number, msg: Message):
       const imageUrl = urlMatch[0];
       logger.info(`Detected image URL in text message from ${customerPhone}`, { imageUrl });
       await sendWebhook({ restaurantId, customerPhone, messageType: 'image', imageUrl, timestamp });
-      await sendPaymentScreenshotWebhook({ restaurantId, customerPhone, imageUrl, timestamp, senderJid: msg.from });
+      const webhookPayload = { restaurantId, customerPhone, imageUrl, timestamp, senderJid: msg.from };
+      const delivered = await sendPaymentScreenshotWebhook(webhookPayload);
+      if (!delivered) {
+        enqueuePaymentScreenshotWebhook(webhookPayload);
+      }
       return;
     }
     await sendWebhook({ restaurantId, customerPhone, messageType: 'text', text: msg.body, timestamp });

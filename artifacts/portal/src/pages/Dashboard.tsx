@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, normalizeScreenshotSrc } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "wouter";
 import { useOrderNotifications } from "@/hooks/useOrderNotifications";
@@ -189,8 +189,7 @@ export default function Dashboard() {
   // Payment Screenshot Inbox
   const [paymentInbox, setPaymentInbox] = useState<PaymentInboxEntry[]>([]);
   const [paymentInboxTotal, setPaymentInboxTotal] = useState(0);
-  const [paymentInboxLoading, setPaymentInboxLoading] = useState(false);
-  const [paymentInboxStatus, setPaymentInboxStatus] = useState<
+  const [paymentInboxStatus] = useState<
     "all" | "matched" | "unmatched" | "ambiguous"
   >("all");
   const [viewingInboxId, setViewingInboxId] = useState<number | null>(null);
@@ -200,11 +199,8 @@ export default function Dashboard() {
   const [loadingInboxImageId, setLoadingInboxImageId] = useState<number | null>(
     null,
   );
+  const [inboxImageError, setInboxImageError] = useState<{ inboxId: number; message: string } | null>(null);
   const [retryingInboxId, setRetryingInboxId] = useState<number | null>(null);
-  const [attachingInboxId, setAttachingInboxId] = useState<number | null>(null);
-  const [selectedInboxBillId, setSelectedInboxBillId] = useState<number | null>(
-    null,
-  );
   const [expandedSessions, setExpandedSessions] = useState<Set<number>>(
     () => new Set(),
   );
@@ -264,6 +260,11 @@ export default function Dashboard() {
   const [viewingScreenshotSessionId, setViewingScreenshotSessionId] = useState<
     number | null
   >(null);
+  const viewingScreenshotSessionIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    viewingScreenshotSessionIdRef.current = viewingScreenshotSessionId;
+  }, [viewingScreenshotSessionId]);
+  const [sessionScreenshotError, setSessionScreenshotError] = useState<{ sessionId: number; message: string } | null>(null);
   const [sessionBillImageZoomed, setSessionBillImageZoomed] = useState(false);
 
   // Incomplete-orders guard modal — shown when Generate Bill is clicked before all orders are completed
@@ -376,7 +377,6 @@ export default function Dashboard() {
   >("all");
   const [inboxLoading, setInboxLoading] = useState(false);
   const [inboxPage, setInboxPage] = useState(1);
-  const [viewingInboxImage, setViewingInboxImage] = useState<{ id: number; data: string | null }>({ id: -1, data: null });
   const [attachEntry, setAttachEntry] = useState<ScreenshotInboxEntry | null>(null);
   const [attachBillId, setAttachBillId] = useState<number | null>(null);
   const [attachConfirmReplace, setAttachConfirmReplace] = useState(false);
@@ -385,13 +385,48 @@ export default function Dashboard() {
   const [restoringInboxId, setRestoringInboxId] = useState<number | null>(null);
   const [archiveConfirmEntry, setArchiveConfirmEntry] = useState<ScreenshotInboxEntry | null>(null);
 
-  const handleSessionScreenshotReceived = useCallback((sessionId: number) => {
-    setSessionScreenshots((prev) => {
-      const next = new Map(prev);
-      next.delete(sessionId);
-      return next;
-    });
+  const fetchSessionScreenshotIntoCache = useCallback(async (sessionId: number) => {
+    setLoadingScreenshotSessionId(sessionId);
+    setSessionScreenshotError(null);
+    try {
+      const data = await apiFetch<{ screenshotUrl: string }>(
+        `/owner/sessions/${sessionId}/bill/screenshot`,
+        { timeoutMs: 25_000 },
+      );
+      const normalized = normalizeScreenshotSrc(data.screenshotUrl);
+      if (!normalized) {
+        setSessionScreenshotError({
+          sessionId,
+          message: "Screenshot image data is empty or invalid",
+        });
+        return;
+      }
+      setSessionScreenshots((prev) =>
+        new Map(prev).set(sessionId, normalized),
+      );
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Could not load screenshot";
+      setSessionScreenshotError({ sessionId, message });
+      toast.error(message);
+    } finally {
+      setLoadingScreenshotSessionId(null);
+    }
   }, []);
+
+  const handleSessionScreenshotReceived = useCallback(
+    (sessionId: number) => {
+      setSessionScreenshots((prev) => {
+        const next = new Map(prev);
+        next.delete(sessionId);
+        return next;
+      });
+      if (viewingScreenshotSessionIdRef.current === sessionId) {
+        void fetchSessionScreenshotIntoCache(sessionId);
+      }
+    },
+    [fetchSessionScreenshotIntoCache],
+  );
 
   const fetchData = useCallback(async () => {
     if (!user) return;
@@ -506,7 +541,28 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user) return;
     void fetchInbox();
-  }, [fetchInbox, user]);
+    if (activeTab !== "payment-inbox") return;
+    const interval = setInterval(() => {
+      void fetchInbox();
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [fetchInbox, user, activeTab]);
+
+  useEffect(() => {
+    if (!user) return;
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === "visible") {
+        void fetchData();
+        void fetchInbox();
+      }
+    };
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    return () => {
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+    };
+  }, [user, fetchData, fetchInbox]);
 
 
   const handleRetryMatch = useCallback(async (inboxId: number) => {
@@ -548,6 +604,14 @@ export default function Dashboard() {
         setAttachConfirmReplace(true);
         return;
       }
+      const targetSession = sessions.find((s) => s.bill?.id === attachBillId);
+      if (targetSession) {
+        setSessionScreenshots((prev) => {
+          const next = new Map(prev);
+          next.delete(targetSession.id);
+          return next;
+        });
+      }
       toast.success("Screenshot attached to session ✓");
       setAttachEntry(null);
       setAttachBillId(null);
@@ -558,7 +622,7 @@ export default function Dashboard() {
     } finally {
       setAttachLoading(false);
     }
-  }, [attachEntry, attachBillId, attachConfirmReplace, fetchData, fetchInbox]);
+  }, [attachEntry, attachBillId, attachConfirmReplace, fetchData, fetchInbox, sessions]);
 
   const handleArchiveScreenshot = useCallback(
     async (entry: ScreenshotInboxEntry) => {
@@ -710,6 +774,11 @@ export default function Dashboard() {
         await apiFetch(`/owner/sessions/${sessionId}/bill/reject`, {
           method: "PATCH",
         });
+        setSessionScreenshots((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
         toast.success("Payment rejected — waiting for new screenshot");
         setViewingScreenshotSessionId(null);
         await fetchData();
@@ -746,125 +815,54 @@ export default function Dashboard() {
   );
 
   const loadSessionScreenshot = useCallback(
-    async (sessionId: number) => {
-      if (sessionScreenshots.has(sessionId)) {
-        setViewingScreenshotSessionId(sessionId);
-        setSessionBillImageZoomed(false);
+    async (sessionId: number, forceRefresh = false) => {
+      setViewingScreenshotSessionId(sessionId);
+      setSessionBillImageZoomed(false);
+      setSessionScreenshotError(null);
+      if (!forceRefresh && sessionScreenshots.has(sessionId)) {
         return;
       }
-      setLoadingScreenshotSessionId(sessionId);
-      try {
-        const data = await apiFetch<{ screenshotUrl: string }>(
-          `/owner/sessions/${sessionId}/bill/screenshot`,
-        );
-        setSessionScreenshots((prev) =>
-          new Map(prev).set(sessionId, data.screenshotUrl),
-        );
-        setViewingScreenshotSessionId(sessionId);
-        setSessionBillImageZoomed(false);
-      } catch {
-        toast.error("Could not load screenshot");
-      } finally {
-        setLoadingScreenshotSessionId(null);
-      }
+      await fetchSessionScreenshotIntoCache(sessionId);
     },
-    [sessionScreenshots],
+    [sessionScreenshots, fetchSessionScreenshotIntoCache],
   );
 
   const loadInboxImage = useCallback(
-    async (inboxId: number) => {
-      if (inboxImages.has(inboxId)) {
-        setViewingInboxId(inboxId);
+    async (inboxId: number, forceRefresh = false) => {
+      setViewingInboxId(inboxId);
+      setInboxImageError(null);
+      if (!forceRefresh && inboxImages.has(inboxId)) {
         return;
       }
       setLoadingInboxImageId(inboxId);
       try {
         const data = await apiFetch<{ screenshotData: string }>(
           `/owner/screenshot-inbox/${inboxId}/image`,
+          { timeoutMs: 25_000 },
         );
+        const normalized = normalizeScreenshotSrc(data.screenshotData);
+        if (!normalized) {
+          setInboxImageError({
+            inboxId,
+            message: "Screenshot image data is empty or invalid",
+          });
+          return;
+        }
         setInboxImages((prev) =>
-          new Map(prev).set(inboxId, data.screenshotData),
+          new Map(prev).set(inboxId, normalized),
         );
-        setViewingInboxId(inboxId);
       } catch (err: unknown) {
-        toast.error(
+        const message =
           err instanceof Error
             ? err.message
-            : "Could not load payment screenshot",
-        );
+            : "Could not load payment screenshot";
+        setInboxImageError({ inboxId, message });
+        toast.error(message);
       } finally {
         setLoadingInboxImageId(null);
       }
     },
     [inboxImages],
-  );
-
-  const handleRetryInboxMatch = useCallback(
-    async (inboxId: number) => {
-      setRetryingInboxId(inboxId);
-      try {
-        const data = await apiFetch<{
-          ok: boolean;
-          matchStatus: string;
-          reason?: string;
-          strategy?: string;
-        }>(`/owner/screenshot-inbox/${inboxId}/retry-match`, {
-          method: "POST",
-        });
-        if (data.matchStatus === "matched")
-          toast.success(
-            `Screenshot matched${data.strategy ? ` via ${data.strategy.replaceAll("_", " ")}` : ""} ✓`,
-          );
-        else
-          toast.info(
-            `Still ${data.matchStatus}${data.reason ? ` — ${data.reason.replaceAll("_", " ")}` : ""}`,
-          );
-        await fetchData();
-      } catch (err: unknown) {
-        toast.error(err instanceof Error ? err.message : "Retry failed");
-      } finally {
-        setRetryingInboxId(null);
-      }
-    },
-    [fetchData],
-  );
-
-  const handleAttachInboxScreenshot = useCallback(
-    async (inboxId: number, billId: number, forceReplace = false) => {
-      setAttachingInboxId(inboxId);
-      try {
-        const data = await apiFetch<{
-          ok?: boolean;
-          needsConfirmation?: boolean;
-          message?: string;
-        }>(`/owner/screenshot-inbox/${inboxId}/attach`, {
-          method: "PATCH",
-          body: JSON.stringify({ sessionBillId: billId, forceReplace }),
-        });
-        if (data.needsConfirmation && !forceReplace) {
-          if (
-            window.confirm(
-              data.message ??
-                "This bill already has a payment screenshot. Replace it?",
-            )
-          ) {
-            await handleAttachInboxScreenshot(inboxId, billId, true);
-          }
-          return;
-        }
-        toast.success("Payment screenshot attached to bill ✓");
-        setViewingInboxId(null);
-        setSelectedInboxBillId(null);
-        await fetchData();
-      } catch (err: unknown) {
-        toast.error(
-          err instanceof Error ? err.message : "Could not attach screenshot",
-        );
-      } finally {
-        setAttachingInboxId(null);
-      }
-    },
-    [fetchData],
   );
 
   const clearError = (id: number) =>
@@ -2375,6 +2373,31 @@ export default function Dashboard() {
                                   </Button>
                                 )}
 
+                                {/* View Proof — preserved screenshot on non-awaiting bill (e.g. after reject) */}
+                                {session.bill?.hasScreenshot &&
+                                  session.bill.status !== "awaiting_verification" &&
+                                  session.bill.status !== "paid" && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 text-xs whitespace-nowrap text-violet-700 border-violet-300 hover:bg-violet-50"
+                                    onClick={() =>
+                                      void loadSessionScreenshot(session.id)
+                                    }
+                                    disabled={
+                                      loadingScreenshotSessionId === session.id
+                                    }
+                                  >
+                                    {loadingScreenshotSessionId ===
+                                    session.id ? (
+                                      <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                    ) : (
+                                      <Camera className="w-3 h-3 mr-1.5" />
+                                    )}
+                                    View Proof
+                                  </Button>
+                                )}
+
                                 {/* Mark Paid — cash / manual payment confirmation */}
                                 {session.bill &&
                                   (session.bill.status === "generated" ||
@@ -2431,16 +2454,26 @@ export default function Dashboard() {
       {(() => {
         const inboxEntry =
           viewingInboxId !== null
-            ? (paymentInbox.find((entry) => entry.id === viewingInboxId) ??
+            ? (screenshotInbox.find((entry) => entry.id === viewingInboxId) ??
+              paymentInbox.find((entry) => entry.id === viewingInboxId) ??
               null)
             : null;
         const inboxSrc =
           viewingInboxId !== null ? inboxImages.get(viewingInboxId) : undefined;
+        const isInboxLoading =
+          viewingInboxId !== null && loadingInboxImageId === viewingInboxId;
+        const activeInboxError =
+          viewingInboxId !== null && inboxImageError?.inboxId === viewingInboxId
+            ? inboxImageError.message
+            : null;
         return (
           <Dialog
             open={viewingInboxId !== null}
             onOpenChange={(open) => {
-              if (!open) setViewingInboxId(null);
+              if (!open) {
+                setViewingInboxId(null);
+                setInboxImageError(null);
+              }
             }}
           >
             <DialogContent className="sm:max-w-[620px] max-h-[92vh] overflow-y-auto">
@@ -2450,8 +2483,8 @@ export default function Dashboard() {
                   Payment Screenshot #{viewingInboxId ?? ""}
                 </DialogTitle>
               </DialogHeader>
-              {inboxEntry && (
-                <div className="space-y-3 py-2">
+              <div className="space-y-3 py-2">
+                {inboxEntry && (
                   <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs space-y-1">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Sender</span>
@@ -2477,26 +2510,71 @@ export default function Dashboard() {
                       </span>
                     </div>
                   </div>
-                  {inboxSrc ? (
-                    <div className="rounded-lg border overflow-hidden bg-black">
-                      <img
-                        src={inboxSrc}
-                        alt="Payment screenshot from WhatsApp"
-                        className="w-full max-h-[65vh] object-contain"
-                      />
-                    </div>
-                  ) : (
-                    <div className="py-10 text-center text-sm text-muted-foreground">
-                      Screenshot data is unavailable.
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
+                {isInboxLoading ? (
+                  <div className="flex items-center justify-center py-10 text-muted-foreground">
+                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                    Loading screenshot…
+                  </div>
+                ) : activeInboxError ? (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 py-8 px-4 text-center space-y-3">
+                    <p className="text-sm text-destructive">{activeInboxError}</p>
+                    {viewingInboxId !== null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void loadInboxImage(viewingInboxId, true)}
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                ) : inboxSrc ? (
+                  <div className="rounded-lg border overflow-hidden bg-black">
+                    <img
+                      src={inboxSrc}
+                      alt="Payment screenshot from WhatsApp"
+                      className="w-full max-h-[65vh] object-contain"
+                      onError={() => {
+                        if (viewingInboxId !== null) {
+                          setInboxImages((prev) => {
+                            const next = new Map(prev);
+                            next.delete(viewingInboxId);
+                            return next;
+                          });
+                          setInboxImageError({
+                            inboxId: viewingInboxId,
+                            message: "Failed to render screenshot image",
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="py-10 text-center text-sm text-muted-foreground space-y-3">
+                    <p>Screenshot data is unavailable.</p>
+                    {viewingInboxId !== null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void loadInboxImage(viewingInboxId, true)}
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
               <DialogFooter>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setViewingInboxId(null)}
+                  onClick={() => {
+                    setViewingInboxId(null);
+                    setInboxImageError(null);
+                  }}
                 >
                   Close
                 </Button>
@@ -2623,7 +2701,29 @@ export default function Dashboard() {
                 )}
 
                 {/* Screenshot */}
-                {sessionScreenshotSrc ? (
+                {loadingScreenshotSessionId === viewingScreenshotSessionId ? (
+                  <div className="flex items-center justify-center py-6 text-muted-foreground">
+                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                    Loading screenshot…
+                  </div>
+                ) : viewingScreenshotSessionId !== null &&
+                  sessionScreenshotError?.sessionId === viewingScreenshotSessionId ? (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 py-6 px-4 text-center space-y-3">
+                    <p className="text-xs text-destructive">
+                      {sessionScreenshotError.message}
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        void loadSessionScreenshot(viewingScreenshotSessionId, true)
+                      }
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                      Retry
+                    </Button>
+                  </div>
+                ) : sessionScreenshotSrc ? (
                   <div className="rounded-lg border overflow-hidden">
                     <div className="flex items-center justify-between px-3 py-2 bg-muted border-b">
                       <p className="text-xs font-semibold text-muted-foreground">
@@ -2685,13 +2785,37 @@ export default function Dashboard() {
                             : { maxHeight: "320px" }
                         }
                         onClick={() => setSessionBillImageZoomed((z) => !z)}
+                        onError={() => {
+                          if (viewingScreenshotSessionId !== null) {
+                            setSessionScreenshots((prev) => {
+                              const next = new Map(prev);
+                              next.delete(viewingScreenshotSessionId);
+                              return next;
+                            });
+                            setSessionScreenshotError({
+                              sessionId: viewingScreenshotSessionId,
+                              message: "Failed to render payment screenshot image",
+                            });
+                          }
+                        }}
                       />
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-center py-6 text-muted-foreground">
-                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                    Loading screenshot…
+                  <div className="rounded-lg border py-6 px-4 text-center space-y-3 text-muted-foreground">
+                    <p className="text-xs">Screenshot unavailable.</p>
+                    {viewingScreenshotSessionId !== null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          void loadSessionScreenshot(viewingScreenshotSessionId, true)
+                        }
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                        Retry
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>
@@ -3034,39 +3158,6 @@ export default function Dashboard() {
           <DialogFooter>
             <Button size="sm" onClick={() => setIncompleteOrdersModal(null)}>
               Got it
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      {/* ── Inbox Screenshot Viewer ─────────────────────────────────── */}
-      <Dialog
-        open={viewingInboxImage.id !== -1}
-        onOpenChange={(open) => { if (!open) setViewingInboxImage({ id: -1, data: null }); }}
-      >
-        <DialogContent className="sm:max-w-[520px] max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Camera className="w-4 h-4 text-violet-600 shrink-0" />
-              Payment Screenshot
-            </DialogTitle>
-          </DialogHeader>
-          <div className="py-2">
-            {viewingInboxImage.data ? (
-              <img
-                src={viewingInboxImage.data}
-                alt="Payment screenshot"
-                className="w-full rounded-lg object-contain max-h-[60vh]"
-              />
-            ) : (
-              <div className="flex items-center justify-center py-10 text-muted-foreground">
-                <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                Loading screenshot…
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button size="sm" variant="outline" onClick={() => setViewingInboxImage({ id: -1, data: null })}>
-              Close
             </Button>
           </DialogFooter>
         </DialogContent>

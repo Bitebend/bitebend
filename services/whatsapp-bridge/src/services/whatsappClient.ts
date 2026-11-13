@@ -849,6 +849,23 @@ export function detectImageMimeType(bytes: Uint8Array | Buffer | number[]): stri
   return null;
 }
 
+export async function resolveLidPhone(
+  restaurantId: number,
+  lidJid: string,
+): Promise<string | null> {
+  const managed = clients.get(restaurantId);
+  if (!managed) return null;
+  try {
+    const results = await managed.client.getContactLidAndPhone([lidJid]);
+    const pn = results?.[0]?.pn;
+    if (!pn) return null;
+    const digits = pn.replace(/@.*$/, '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function downloadMediaDirect(
   restaurantId: number,
   msgId: string,
@@ -928,6 +945,8 @@ export async function downloadMediaDirect(
       //                                  raw JID in the Backbone store)
       //   - getMessagesById([msgId])  → always DataError (@lid JID can't be
       //                                  used to build the IDB compound key)
+      const isLidMsg = msgId.includes('@lid');
+
       if (hints && hints.directPath && hints.mediaKey) {
         try {
           const mockQpl = {
@@ -936,11 +955,12 @@ export async function downloadMediaDirect(
           };
           // 1. Prefer actual MIME from metadata whenever available
           // 2. Only use image/jpeg as fallback when type is image AND metadata is missing/application/octet-stream
-          const isImageType = hints.type === 'image' || !hints.type;
-          const hasUsableMime = Boolean(hints.mimetype && hints.mimetype !== 'application/octet-stream');
+          const isImageType = hints.type === 'image' || hints.type === 'document' || !hints.type;
+          const normalizedHintMime = (hints.mimetype || '').split(';')[0].trim().toLowerCase();
+          const hasUsableMime = Boolean(normalizedHintMime && normalizedHintMime !== 'application/octet-stream');
           const requestMime = hasUsableMime
-            ? hints.mimetype
-            : (isImageType ? 'image/jpeg' : (hints.mimetype || 'image/jpeg'));
+            ? normalizedHintMime
+            : (isImageType ? 'image/jpeg' : (normalizedHintMime || 'image/jpeg'));
 
           const decrypted = await g.require('WAWebDownloadManager')
             .downloadManager.downloadAndMaybeDecrypt({
@@ -955,40 +975,64 @@ export async function downloadMediaDirect(
               downloadQpl:       mockQpl,
             });
 
-          // 3. Validate resulting bytes
-          const detectedMime = sniffImageMime(decrypted);
+          if (!decrypted || decrypted.byteLength === 0) {
+            if (isLidMsg) {
+              return {
+                ok: false,
+                reason: 'media_error',
+                step: '0.5_empty_buffer',
+                detail: 'Decrypted media buffer was empty (0 bytes)',
+                msgFoundVia: 'hints' as const,
+              };
+            }
+          } else {
+            // 3. Validate resulting bytes
+            const detectedMime = sniffImageMime(decrypted);
 
-          // 4. Do not blindly relabel arbitrary application/octet-stream data as JPEG.
-          if (!hasUsableMime && isImageType && !detectedMime) {
+            // 4. Do not blindly relabel arbitrary application/octet-stream data as JPEG.
+            if (!hasUsableMime && isImageType && !detectedMime) {
+              return {
+                ok: false,
+                reason: 'media_error',
+                step: '0.5_hints_magic_bytes',
+                detail: 'Decrypted data does not match JPEG, PNG, WebP or GIF signatures',
+                msgFoundVia: 'hints' as const,
+              };
+            }
+
+            // 5. If downloaded bytes are valid image data, accept and assign detected MIME type
+            const finalMime = detectedMime ?? (hasUsableMime ? normalizedHintMime : 'image/jpeg');
+            const data = await g.WWebJS.arrayBufferToBase64Async(decrypted);
+            if (data && data.length > 0) {
+              return {
+                ok:       true,
+                data,
+                mimetype: finalMime,
+                filename: null,
+                filesize: hints.filesize ?? decrypted.byteLength ?? null,
+              };
+            }
+            if (isLidMsg) {
+              return {
+                ok: false,
+                reason: 'media_error',
+                step: '0.5_empty_base64',
+                detail: 'Converted base64 media payload was empty',
+                msgFoundVia: 'hints' as const,
+              };
+            }
+          }
+        } catch (e: any) {
+          // Hints-based CDN download failed. Return immediately for @lid (where
+          // IDB fails), but allow non-@lid messages to fall through to Steps 1-5
+          // so WA Store / IDB can provide updated media metadata.
+          if (isLidMsg) {
             return {
-              ok: false,
-              reason: 'media_error',
-              step: '0.5_hints_magic_bytes',
-              detail: 'Decrypted data does not match JPEG, PNG, WebP or GIF signatures',
+              ok: false, reason: 'cdn_error', step: '0.5_hints_cdn',
+              detail: `r=${(e as any)?.r} status=${(e as any)?.status} str=${String(e)}`,
               msgFoundVia: 'hints' as const,
             };
           }
-
-          // 5. If downloaded bytes are valid image data, accept and assign detected MIME type
-          const finalMime = detectedMime ?? (hasUsableMime ? hints.mimetype : 'image/jpeg');
-          const data = await g.WWebJS.arrayBufferToBase64Async(decrypted);
-
-          return {
-            ok:       true,
-            data,
-            mimetype: finalMime,
-            filename: null,
-            filesize: hints.filesize ?? decrypted.byteLength ?? null,
-          };
-        } catch (e: any) {
-          // Hints-based CDN download failed.  Return a structured error —
-          // IDB fallback would also fail for @lid so there is no point
-          // continuing to steps 1a/1b.
-          return {
-            ok: false, reason: 'cdn_error', step: '0.5_hints_cdn',
-            detail: `r=${(e as any)?.r} status=${(e as any)?.status} str=${String(e)}`,
-            msgFoundVia: 'hints' as const,
-          };
         }
       }
 
@@ -1147,11 +1191,12 @@ export async function downloadMediaDirect(
           addAnnotations() { return this; },
           addPoint()       { return this; },
         };
-        const isImageType = msg.type === 'image' || !msg.type;
-        const hasUsableMime = Boolean(msg.mimetype && msg.mimetype !== 'application/octet-stream');
+        const isImageType = msg.type === 'image' || msg.type === 'document' || !msg.type;
+        const normalizedMsgMime = (msg.mimetype || '').split(';')[0].trim().toLowerCase();
+        const hasUsableMime = Boolean(normalizedMsgMime && normalizedMsgMime !== 'application/octet-stream');
         const requestMime = hasUsableMime
-          ? msg.mimetype
-          : (isImageType ? 'image/jpeg' : (msg.mimetype || 'image/jpeg'));
+          ? normalizedMsgMime
+          : (isImageType ? 'image/jpeg' : (normalizedMsgMime || 'image/jpeg'));
 
         const decrypted = await g.require('WAWebDownloadManager')
           .downloadManager.downloadAndMaybeDecrypt({
@@ -1166,6 +1211,17 @@ export async function downloadMediaDirect(
             downloadQpl:       mockQpl,
           });
 
+        if (!decrypted || decrypted.byteLength === 0) {
+          return {
+            ok: false,
+            reason: 'media_error',
+            step: 'step_5_empty_buffer',
+            detail: 'Decrypted media buffer was empty (0 bytes)',
+            msgFoundVia,
+            mediaDump,
+          };
+        }
+
         const detectedMime = sniffImageMime(decrypted);
 
         if (!hasUsableMime && isImageType && !detectedMime) {
@@ -1179,8 +1235,19 @@ export async function downloadMediaDirect(
           };
         }
 
-        const finalMime = detectedMime ?? (hasUsableMime ? msg.mimetype : 'image/jpeg');
+        const finalMime = detectedMime ?? (hasUsableMime ? normalizedMsgMime : 'image/jpeg');
         const data = await g.WWebJS.arrayBufferToBase64Async(decrypted);
+
+        if (!data || data.length === 0) {
+          return {
+            ok: false,
+            reason: 'media_error',
+            step: 'step_5_empty_base64',
+            detail: 'Converted base64 media payload was empty',
+            msgFoundVia,
+            mediaDump,
+          };
+        }
 
         return {
           ok:       true,
@@ -1229,19 +1296,26 @@ export async function downloadMediaDirect(
     return (raw as MediaDownloadResult) ?? { ok: false, reason: 'cdn_error', detail: 'null from evaluate' };
   }
 
+  if (typeof raw.data !== 'string' || raw.data.length === 0) {
+    return {
+      ok: false,
+      reason: 'media_error',
+      step: 'node_empty_data',
+      detail: 'Browser returned ok=true with empty base64 data',
+    };
+  }
+
   // Node-side magic-byte confirmation: if payload is valid base64 image data,
   // ensure the exact detected MIME type is preserved on the resulting MessageMedia.
-  let finalMime = raw.mimetype;
-  if (typeof raw.data === 'string' && raw.data.length > 0) {
-    try {
-      const headerBytes = Buffer.from(raw.data.slice(0, 48), 'base64');
-      const detected = detectImageMimeType(headerBytes);
-      if (detected) {
-        finalMime = detected;
-      }
-    } catch {
-      // Keep raw.mimetype on slice/base64 parse fallback
+  let finalMime = String(raw.mimetype || 'image/jpeg').split(';')[0].trim().toLowerCase() || 'image/jpeg';
+  try {
+    const headerBytes = Buffer.from(raw.data.slice(0, 48), 'base64');
+    const detected = detectImageMimeType(headerBytes);
+    if (detected) {
+      finalMime = detected;
     }
+  } catch {
+    // Keep sanitized raw.mimetype on slice/base64 parse fallback
   }
 
   // MessageMedia constructor: (mimetype, data, filename?, filesize?)

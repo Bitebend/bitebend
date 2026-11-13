@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, normalizeScreenshotSrc } from "@/lib/api";
 import type {
   HistoryPage,
   HistoryRevenue,
@@ -192,6 +192,7 @@ function SessionDetailModal({
   const [loading, setLoading] = useState(false);
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [screenshotLoading, setScreenshotLoading] = useState(false);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
   const [resending, setResending] = useState(false);
   const [expandedOrders, setExpandedOrders] = useState<Set<number>>(() => new Set());
 
@@ -199,6 +200,7 @@ function SessionDetailModal({
     if (!open || sessionId === null) {
       setDetail(null);
       setScreenshot(null);
+      setScreenshotError(null);
       setExpandedOrders(new Set());
       return;
     }
@@ -210,13 +212,27 @@ function SessionDetailModal({
   }, [open, sessionId]);
 
   const loadScreenshot = useCallback(() => {
-    if (!sessionId || screenshot || screenshotLoading) return;
+    if (!sessionId || screenshotLoading) return;
     setScreenshotLoading(true);
-    apiFetch<{ screenshotUrl: string }>(`/owner/history/${sessionId}/bill/screenshot`)
-      .then((data) => setScreenshot(data.screenshotUrl))
-      .catch(() => toast.error("Could not load screenshot"))
+    setScreenshotError(null);
+    apiFetch<{ screenshotUrl: string }>(`/owner/history/${sessionId}/bill/screenshot`, {
+      timeoutMs: 25_000,
+    })
+      .then((data) => {
+        const normalized = normalizeScreenshotSrc(data.screenshotUrl);
+        if (!normalized) {
+          setScreenshotError("Screenshot data is empty or invalid");
+          return;
+        }
+        setScreenshot(normalized);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "Could not load screenshot";
+        setScreenshotError(msg);
+        toast.error(msg);
+      })
       .finally(() => setScreenshotLoading(false));
-  }, [sessionId, screenshot, screenshotLoading]);
+  }, [sessionId, screenshotLoading]);
 
   const handleResend = async () => {
     if (!sessionId) return;
@@ -324,7 +340,7 @@ function SessionDetailModal({
                 {/* Screenshot */}
                 {bill.hasScreenshot ? (
                   <div className="px-3 py-2.5 border-t border-border">
-                    {!screenshot && !screenshotLoading && (
+                    {!screenshot && !screenshotLoading && !screenshotError && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -340,11 +356,29 @@ function SessionDetailModal({
                         <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
                       </div>
                     )}
-                    {screenshot && (
+                    {!screenshotLoading && screenshotError && (
+                      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-center space-y-2">
+                        <p className="text-xs text-destructive">{screenshotError}</p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={loadScreenshot}
+                        >
+                          <RotateCcw className="w-3 h-3 mr-1" />
+                          Retry
+                        </Button>
+                      </div>
+                    )}
+                    {screenshot && !screenshotError && (
                       <img
-                        src={screenshot.startsWith("data:") ? screenshot : `data:image/jpeg;base64,${screenshot}`}
+                        src={screenshot}
                         alt="Payment screenshot"
                         className="w-full rounded-lg border border-border"
+                        onError={() => {
+                          setScreenshot(null);
+                          setScreenshotError("Failed to decode payment screenshot image");
+                        }}
                       />
                     )}
                   </div>

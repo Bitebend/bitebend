@@ -15,6 +15,7 @@ import {
   restaurantStaff,
   sessionActivityLogs,
   orderActivityLogs,
+  paymentScreenshotInbox,
 } from "@workspace/db";
 import { eq, and, gte, lte, sql, desc, inArray, ne, gt, isNull, or } from "drizzle-orm";
 import { requireOwner } from "../middlewares/auth";
@@ -71,7 +72,7 @@ async function tryBridgeSend(
       method: "POST",
       headers,
       body: JSON.stringify({ restaurantId, phone, message }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(25000),
     });
     const sendData = (await sendRes.json()) as { success?: boolean; error?: string };
     logger.info({ restaurantId, phone, sendSuccess: sendData.success, sendError: sendData.error }, "[tryBridgeSend] send-message response");
@@ -1876,7 +1877,9 @@ const sendSessionBill: RequestHandler = async (req, res) => {
   const rawDigits = rawCustomerPhone.replace(/\D/g, "").replace(/^0+/, "");
   const customerPhone =
     rawDigits.length === 10                                    ? `91${rawDigits}`
+    : rawDigits.length === 11 && rawDigits.startsWith("0")     ? `91${rawDigits.slice(1)}`
     : rawDigits.length === 12 && rawDigits.startsWith("91")   ? rawDigits
+    : rawDigits.length >= 10 && rawDigits.length <= 15        ? rawDigits
     : rawCustomerPhone; // unrecognised format — store as-is
   const customerName = payableOrders[0]!.customerName;
 
@@ -1959,7 +1962,7 @@ const sendSessionBill: RequestHandler = async (req, res) => {
       method: "POST",
       headers,
       body: JSON.stringify({ restaurantId: user.restaurantId, phone: customerPhone, message }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(25000),
     });
     sendData = (await sendRes.json()) as { success?: boolean; chatJid?: string | null };
     sentViaBridge = sendData.success === true;
@@ -2021,6 +2024,21 @@ const sendSessionBill: RequestHandler = async (req, res) => {
   });
 };
 
+function normalizeStoredScreenshotUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("data:")) {
+    const match = trimmed.match(/^data:([^;,]+)?(?:;[^,]*)?,(.*)$/is);
+    if (!match || !(match[2] ?? "").trim()) return null;
+    const rawMime = (match[1] ?? "image/jpeg").trim().toLowerCase();
+    const mime = rawMime.startsWith("image/") ? rawMime : "image/jpeg";
+    return `data:${mime};base64,${match[2]!.replace(/\s+/g, "")}`;
+  }
+  return `data:image/jpeg;base64,${trimmed.replace(/\s+/g, "")}`;
+}
+
 // ─── Sessions: get session bill screenshot (base64 data URL) ──────────────────
 
 const getSessionBillScreenshot: RequestHandler = async (req, res) => {
@@ -2045,9 +2063,36 @@ const getSessionBillScreenshot: RequestHandler = async (req, res) => {
     .limit(1);
 
   if (!bill) { res.status(404).json({ error: "No bill found for this session" }); return; }
-  if (!bill.screenshotUrl) { res.status(404).json({ error: "No screenshot available for this bill" }); return; }
 
-  res.json({ screenshotUrl: bill.screenshotUrl });
+  let normalizedUrl = normalizeStoredScreenshotUrl(bill.screenshotUrl);
+
+  // Self-healing fallback: if bill.screenshotUrl is missing while an inbox entry
+  // matched to this bill still holds active non-purged screenshot media, serve it.
+  if (!normalizedUrl && bill.screenshotReceivedAt) {
+    const [inboxBackup] = await db
+      .select({ screenshotData: paymentScreenshotInbox.screenshotData })
+      .from(paymentScreenshotInbox)
+      .where(
+        and(
+          eq(paymentScreenshotInbox.restaurantId, user.restaurantId),
+          eq(paymentScreenshotInbox.matchedBillId, bill.id),
+        ),
+      )
+      .orderBy(desc(paymentScreenshotInbox.receivedAt))
+      .limit(1);
+    normalizedUrl = normalizeStoredScreenshotUrl(inboxBackup?.screenshotData);
+  }
+
+  if (!normalizedUrl) {
+    if (bill.screenshotReceivedAt) {
+      res.status(410).json({ error: "Screenshot media has expired (24-hour retention policy)" });
+      return;
+    }
+    res.status(404).json({ error: "No screenshot available for this bill" });
+    return;
+  }
+
+  res.json({ screenshotUrl: normalizedUrl });
 };
 
 // ─── Sessions: approve payment (bill paid → session closed) ───────────────────
@@ -2848,15 +2893,28 @@ const getHistoryScreenshot: RequestHandler = async (req, res) => {
   if (!session) { res.status(404).json({ error: "Session not found" }); return; }
 
   const [bill] = await db
-    .select({ screenshotUrl: sessionBills.screenshotUrl })
+    .select({
+      screenshotUrl: sessionBills.screenshotUrl,
+      screenshotReceivedAt: sessionBills.screenshotReceivedAt,
+    })
     .from(sessionBills)
     .where(and(eq(sessionBills.sessionId, sessionId), ne(sessionBills.status, "cancelled" as const)))
     .orderBy(desc(sessionBills.createdAt))
     .limit(1);
 
-  if (!bill?.screenshotUrl) { res.status(404).json({ error: "No screenshot available" }); return; }
+  if (!bill) { res.status(404).json({ error: "No bill found for this session" }); return; }
 
-  res.json({ screenshotUrl: bill.screenshotUrl });
+  const normalizedUrl = normalizeStoredScreenshotUrl(bill.screenshotUrl);
+  if (!normalizedUrl) {
+    if (bill.screenshotReceivedAt) {
+      res.status(410).json({ error: "Screenshot media has expired (24-hour retention policy)" });
+      return;
+    }
+    res.status(404).json({ error: "No screenshot available" });
+    return;
+  }
+
+  res.json({ screenshotUrl: normalizedUrl });
 };
 
 // ─── History: resend bill for a historical/closed session ─────────────────────

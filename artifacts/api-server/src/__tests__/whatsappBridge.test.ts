@@ -13,7 +13,13 @@ vi.mock("@workspace/db", () => ({
     id: "id",
     restaurantId: "restaurantId",
     imageHash: "imageHash",
+    matchStatus: "matchStatus",
+    matchedBillId: "matchedBillId",
     createdAt: "createdAt",
+  },
+  sessionBills: {
+    id: "id",
+    status: "status",
   },
 }));
 

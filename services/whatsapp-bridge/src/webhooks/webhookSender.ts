@@ -11,7 +11,7 @@ interface WebhookPayload {
   timestamp: string;
 }
 
-interface PaymentScreenshotPayload {
+export interface PaymentScreenshotPayload {
   restaurantId: number;
   customerPhone: string;
   imageUrl: string;
@@ -78,7 +78,7 @@ export async function sendWebhook(payload: WebhookPayload): Promise<void> {
   });
 }
 
-export async function sendPaymentScreenshotWebhook(payload: PaymentScreenshotPayload): Promise<void> {
+export async function sendPaymentScreenshotWebhook(payload: PaymentScreenshotPayload): Promise<boolean> {
   const maxAttempts = config.webhookRetryAttempts;
   const baseDelay = config.webhookRetryDelayMs;
   let lastError: unknown;
@@ -86,7 +86,7 @@ export async function sendPaymentScreenshotWebhook(payload: PaymentScreenshotPay
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await axios.post(config.bitebendPaymentScreenshotUrl, payload, {
-        timeout: 15_000,
+        timeout: 25_000,
         headers: {
           'Content-Type': 'application/json',
           ...(config.bitebendWebhookSecret
@@ -100,7 +100,7 @@ export async function sendPaymentScreenshotWebhook(payload: PaymentScreenshotPay
         phone: payload.customerPhone,
         attempt,
       });
-      return;
+      return true;
     } catch (err) {
       lastError = err;
       const status = axios.isAxiosError(err) ? err.response?.status : null;
@@ -122,4 +122,5 @@ export async function sendPaymentScreenshotWebhook(payload: PaymentScreenshotPay
     phone: payload.customerPhone,
     error: (lastError as Error)?.message,
   });
+  return false;
 }
