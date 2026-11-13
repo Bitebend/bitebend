@@ -170,13 +170,16 @@ async function buildQRLabelPNG(opts: {
   // Draw QR code
   ctx.drawImage(qrCanvas, QR_LEFT, QR_TOP, QR_SIZE, QR_SIZE);
 
-  // ── "bitebend" in bottom border gap ──────────────────────────────────────
+  // ── "bitebend.in" in bottom border gap ───────────────────────────────────
   // Measure brand text width to size the gap correctly
+  const brandText = "bitebend.in";
   const brandFont18 = `italic 400 ${pt(18)}px 'Gabriola','Segoe Script',Georgia,serif`;
   ctx.font = brandFont18;
-  const brandMeasure = ctx.measureText("bitebend");
-  const brandTextW = brandMeasure.width;
+  const brandMeasure = ctx.measureText(brandText);
   const gapPad = cm(0.28);
+  const maxGapW = CARD_W - cardR * 2;
+  const maxBrandW = maxGapW - gapPad * 2;
+  const brandTextW = Math.min(brandMeasure.width, maxBrandW);
   const gapW = brandTextW + gapPad * 2;
   const gapX = W / 2 - gapW / 2;
   const gapY = CARD_BOTTOM - BORDER_PX - 1;
@@ -190,7 +193,7 @@ async function buildQRLabelPNG(opts: {
   ctx.fillStyle = "#ea580c";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("bitebend", W / 2, CARD_BOTTOM);
+  ctx.fillText(brandText, W / 2, CARD_BOTTOM, maxBrandW);
 
   // ── "Area:" label + underline ─────────────────────────────────────────────
   ctx.fillStyle = "#162b6e";
