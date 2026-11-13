@@ -31,6 +31,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { API_BASE } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 // ── Types & Interfaces ────────────────────────────────────────────────────────
@@ -74,6 +75,137 @@ interface WaiterOrder {
 
 type ChefModeState = "on" | "off" | "unknown";
 
+interface StaffMeResponse {
+  staff?: Partial<StaffData>;
+  chefDashboardEnabled?: boolean;
+}
+
+const REQUEST_TIMEOUT_MS = 10_000;
+const NORMAL_POLL_INTERVAL_MS = 7_500;
+const RECONNECT_POLL_INTERVAL_MS = 2_500;
+const MAX_FALLBACK_FAILURE_STREAK = 3;
+const MAX_FALLBACK_STALE_MS = 30_000;
+
+class StaffRequestError extends Error {
+  constructor(
+    public readonly kind: "network" | "auth" | "forbidden" | "http",
+    message: string,
+    public readonly status = 0,
+    public readonly payload?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "StaffRequestError";
+  }
+
+  get isUnreachable(): boolean {
+    return (
+      this.kind === "network" ||
+      this.status === 0 ||
+      this.status === 502 ||
+      this.status === 503 ||
+      this.status === 504
+    );
+  }
+}
+
+async function staffFetchJson<T>(
+  path: string,
+  token: string,
+  init?: RequestInit & { timeoutMs?: number },
+): Promise<T> {
+  const timeoutMs = init?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const externalSignal = init?.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+  }
+
+  const { timeoutMs: _t, signal: _s, ...fetchInit } = init ?? {};
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      cache: "no-store",
+      ...fetchInit,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...fetchInit.headers,
+      },
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    throw new StaffRequestError(
+      "network",
+      isAbort ? "Request timed out while contacting server" : "Unable to reach server",
+      0,
+    );
+  } finally {
+    clearTimeout(timeoutId);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
+  }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  let parsedBody: Record<string, unknown> | undefined;
+  let textBody = "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      parsedBody = (await res.json()) as Record<string, unknown>;
+    } catch {
+      throw new StaffRequestError("network", "Invalid JSON response from server", res.status);
+    }
+  } else {
+    textBody = await res.text().catch(() => "");
+    if (textBody.includes("<!DOCTYPE") || textBody.includes("<html")) {
+      throw new StaffRequestError(
+        "network",
+        `API returned HTML instead of JSON for ${API_BASE}${path}`,
+        0,
+      );
+    }
+  }
+
+  if (!res.ok) {
+    const msg =
+      (parsedBody && typeof parsedBody.error === "string" && parsedBody.error) ||
+      (textBody ? textBody.slice(0, 150) : `Server returned ${res.status}`);
+
+    if (res.status === 401) {
+      throw new StaffRequestError("auth", msg, 401, parsedBody);
+    }
+    if (res.status === 403) {
+      throw new StaffRequestError("forbidden", msg, 403, parsedBody);
+    }
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new StaffRequestError("network", msg, res.status, parsedBody);
+    }
+    throw new StaffRequestError("http", msg, res.status, parsedBody);
+  }
+
+  if (!contentType.includes("application/json")) {
+    throw new StaffRequestError(
+      "network",
+      `Expected JSON response from ${API_BASE}${path} but got ${contentType || "unknown"}`,
+      0,
+    );
+  }
+
+  return parsedBody as T;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatElapsed(dateString: string): string {
@@ -104,6 +236,8 @@ export default function WaiterHome() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [networkError, setNetworkError] = useState(false);
+  const [fallbackExpired, setFallbackExpired] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
   // Chef Mode state machine: "on" | "off" | "unknown"
@@ -121,9 +255,29 @@ export default function WaiterHome() {
   const [emergencyReason, setEmergencyReason] = useState("");
   const [emergencySubmitting, setEmergencySubmitting] = useState(false);
 
-  // Concurrency and unmount guards
+  // Concurrency, bounded fallback, and unmount guards
   const isFetchingRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
+  const pendingManualRef = useRef(false);
   const isMountedRef = useRef(true);
+  const consecutiveFailuresRef = useRef(0);
+  const lastSyncedRef = useRef<Date | null>(null);
+  const activeSyncControllerRef = useRef<AbortController | null>(null);
+
+  const handleAuthRevoked = useCallback(
+    (message = "Staff session expired or revoked by manager.") => {
+      localStorage.removeItem("bitebend_staff_auth");
+      if (isMountedRef.current) {
+        setOrders([]);
+        setFallbackExpired(false);
+        setNetworkError(false);
+        setServerError(null);
+      }
+      toast.error(message);
+      setLocation("/staff/connect");
+    },
+    [setLocation],
+  );
 
   // 1. Initial Authentication & Role Verification
   useEffect(() => {
@@ -160,118 +314,212 @@ export default function WaiterHome() {
 
     return () => {
       isMountedRef.current = false;
+      activeSyncControllerRef.current?.abort();
     };
   }, [setLocation]);
 
-  // 2. Authoritative Data Synchronization (/api/staff/me + /api/staff/waiter/orders)
+  // 2. Authoritative Data Synchronization (${API_BASE}/staff/me + ${API_BASE}/staff/waiter/orders)
   const fetchDashboardData = useCallback(
     async (isManualRefresh = false) => {
-      if (!token || isFetchingRef.current) return;
+      if (!token) return;
+      if (isFetchingRef.current) {
+        pendingRefreshRef.current = true;
+        if (isManualRefresh) pendingManualRef.current = true;
+        return;
+      }
+
       isFetchingRef.current = true;
-      if (isManualRefresh) setRefreshing(true);
+      if (isManualRefresh && isMountedRef.current) setRefreshing(true);
+
+      const syncController = new AbortController();
+      activeSyncControllerRef.current = syncController;
+
+      let authTerminated = false;
 
       try {
-        // A. Authoritative Session & Chef Mode verification via GET /api/staff/me
-        let verifiedChefMode: ChefModeState = "unknown";
-        try {
-          const meRes = await fetch("/api/staff/me", {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
+        const [meResult, ordersResult] = await Promise.allSettled([
+          staffFetchJson<StaffMeResponse>("/staff/me", token, { signal: syncController.signal }),
+          staffFetchJson<WaiterOrder[]>("/staff/waiter/orders", token, { signal: syncController.signal }),
+        ]);
 
-          if (meRes.status === 401) {
-            localStorage.removeItem("bitebend_staff_auth");
-            toast.error("Staff session expired or revoked by manager.");
-            setLocation("/staff/connect");
-            return;
-          }
+        if (!isMountedRef.current || syncController.signal.aborted) return;
 
-          if (meRes.ok) {
-            const meData = await meRes.json();
-            if (typeof meData.chefDashboardEnabled === "boolean") {
-              verifiedChefMode = meData.chefDashboardEnabled ? "on" : "off";
-              if (isMountedRef.current) {
-                setChefModeState(verifiedChefMode);
-                setLastChefModeVerified(new Date());
-                if (meData.staff) {
-                  setStaff((prev) => (prev ? { ...prev, ...meData.staff } : meData.staff));
-                }
-              }
-            } else {
-              // Unknown contract - fail safe
-              verifiedChefMode = "unknown";
-              if (isMountedRef.current) setChefModeState("unknown");
-            }
-          } else {
-            verifiedChefMode = "unknown";
-            if (isMountedRef.current) setChefModeState("unknown");
-          }
-        } catch {
-          verifiedChefMode = "unknown";
-          if (isMountedRef.current) setChefModeState("unknown");
+        // Check 401 first from either endpoint
+        const meErr = meResult.status === "rejected" ? meResult.reason : null;
+        const ordersErr = ordersResult.status === "rejected" ? ordersResult.reason : null;
+
+        if (
+          (meErr instanceof StaffRequestError && meErr.kind === "auth") ||
+          (ordersErr instanceof StaffRequestError && ordersErr.kind === "auth")
+        ) {
+          authTerminated = true;
+          handleAuthRevoked();
+          return;
         }
 
-        // B. Fetch Assigned Orders via GET /api/staff/waiter/orders
-        try {
-          const ordersRes = await fetch("/api/staff/waiter/orders", {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
-
-          if (ordersRes.status === 401) {
-            localStorage.removeItem("bitebend_staff_auth");
-            toast.error("Staff session expired or revoked by manager.");
-            setLocation("/staff/connect");
+        // Handle /staff/me result
+        if (meResult.status === "fulfilled") {
+          const meData = meResult.value;
+          if (meData.staff?.role === "chef") {
+            try {
+              const rawAuth = localStorage.getItem("bitebend_staff_auth");
+              if (rawAuth) {
+                const parsed = JSON.parse(rawAuth);
+                localStorage.setItem(
+                  "bitebend_staff_auth",
+                  JSON.stringify({ ...parsed, staff: { ...parsed.staff, ...meData.staff } }),
+                );
+              }
+            } catch {}
+            authTerminated = true;
+            toast.info("Your station role was updated to Chef. Redirecting to Kitchen Display.");
+            setLocation("/staff/chef");
             return;
           }
 
-          if (!ordersRes.ok) {
-            if (isMountedRef.current) setNetworkError(true);
-            if (isManualRefresh) {
-              toast.error("Could not load floor orders. Showing cached data.");
-            }
+          if (meData.staff?.role && meData.staff.role !== "waiter") {
+            authTerminated = true;
+            handleAuthRevoked("Station role is not authorized for Waiter Dashboard.");
             return;
           }
 
-          const ordersData: WaiterOrder[] = await ordersRes.json();
-          if (isMountedRef.current) {
-            setOrders(ordersData);
-            setNetworkError(false);
-            setLastSynced(new Date());
-            if (isManualRefresh) {
-              toast.success("Floor station synchronized");
-            }
+          if (meData.staff) {
+            setStaff((prev) => {
+              const merged = prev ? { ...prev, ...meData.staff } as StaffData : (meData.staff as StaffData);
+              try {
+                const rawAuth = localStorage.getItem("bitebend_staff_auth");
+                if (rawAuth) {
+                  const parsed = JSON.parse(rawAuth);
+                  localStorage.setItem(
+                    "bitebend_staff_auth",
+                    JSON.stringify({ ...parsed, staff: merged }),
+                  );
+                }
+              } catch {}
+              return merged;
+            });
           }
-        } catch {
-          if (isMountedRef.current) setNetworkError(true);
+
+          if (typeof meData.chefDashboardEnabled === "boolean") {
+            setChefModeState(meData.chefDashboardEnabled ? "on" : "off");
+            setLastChefModeVerified(new Date());
+          } else {
+            setChefModeState("unknown");
+          }
+        } else {
+          setChefModeState("unknown");
+        }
+
+        // Handle /staff/waiter/orders result
+        if (ordersResult.status === "fulfilled") {
+          const ordersData = Array.isArray(ordersResult.value) ? ordersResult.value : [];
+          const syncedAt = new Date();
+          consecutiveFailuresRef.current = 0;
+          lastSyncedRef.current = syncedAt;
+
+          setOrders(ordersData);
+          setNetworkError(false);
+          setFallbackExpired(false);
+          setServerError(null);
+          setLastSynced(syncedAt);
+
           if (isManualRefresh) {
-            toast.error("Network error. Showing cached orders.");
+            toast.success("Floor station synchronized");
+          }
+        } else {
+          const err = ordersErr;
+          if (err instanceof StaffRequestError && err.kind === "forbidden") {
+            // Role or permission mismatch returned directly by backend (server IS reachable)
+            consecutiveFailuresRef.current = 0;
+            setNetworkError(false);
+            setFallbackExpired(false);
+            setOrders([]);
+            setServerError(err.message || "Access denied for waiter orders.");
+            if (isManualRefresh) {
+              toast.error(err.message || "Access denied for waiter orders.");
+            }
+          } else if (err instanceof StaffRequestError && !err.isUnreachable) {
+            // Application/server 4xx/500 error (server IS reachable, not a network disconnect)
+            setNetworkError(false);
+            setServerError(err.message || "Failed to load floor orders.");
+            if (isManualRefresh) {
+              toast.error(err.message || "Could not load floor orders.");
+            }
+          } else {
+            // Genuinely unreachable (network error, timeout, HTML SPA fallback, 502/503/504)
+            consecutiveFailuresRef.current += 1;
+            const syncedAt = lastSyncedRef.current;
+            const staleDurationMs = syncedAt ? Date.now() - syncedAt.getTime() : Infinity;
+            const expired =
+              !syncedAt ||
+              consecutiveFailuresRef.current >= MAX_FALLBACK_FAILURE_STREAK ||
+              staleDurationMs > MAX_FALLBACK_STALE_MS;
+
+            setNetworkError(true);
+            setServerError(null);
+            if (expired) {
+              setFallbackExpired(true);
+              setOrders([]);
+            } else {
+              setFallbackExpired(false);
+            }
+
+            if (isManualRefresh) {
+              toast.error(
+                expired
+                  ? "Unable to reach server. Live orders paused until connection returns."
+                  : "Network error. Temporarily showing last synced floor orders.",
+              );
+            }
           }
         }
       } finally {
+        if (activeSyncControllerRef.current === syncController) {
+          activeSyncControllerRef.current = null;
+        }
         isFetchingRef.current = false;
         if (isMountedRef.current) {
           setLoading(false);
           setRefreshing(false);
         }
+
+        if (!authTerminated && isMountedRef.current && pendingRefreshRef.current) {
+          const runManual = pendingManualRef.current;
+          pendingRefreshRef.current = false;
+          pendingManualRef.current = false;
+          void fetchDashboardData(runManual);
+        }
       }
     },
-    [token, setLocation],
+    [token, handleAuthRevoked, setLocation],
   );
 
-  // 3. Reliable 7.5s Polling Lifecycle with unmount safety
+  // 3. Reliable Polling & Automatic Reconnection Lifecycle
   useEffect(() => {
     if (!token) return;
     void fetchDashboardData(false);
 
+    const pollMs = networkError ? RECONNECT_POLL_INTERVAL_MS : NORMAL_POLL_INTERVAL_MS;
     const interval = setInterval(() => {
       void fetchDashboardData(false);
-    }, 7500);
+    }, pollMs);
 
-    return () => clearInterval(interval);
-  }, [token, fetchDashboardData]);
+    const handleReconnectSignal = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void fetchDashboardData(false);
+    };
+
+    window.addEventListener("online", handleReconnectSignal);
+    window.addEventListener("focus", handleReconnectSignal);
+    document.addEventListener("visibilitychange", handleReconnectSignal);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("online", handleReconnectSignal);
+      window.removeEventListener("focus", handleReconnectSignal);
+      document.removeEventListener("visibilitychange", handleReconnectSignal);
+    };
+  }, [token, networkError, fetchDashboardData]);
 
   // 4. Logout / Disconnect Action
   const handleLogout = () => {
@@ -280,41 +528,33 @@ export default function WaiterHome() {
     setLocation("/staff/connect");
   };
 
-  // 5. Action: Start Preparing (POST /api/staff/waiter/orders/:id/start-prep)
+  // 5. Action: Start Preparing (POST ${API_BASE}/staff/waiter/orders/:id/start-prep)
   const handleStartPrep = async (orderId: number) => {
     if (submittingOrderIds.has(orderId) || !token) return;
 
     setSubmittingOrderIds((prev) => new Set(prev).add(orderId));
     try {
-      const res = await fetch(`/api/staff/waiter/orders/${orderId}/start-prep`, {
+      await staffFetchJson(`/staff/waiter/orders/${orderId}/start-prep`, token, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
       });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-          localStorage.removeItem("bitebend_staff_auth");
-          setLocation("/staff/connect");
-          return;
-        }
-        if (res.status === 403) {
-          toast.error(errorData.error || "Order is no longer assigned to you.");
-          void fetchDashboardData(false);
-          return;
-        }
-        toast.error(errorData.error || "Failed to start preparation");
-        void fetchDashboardData(false);
-        return;
-      }
 
       toast.success(`Order #${orderId} marked preparing`);
       void fetchDashboardData(false);
-    } catch {
-      toast.error("Network error while starting preparation");
+    } catch (err) {
+      if (err instanceof StaffRequestError && err.kind === "auth") {
+        handleAuthRevoked();
+        return;
+      }
+      if (err instanceof StaffRequestError && err.kind === "forbidden") {
+        toast.error(err.message || "Order is no longer assigned to you.");
+        void fetchDashboardData(false);
+        return;
+      }
+      toast.error(
+        err instanceof StaffRequestError && !err.isUnreachable
+          ? err.message
+          : "Network error while starting preparation",
+      );
       void fetchDashboardData(false);
     } finally {
       if (isMountedRef.current) {
@@ -327,7 +567,7 @@ export default function WaiterHome() {
     }
   };
 
-  // 6. Action: Standard Ready (POST /api/staff/waiter/orders/:id/ready)
+  // 6. Action: Standard Ready (POST ${API_BASE}/staff/waiter/orders/:id/ready)
   const handleStandardReady = async (orderId: number) => {
     if (submittingOrderIds.has(orderId) || !token) return;
 
@@ -348,46 +588,38 @@ export default function WaiterHome() {
 
     setSubmittingOrderIds((prev) => new Set(prev).add(orderId));
     try {
-      const res = await fetch(`/api/staff/waiter/orders/${orderId}/ready`, {
+      await staffFetchJson(`/staff/waiter/orders/${orderId}/ready`, token, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
       });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-          localStorage.removeItem("bitebend_staff_auth");
-          setLocation("/staff/connect");
-          return;
-        }
-        if (res.status === 403) {
-          // If Chef Mode was just turned ON by owner in the background:
-          if (errorData.error && errorData.error.includes("Chef mode is enabled")) {
-            setChefModeState("on");
-            toast.info("Chef Mode was enabled by owner. Please provide an emergency reason.");
-            const target = orders.find((o) => o.id === orderId);
-            if (target) {
-              setEmergencyOrder(target);
-              setEmergencyReason("");
-            }
-            return;
-          }
-          toast.error(errorData.error || "Order is no longer assigned to you.");
-          void fetchDashboardData(false);
-          return;
-        }
-        toast.error(errorData.error || "Failed to mark order ready");
-        void fetchDashboardData(false);
-        return;
-      }
 
       toast.success(`Order #${orderId} is ready for pickup`);
       void fetchDashboardData(false);
-    } catch {
-      toast.error("Network error while marking order ready");
+    } catch (err) {
+      if (err instanceof StaffRequestError && err.kind === "auth") {
+        handleAuthRevoked();
+        return;
+      }
+      if (err instanceof StaffRequestError && err.kind === "forbidden") {
+        // If Chef Mode was just turned ON by owner in the background:
+        if (err.message.includes("Chef mode is enabled")) {
+          setChefModeState("on");
+          toast.info("Chef Mode was enabled by owner. Please provide an emergency reason.");
+          const target = orders.find((o) => o.id === orderId);
+          if (target) {
+            setEmergencyOrder(target);
+            setEmergencyReason("");
+          }
+          return;
+        }
+        toast.error(err.message || "Order is no longer assigned to you.");
+        void fetchDashboardData(false);
+        return;
+      }
+      toast.error(
+        err instanceof StaffRequestError && !err.isUnreachable
+          ? err.message
+          : "Network error while marking order ready",
+      );
       void fetchDashboardData(false);
     } finally {
       if (isMountedRef.current) {
@@ -400,7 +632,7 @@ export default function WaiterHome() {
     }
   };
 
-  // 7. Action: Emergency Ready (POST /api/staff/waiter/orders/:id/emergency-ready)
+  // 7. Action: Emergency Ready (POST ${API_BASE}/staff/waiter/orders/:id/emergency-ready)
   const handleEmergencyReadySubmit = async () => {
     if (!emergencyOrder || !token || emergencySubmitting) return;
 
@@ -415,39 +647,36 @@ export default function WaiterHome() {
     setSubmittingOrderIds((prev) => new Set(prev).add(orderId));
 
     try {
-      const res = await fetch(`/api/staff/waiter/orders/${orderId}/emergency-ready`, {
+      await staffFetchJson(`/staff/waiter/orders/${orderId}/emergency-ready`, token, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({ reason: trimmedReason }),
       });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-          localStorage.removeItem("bitebend_staff_auth");
-          setLocation("/staff/connect");
-          return;
-        }
-        if (res.status === 400 && errorData.error && errorData.error.includes("Chef mode is disabled")) {
-          setChefModeState("off");
-          toast.info("Chef Mode was disabled by owner. Using standard ready.");
-          setEmergencyOrder(null);
-          void handleStandardReady(orderId);
-          return;
-        }
-        toast.error(errorData.error || "Emergency ready override failed.");
-        return;
-      }
 
       toast.success(`Order #${orderId} marked ready via Emergency Override`);
       setEmergencyOrder(null);
       setEmergencyReason("");
       void fetchDashboardData(false);
-    } catch {
-      toast.error("Network error during emergency ready submission");
+    } catch (err) {
+      if (err instanceof StaffRequestError && err.kind === "auth") {
+        handleAuthRevoked();
+        return;
+      }
+      if (
+        err instanceof StaffRequestError &&
+        err.status === 400 &&
+        err.message.includes("Chef mode is disabled")
+      ) {
+        setChefModeState("off");
+        toast.info("Chef Mode was disabled by owner. Using standard ready.");
+        setEmergencyOrder(null);
+        void handleStandardReady(orderId);
+        return;
+      }
+      toast.error(
+        err instanceof StaffRequestError && !err.isUnreachable
+          ? err.message
+          : "Network error during emergency ready submission",
+      );
     } finally {
       if (isMountedRef.current) {
         setEmergencySubmitting(false);
@@ -460,36 +689,28 @@ export default function WaiterHome() {
     }
   };
 
-  // 8. Action: Complete Order (POST /api/staff/waiter/orders/:id/complete)
+  // 8. Action: Complete Order (POST ${API_BASE}/staff/waiter/orders/:id/complete)
   const handleCompleteOrder = async (orderId: number) => {
     if (submittingOrderIds.has(orderId) || !token) return;
 
     setSubmittingOrderIds((prev) => new Set(prev).add(orderId));
     try {
-      const res = await fetch(`/api/staff/waiter/orders/${orderId}/complete`, {
+      await staffFetchJson(`/staff/waiter/orders/${orderId}/complete`, token, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
       });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-          localStorage.removeItem("bitebend_staff_auth");
-          setLocation("/staff/connect");
-          return;
-        }
-        toast.error(errorData.error || "Failed to complete order");
-        void fetchDashboardData(false);
-        return;
-      }
 
       toast.success(`Order #${orderId} completed`);
       void fetchDashboardData(false);
-    } catch {
-      toast.error("Network error while completing order");
+    } catch (err) {
+      if (err instanceof StaffRequestError && err.kind === "auth") {
+        handleAuthRevoked();
+        return;
+      }
+      toast.error(
+        err instanceof StaffRequestError && !err.isUnreachable
+          ? err.message
+          : "Network error while completing order",
+      );
       void fetchDashboardData(false);
     } finally {
       if (isMountedRef.current) {
@@ -654,8 +875,28 @@ export default function WaiterHome() {
           <div className="flex items-center gap-2 max-w-4xl mx-auto w-full">
             <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />
             <span>
-              <strong>Connection warning:</strong> Unable to reach server. Showing cached assigned floor orders.
-              Automatic reconnection in progress...
+              {fallbackExpired ? (
+                <>
+                  <strong>Connection lost:</strong> Unable to reach server. Cached floor orders expired — live feed
+                  paused until connection returns. Automatic reconnection in progress...
+                </>
+              ) : (
+                <>
+                  <strong>Connection warning:</strong> Unable to reach server. Temporarily showing last synced floor
+                  orders. Automatic reconnection in progress...
+                </>
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {!networkError && serverError && (
+        <div className="bg-red-500/15 border-b border-red-500/30 px-4 py-2.5 text-xs text-red-200 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 max-w-4xl mx-auto w-full">
+            <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />
+            <span>
+              <strong>Floor sync error:</strong> {serverError}
             </span>
           </div>
         </div>
@@ -795,16 +1036,23 @@ export default function WaiterHome() {
 
         {/* ── Operational Columns Board ────────────────────────────────────────── */}
         {activeOrders.length === 0 ? (
-          /* Empty State */
+          /* Empty or Disconnected State */
           <div className="bg-slate-900/40 border border-dashed border-slate-800/80 rounded-3xl p-12 text-center space-y-4">
             <div className="h-16 w-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center mx-auto shadow-inner">
-              <UtensilsCrossed className="h-8 w-8 text-blue-400/80" />
+              {networkError ? (
+                <AlertCircle className="h-8 w-8 text-red-400/80" />
+              ) : (
+                <UtensilsCrossed className="h-8 w-8 text-blue-400/80" />
+              )}
             </div>
             <div className="space-y-1.5 max-w-md mx-auto">
-              <h3 className="text-lg font-bold text-white">No active assigned orders</h3>
+              <h3 className="text-lg font-bold text-white">
+                {networkError ? "Reconnecting to floor server..." : "No active assigned orders"}
+              </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                When customers place orders at tables assigned to you, or when management assigns tables to your
-                station, tickets will arrive here in real time.
+                {networkError
+                  ? "Waiting for a verified response from the restaurant server. Floor orders will appear here automatically as soon as the connection recovers."
+                  : "When customers place orders at tables assigned to you, or when management assigns tables to your station, tickets will arrive here in real time."}
               </p>
             </div>
             <Button
@@ -815,7 +1063,7 @@ export default function WaiterHome() {
               className="text-xs border-slate-700 bg-slate-800 text-slate-200 hover:text-white"
             >
               <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", refreshing && "animate-spin text-blue-400")} />
-              <span>Check for New Floor Tickets</span>
+              <span>{networkError ? "Retry Connection Now" : "Check for New Floor Tickets"}</span>
             </Button>
           </div>
         ) : (

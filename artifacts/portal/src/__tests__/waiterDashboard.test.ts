@@ -842,6 +842,83 @@ async function runWaiterDashboardTests() {
     console.error("  ❌ Test 48 FAILED:", e.message);
   }
 
+  // Test 49: WaiterHome uses centralized API_BASE, no-store caching, AbortController timeout, and JSON content-type guard
+  try {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const waiterSrc = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../pages/staff/WaiterHome.tsx"),
+      "utf-8",
+    );
+    const apiSrc = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../lib/api.ts"),
+      "utf-8",
+    );
+
+    if (!waiterSrc.includes('import { API_BASE } from "@/lib/api"')) {
+      throw new Error("WaiterHome.tsx does not import API_BASE from @/lib/api");
+    }
+    if (waiterSrc.includes('fetch("/api/') || waiterSrc.includes("fetch(`/api/")) {
+      throw new Error("WaiterHome.tsx still contains hardcoded /api/ fetch calls bypassing API_BASE");
+    }
+    if (!waiterSrc.includes("AbortController") || !waiterSrc.includes('cache: "no-store"')) {
+      throw new Error("WaiterHome.tsx missing AbortController timeout or cache: 'no-store'");
+    }
+    if (!waiterSrc.includes('contentType.includes("application/json")')) {
+      throw new Error("WaiterHome.tsx missing JSON content-type validation");
+    }
+    if (!apiSrc.includes('.replace(/\\/api$/, "")')) {
+      throw new Error("api.ts missing trailing /api normalization");
+    }
+
+    results["Test 49"] = {
+      status: "PASSED",
+      note: "WaiterHome routes all requests via API_BASE with AbortController timeout, no-store caching, and JSON validation",
+    };
+    console.log("  ✅ Test 49 PASSED: WaiterHome API_BASE, timeout & cache contract");
+  } catch (e: any) {
+    results["Test 49"] = { status: "FAILED", note: e.message };
+    console.error("  ❌ Test 49 FAILED:", e.message);
+  }
+
+  // Test 50: WaiterHome bounds cached fallback orders and wires automatic reconnection triggers
+  try {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const waiterSrc = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../pages/staff/WaiterHome.tsx"),
+      "utf-8",
+    );
+
+    if (
+      !waiterSrc.includes("MAX_FALLBACK_FAILURE_STREAK") ||
+      !waiterSrc.includes("MAX_FALLBACK_STALE_MS") ||
+      !waiterSrc.includes("setFallbackExpired(true)")
+    ) {
+      throw new Error("WaiterHome.tsx missing bounded cached fallback expiration");
+    }
+    if (
+      !waiterSrc.includes('addEventListener("online"') ||
+      !waiterSrc.includes('addEventListener("focus"') ||
+      !waiterSrc.includes('addEventListener("visibilitychange"') ||
+      !waiterSrc.includes("RECONNECT_POLL_INTERVAL_MS")
+    ) {
+      throw new Error("WaiterHome.tsx missing automatic reconnection listeners/backoff");
+    }
+    if (!waiterSrc.includes("pendingRefreshRef")) {
+      throw new Error("WaiterHome.tsx missing queued refresh during concurrent sync");
+    }
+
+    results["Test 50"] = {
+      status: "PASSED",
+      note: "Bounded fallback cache expiration, queued refreshes, and online/focus/visibilitychange reconnection verified",
+    };
+    console.log("  ✅ Test 50 PASSED: WaiterHome bounded fallback & auto-reconnect contract");
+  } catch (e: any) {
+    results["Test 50"] = { status: "FAILED", note: e.message };
+    console.error("  ❌ Test 50 FAILED:", e.message);
+  }
+
   // ── Summary Table ─────────────────────────────────────────────────────────────
   console.log("\n================================================================================");
   console.log("📊 WAITER DASHBOARD TEST SUITE SUMMARY");

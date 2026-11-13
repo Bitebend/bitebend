@@ -1,4 +1,4 @@
-const rawBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const rawBase = (import.meta.env.VITE_API_URL ?? "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
 const BASE = rawBase.includes("api-server-production-78de.up.railway.app") ? "" : rawBase;
 
 export const API_BASE = `${BASE}/api`;

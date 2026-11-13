@@ -94,12 +94,19 @@ const connectPin: RequestHandler = async (req, res) => {
   });
 };
 
+function setNoStoreHeaders(res: Parameters<RequestHandler>[1]) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+}
+
 /**
  * GET /api/staff/me
  * Returns profile, connection status, and authoritative Chef Mode state
  * for the currently authenticated staff member's restaurant.
  */
 const getMe: RequestHandler = async (req, res) => {
+  setNoStoreHeaders(res);
   const staff = req.staff!;
   const restaurant = req.restaurant;
 
@@ -115,6 +122,7 @@ const getMe: RequestHandler = async (req, res) => {
       role: staff.role,
       restaurantId: staff.restaurantId,
       restaurantName: restaurant.name,
+      restaurantSlug: restaurant.slug,
     },
     chefDashboardEnabled: Boolean(restaurant.chefDashboardEnabled),
   });
@@ -126,6 +134,7 @@ const getMe: RequestHandler = async (req, res) => {
  * Role check (waiter) and tenant check (restaurantId) are strictly enforced.
  */
 const listWaiterOrders: RequestHandler = async (req, res) => {
+  setNoStoreHeaders(res);
   const staff = req.staff!;
 
   // Query only orders assigned to this waiter, in their restaurant, with active status
@@ -646,6 +655,7 @@ const waiterComplete: RequestHandler = async (req, res) => {
  * Strict data privacy: Phone, billing, payment, and screenshot fields are completely excluded.
  */
 const listChefOrders: RequestHandler = async (req, res) => {
+  setNoStoreHeaders(res);
   const staff = req.staff!;
 
   // Verify Chef Mode is enabled
