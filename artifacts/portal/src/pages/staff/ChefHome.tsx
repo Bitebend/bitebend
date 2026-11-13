@@ -18,6 +18,7 @@ import {
   User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { API_BASE } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface StaffData {
@@ -111,7 +112,7 @@ export default function ChefHome() {
       setToken(parsed.token);
 
       // Verify token validity with backend
-      fetch("/api/staff/me", {
+      fetch(`${API_BASE}/staff/me`, {
         headers: { Authorization: `Bearer ${parsed.token}` },
       })
         .then((res) => {
@@ -143,7 +144,7 @@ export default function ChefHome() {
       if (isManualRefresh) setRefreshing(true);
 
       try {
-        const res = await fetch("/api/staff/chef/orders", {
+        const res = await fetch(`${API_BASE}/staff/chef/orders`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -221,7 +222,7 @@ export default function ChefHome() {
     setSubmittingIds((prev) => new Set(prev).add(orderId));
 
     try {
-      const res = await fetch(`/api/staff/chef/orders/${orderId}/ready`, {
+      const res = await fetch(`${API_BASE}/staff/chef/orders/${orderId}/ready`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,

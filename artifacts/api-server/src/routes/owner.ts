@@ -3163,6 +3163,10 @@ const listStaff: RequestHandler = async (req, res) => {
 
 const createStaff: RequestHandler = async (req, res) => {
   const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(404).json({ error: "No restaurant found for this account" });
+    return;
+  }
   const { name, role, phone } = req.body as { name?: string; role?: string; phone?: string };
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -3174,30 +3178,40 @@ const createStaff: RequestHandler = async (req, res) => {
     return;
   }
 
-  const [created] = await db
-    .insert(restaurantStaff)
-    .values({
-      restaurantId: user.restaurantId!,
-      name: name.trim(),
-      role,
-      phone: phone?.trim() || null,
-      isActive: true,
-      tokenVersion: 1,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .returning({
-      id: restaurantStaff.id,
-      restaurantId: restaurantStaff.restaurantId,
-      name: restaurantStaff.name,
-      phone: restaurantStaff.phone,
-      role: restaurantStaff.role,
-      isActive: restaurantStaff.isActive,
-      createdAt: restaurantStaff.createdAt,
-    });
+  try {
+    const [created] = await db
+      .insert(restaurantStaff)
+      .values({
+        restaurantId: user.restaurantId,
+        name: name.trim(),
+        role,
+        phone: phone?.trim() || null,
+        isActive: true,
+        tokenVersion: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning({
+        id: restaurantStaff.id,
+        restaurantId: restaurantStaff.restaurantId,
+        name: restaurantStaff.name,
+        phone: restaurantStaff.phone,
+        role: restaurantStaff.role,
+        isActive: restaurantStaff.isActive,
+        createdAt: restaurantStaff.createdAt,
+      });
 
-  req.log.info({ staffId: created.id, restaurantId: user.restaurantId, role: created.role }, "[Staff] Created new staff profile");
-  res.status(201).json({ staff: created });
+    req.log.info({ staffId: created.id, restaurantId: user.restaurantId, role: created.role }, "[Staff] Created new staff profile");
+    res.status(201).json({ staff: created });
+  } catch (err: any) {
+    const pgCode = err?.code || err?.cause?.code;
+    const msg = String(err?.cause?.message || err?.message || "");
+    if (pgCode === "23505" || msg.includes("idx_restaurant_staff_phone_unique")) {
+      res.status(409).json({ error: "A staff member with this phone number already exists" });
+      return;
+    }
+    throw err;
+  }
 };
 
 const generateStaffPin: RequestHandler = async (req, res) => {

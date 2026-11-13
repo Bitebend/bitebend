@@ -16,6 +16,8 @@ import {
   ConciergeBell,
   Loader2,
   ShieldAlert,
+  Check,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -58,6 +60,8 @@ export default function StaffManagement() {
   const [chefMode, setChefMode] = useState<boolean>(false);
   const [loadingChefMode, setLoadingChefMode] = useState<boolean>(true);
   const [updatingChefMode, setUpdatingChefMode] = useState<boolean>(false);
+  const [chefModeLoadError, setChefModeLoadError] = useState<string | null>(null);
+  const [chefModeError, setChefModeError] = useState<string | null>(null);
 
   // Create Staff Modal
   const [createOpen, setCreateOpen] = useState(false);
@@ -65,10 +69,16 @@ export default function StaffManagement() {
   const [newRole, setNewRole] = useState<"waiter" | "chef">("waiter");
   const [newPhone, setNewPhone] = useState("");
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
-  // Generated PIN Modal
+  // Generated PIN Modal & Partial-Failure Recovery
   const [pinModalData, setPinModalData] = useState<GeneratedPinData | null>(null);
   const [generatingPinId, setGeneratingPinId] = useState<number | null>(null);
+  const [copiedPin, setCopiedPin] = useState(false);
+  const [pinRecoveryState, setPinRecoveryState] = useState<{
+    staff: StaffMember;
+    error: string;
+  } | null>(null);
 
   // Disconnect Confirmation Modal
   const [disconnectTarget, setDisconnectTarget] = useState<StaffMember | null>(null);
@@ -76,7 +86,7 @@ export default function StaffManagement() {
 
   const fetchStaff = useCallback(async () => {
     try {
-      const data = await apiFetch<{ staff: StaffMember[] }>("/api/owner/staff");
+      const data = await apiFetch<{ staff: StaffMember[] }>("/owner/staff");
       setStaffList(data.staff || []);
     } catch (err: any) {
       toast.error(err.message || "Failed to load staff list");
@@ -88,10 +98,13 @@ export default function StaffManagement() {
   const fetchChefMode = useCallback(async () => {
     try {
       setLoadingChefMode(true);
-      const data = await apiFetch<{ chefDashboardEnabled: boolean }>("/api/owner/chef-mode");
+      setChefModeLoadError(null);
+      const data = await apiFetch<{ chefDashboardEnabled: boolean }>("/owner/chef-mode");
       setChefMode(Boolean(data.chefDashboardEnabled));
     } catch (err: any) {
-      toast.error(err.message || "Failed to load Chef Mode status");
+      const msg = err?.message || "Failed to load Chef Mode status";
+      setChefModeLoadError(msg);
+      toast.error(msg);
     } finally {
       setLoadingChefMode(false);
     }
@@ -103,36 +116,59 @@ export default function StaffManagement() {
   }, [fetchStaff, fetchChefMode]);
 
   const handleToggleChefMode = async (checked: boolean) => {
-    if (updatingChefMode) return;
+    if (loadingChefMode || updatingChefMode || chefModeLoadError) return;
+    const previousState = chefMode;
+    setChefModeError(null);
+    setChefMode(checked);
     setUpdatingChefMode(true);
     try {
-      const data = await apiFetch<{ chefDashboardEnabled: boolean }>("/api/owner/chef-mode", {
+      const data = await apiFetch<{ chefDashboardEnabled: boolean }>("/owner/chef-mode", {
         method: "PATCH",
         body: JSON.stringify({ chefDashboardEnabled: checked }),
       });
-      setChefMode(Boolean(data.chefDashboardEnabled));
-      if (data.chefDashboardEnabled) {
+      const confirmed = Boolean(data.chefDashboardEnabled);
+      setChefMode(confirmed);
+      if (confirmed) {
         toast.success("Chef Mode enabled. Kitchen display active for chefs.");
       } else {
-        toast.info("Chef Mode disabled. Waiters will handle complete preparation workflow.");
+        toast.success("Chef Mode disabled. Waiters will handle complete preparation workflow.");
       }
     } catch (err: any) {
-      toast.error(err.message || "Failed to update Chef Mode");
+      const msg = err?.message || "Failed to update Chef Mode";
+      setChefMode(previousState);
+      setChefModeError(msg);
+      toast.error(msg);
+      // Re-verify persisted server state so UI stays accurate
+      try {
+        const refreshed = await apiFetch<{ chefDashboardEnabled: boolean }>("/owner/chef-mode");
+        setChefMode(Boolean(refreshed.chefDashboardEnabled));
+      } catch {
+        // Keep previousState if server is unreachable
+      }
     } finally {
       setUpdatingChefMode(false);
     }
   };
 
+  const openPinModal = useCallback((data: GeneratedPinData) => {
+    setCopiedPin(false);
+    setPinRecoveryState(null);
+    setPinModalData(data);
+  }, []);
+
   const handleCreateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (creating) return;
     if (!newName.trim()) {
+      setCreateError("Please enter staff member name");
       toast.error("Please enter staff member name");
       return;
     }
 
+    setCreateError(null);
     setCreating(true);
     try {
-      const res = await apiFetch<{ staff: StaffMember }>("/api/owner/staff", {
+      const res = await apiFetch<{ staff: StaffMember }>("/owner/staff", {
         method: "POST",
         body: JSON.stringify({
           name: newName.trim(),
@@ -141,21 +177,28 @@ export default function StaffManagement() {
         }),
       });
       toast.success(`${res.staff.name} created as ${res.staff.role}`);
-      setCreateOpen(false);
+
+      // Staff profile created — reset & close Create dialog so retries never create duplicates
       setNewName("");
       setNewPhone("");
       setNewRole("waiter");
 
-      // Generate PIN immediately and await response before refreshing staff list
+      // Generate PIN immediately before displaying PIN modal
       try {
         setGeneratingPinId(res.staff.id);
-        const pinData = await apiFetch<GeneratedPinData>(`/api/owner/staff/${res.staff.id}/pin`, {
+        const pinData = await apiFetch<GeneratedPinData>(`/owner/staff/${res.staff.id}/pin`, {
           method: "POST",
         });
-        setPinModalData(pinData);
+        setCreateOpen(false);
+        requestAnimationFrame(() => {
+          openPinModal(pinData);
+        });
       } catch (pinErr: any) {
+        const pinErrMsg = pinErr?.message || "Failed to generate connection PIN";
+        setCreateOpen(false);
+        setPinRecoveryState({ staff: res.staff, error: pinErrMsg });
         toast.error(
-          `Staff member was created, but PIN generation failed: ${pinErr.message || "Unknown error"}. Please click "Generate PIN" in the table.`,
+          `${res.staff.name} was created, but PIN generation failed: ${pinErrMsg}`,
         );
       } finally {
         setGeneratingPinId(null);
@@ -163,22 +206,29 @@ export default function StaffManagement() {
 
       await fetchStaff();
     } catch (err: any) {
-      toast.error(err.message || "Failed to create staff member");
+      const msg = err?.message || "Failed to create staff member";
+      setCreateError(msg);
+      toast.error(msg);
     } finally {
       setCreating(false);
     }
   };
 
   const handleGeneratePin = async (staffId: number) => {
+    if (generatingPinId !== null) return;
     setGeneratingPinId(staffId);
     try {
-      const data = await apiFetch<GeneratedPinData>(`/api/owner/staff/${staffId}/pin`, {
+      const data = await apiFetch<GeneratedPinData>(`/owner/staff/${staffId}/pin`, {
         method: "POST",
       });
-      setPinModalData(data);
+      openPinModal(data);
       await fetchStaff();
     } catch (err: any) {
-      toast.error(err.message || "Failed to generate connection PIN");
+      const msg = err?.message || "Failed to generate connection PIN";
+      if (pinRecoveryState && pinRecoveryState.staff.id === staffId) {
+        setPinRecoveryState({ ...pinRecoveryState, error: msg });
+      }
+      toast.error(msg);
     } finally {
       setGeneratingPinId(null);
     }
@@ -188,7 +238,7 @@ export default function StaffManagement() {
     if (!disconnectTarget) return;
     setDisconnecting(true);
     try {
-      await apiFetch(`/api/owner/staff/${disconnectTarget.id}/disconnect`, {
+      await apiFetch(`/owner/staff/${disconnectTarget.id}/disconnect`, {
         method: "POST",
       });
       toast.success(`${disconnectTarget.name} disconnected. All active sessions invalidated.`);
@@ -203,21 +253,40 @@ export default function StaffManagement() {
 
   const handleReconnect = async (staff: StaffMember) => {
     try {
-      await apiFetch(`/api/owner/staff/${staff.id}/reconnect`, {
+      await apiFetch(`/owner/staff/${staff.id}/reconnect`, {
         method: "POST",
       });
       toast.success(`${staff.name} re-enabled.`);
       await fetchStaff();
       // Generate fresh connection PIN
-      handleGeneratePin(staff.id);
+      await handleGeneratePin(staff.id);
     } catch (err: any) {
       toast.error(err.message || "Failed to re-enable staff member");
     }
   };
 
-  const copyPinToClipboard = (pin: string) => {
-    navigator.clipboard.writeText(pin);
-    toast.success("Connection PIN copied to clipboard");
+  const copyPinToClipboard = async (pin: string) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(pin);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = pin;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!copied) throw new Error("Copy command rejected");
+      }
+      setCopiedPin(true);
+      toast.success("Connection PIN copied to clipboard");
+      setTimeout(() => setCopiedPin(false), 2000);
+    } catch {
+      toast.error("Could not copy automatically. Please select and copy the 6-digit PIN manually.");
+    }
   };
 
   return (
@@ -263,6 +332,10 @@ export default function StaffManagement() {
                       <Loader2 className="h-3 w-3 animate-spin" />
                       Loading...
                     </span>
+                  ) : chefModeLoadError ? (
+                    <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-red-50 text-red-700 border border-red-200">
+                      Status Unavailable
+                    </span>
                   ) : chefMode ? (
                     <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center gap-1.5">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -287,15 +360,50 @@ export default function StaffManagement() {
                   Saving...
                 </span>
               )}
+              {chefModeLoadError && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void fetchChefMode()}
+                  className="h-8 text-xs"
+                >
+                  <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                  Retry
+                </Button>
+              )}
               <Switch
                 id="chef-mode-switch"
                 checked={chefMode}
-                disabled={loadingChefMode || updatingChefMode}
+                disabled={loadingChefMode || updatingChefMode || Boolean(chefModeLoadError)}
                 onCheckedChange={handleToggleChefMode}
                 aria-label="Toggle Chef Mode"
               />
             </div>
           </div>
+
+          {(chefModeLoadError || chefModeError) && (
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                <span>{chefModeLoadError || chefModeError}</span>
+              </div>
+              {chefModeLoadError && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void fetchChefMode()}
+                  className="h-7 text-xs border-red-200 bg-white text-red-700 hover:bg-red-100"
+                >
+                  Retry
+                </Button>
+              )}
+            </div>
+          )}
 
           {/* Workflow Comparison / Explanatory Text */}
           <div className="grid gap-3 sm:grid-cols-2 pt-2 border-t border-border/60">
@@ -493,8 +601,61 @@ export default function StaffManagement() {
           </div>
         )}
 
+        {/* Partial Failure PIN Recovery Banner (staff created, PIN gen failed) */}
+        {pinRecoveryState && (
+          <div
+            role="alert"
+            className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-sm">
+                <div className="font-semibold text-amber-950">
+                  {pinRecoveryState.staff.name} ({pinRecoveryState.staff.role}) was created, but PIN generation failed.
+                </div>
+                <p className="text-xs text-amber-900 mt-0.5">
+                  {pinRecoveryState.error}. Retry PIN generation below without creating a duplicate staff profile.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPinRecoveryState(null)}
+                className="h-8 text-xs"
+              >
+                Dismiss
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={generatingPinId === pinRecoveryState.staff.id}
+                onClick={() => void handleGeneratePin(pinRecoveryState.staff.id)}
+                className="bg-orange-600 hover:bg-orange-700 text-white h-8 text-xs"
+              >
+                {generatingPinId === pinRecoveryState.staff.id ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                ) : (
+                  <KeyRound className="h-3.5 w-3.5 mr-1" />
+                )}
+                Retry Generate PIN
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Create Staff Dialog */}
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <Dialog
+          open={createOpen}
+          onOpenChange={(open) => {
+            if (!creating) {
+              setCreateOpen(open);
+              if (!open) setCreateError(null);
+            }
+          }}
+        >
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Add New Staff Member</DialogTitle>
@@ -504,6 +665,16 @@ export default function StaffManagement() {
             </DialogHeader>
 
             <form onSubmit={handleCreateStaff} className="space-y-4 py-2">
+              {createError && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-center gap-2"
+                >
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-red-600" />
+                  <span>{createError}</span>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase text-muted-foreground">
                   Full Name <span className="text-red-500">*</span>
@@ -511,10 +682,11 @@ export default function StaffManagement() {
                 <input
                   type="text"
                   required
+                  disabled={creating}
                   placeholder="e.g. Ramesh Kumar"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-60"
                 />
               </div>
 
@@ -525,9 +697,10 @@ export default function StaffManagement() {
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
+                    disabled={creating}
                     onClick={() => setNewRole("waiter")}
                     className={cn(
-                      "flex flex-col items-center justify-center p-3 rounded-lg border text-sm font-medium transition-all text-center",
+                      "flex flex-col items-center justify-center p-3 rounded-lg border text-sm font-medium transition-all text-center disabled:opacity-60",
                       newRole === "waiter"
                         ? "border-orange-500 bg-orange-50/50 text-orange-950 ring-1 ring-orange-500"
                         : "border-border hover:bg-muted/50 text-muted-foreground",
@@ -540,9 +713,10 @@ export default function StaffManagement() {
 
                   <button
                     type="button"
+                    disabled={creating}
                     onClick={() => setNewRole("chef")}
                     className={cn(
-                      "flex flex-col items-center justify-center p-3 rounded-lg border text-sm font-medium transition-all text-center",
+                      "flex flex-col items-center justify-center p-3 rounded-lg border text-sm font-medium transition-all text-center disabled:opacity-60",
                       newRole === "chef"
                         ? "border-orange-500 bg-orange-50/50 text-orange-950 ring-1 ring-orange-500"
                         : "border-border hover:bg-muted/50 text-muted-foreground",
@@ -561,15 +735,16 @@ export default function StaffManagement() {
                 </label>
                 <input
                   type="tel"
+                  disabled={creating}
                   placeholder="e.g. +91 98765 43210"
                   value={newPhone}
                   onChange={(e) => setNewPhone(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-60"
                 />
               </div>
 
               <DialogFooter className="pt-2">
-                <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
+                <Button type="button" variant="outline" disabled={creating} onClick={() => setCreateOpen(false)}>
                   Cancel
                 </Button>
                 <Button
@@ -578,7 +753,7 @@ export default function StaffManagement() {
                   className="bg-orange-600 hover:bg-orange-700 text-white"
                 >
                   {creating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-                  Create & Generate PIN
+                  {creating ? "Creating & Generating PIN..." : "Create & Generate PIN"}
                 </Button>
               </DialogFooter>
             </form>
@@ -596,21 +771,35 @@ export default function StaffManagement() {
               <DialogDescription>
                 Share this one-time 6-digit PIN with{" "}
                 <span className="font-semibold text-foreground">{pinModalData?.name}</span> (
-                {pinModalData?.role}).
+                <span className="capitalize font-medium text-foreground">{pinModalData?.role}</span>).
               </DialogDescription>
             </DialogHeader>
 
             <div className="py-4 space-y-4">
               <div className="bg-muted/60 border border-border rounded-xl p-6 flex flex-col items-center justify-center space-y-2">
                 <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                  Staff Connection PIN
+                  Staff Connection PIN · {pinModalData?.name} ({pinModalData?.role === "chef" ? "Chef" : "Waiter"})
                 </div>
-                <div className="text-4xl font-extrabold tracking-widest text-orange-600 font-mono select-all">
+                <div
+                  data-testid="generated-staff-pin"
+                  className="text-4xl font-extrabold tracking-widest text-orange-600 font-mono select-all"
+                >
                   {pinModalData?.pin}
                 </div>
-                <div className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                  <Clock className="h-3.5 w-3.5 text-orange-500" />
-                  Expires in 10 minutes (one-time use)
+                <div className="text-xs text-muted-foreground flex flex-col items-center gap-0.5 mt-1">
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3.5 w-3.5 text-orange-500" />
+                    Expires in 10 minutes (one-time use)
+                  </span>
+                  {pinModalData?.expiresAt && (
+                    <span className="text-[11px] text-muted-foreground/80">
+                      Valid until{" "}
+                      {new Date(pinModalData.expiresAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -633,14 +822,25 @@ export default function StaffManagement() {
 
             <DialogFooter className="flex flex-col sm:flex-row gap-2">
               <Button
+                type="button"
                 variant="outline"
                 className="w-full sm:w-auto flex items-center justify-center gap-1.5"
-                onClick={() => pinModalData && copyPinToClipboard(pinModalData.pin)}
+                onClick={() => pinModalData && void copyPinToClipboard(pinModalData.pin)}
               >
-                <Copy className="h-4 w-4" />
-                Copy PIN
+                {copiedPin ? (
+                  <>
+                    <Check className="h-4 w-4 text-emerald-600" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4" />
+                    Copy PIN
+                  </>
+                )}
               </Button>
               <Button
+                type="button"
                 className="w-full sm:w-auto bg-orange-600 hover:bg-orange-700 text-white"
                 onClick={() => setPinModalData(null)}
               >

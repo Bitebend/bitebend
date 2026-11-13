@@ -91,7 +91,7 @@ export default function StaffConnect() {
     setErrorMsg(null);
 
     try {
-      const data = await apiFetch<StaffAuthResponse>("/api/staff/connect-pin", {
+      const data = await apiFetch<StaffAuthResponse>("/staff/connect-pin", {
         method: "POST",
         body: JSON.stringify({ pin: pinStr }),
       });
