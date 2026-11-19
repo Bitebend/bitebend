@@ -6,6 +6,18 @@ export interface CryptoMetaRecord {
   initializedAt: string;
 }
 
+export interface KnownDeviceRecord {
+  accountId: string;
+  matrixDeviceId: string;
+  storeName: string;
+  initializedAt: string;
+}
+
+interface KnownDevicesEnvelope {
+  key: "known_devices";
+  devices: KnownDeviceRecord[];
+}
+
 export interface RoomEpochRecord {
   key: string;
   accountId: string;
@@ -40,6 +52,7 @@ export type KeyStoreCheckResult =
 const META_DB_NAME = "bitebend_chat_meta_v1";
 const META_DB_VERSION = 2;
 const META_STORE_NAME = "meta";
+const KNOWN_DEVICES_KEY = "known_devices";
 const ROOM_EPOCHS_STORE_NAME = "room_epochs";
 const TRUSTED_ROOTS_STORE_NAME = "trusted_roots";
 
@@ -110,6 +123,118 @@ export async function writeCryptoMeta(record: Omit<CryptoMetaRecord, "key">): Pr
     });
   } finally {
     db.close();
+  }
+}
+
+export async function readKnownDevices(): Promise<KnownDeviceRecord[]> {
+  if (typeof indexedDB === "undefined") return [];
+  try {
+    const db = await openMetaDb();
+    try {
+      const env = await new Promise<KnownDevicesEnvelope | undefined>((resolve, reject) => {
+        const tx = db.transaction(META_STORE_NAME, "readonly");
+        const req = tx.objectStore(META_STORE_NAME).get(KNOWN_DEVICES_KEY);
+        req.onsuccess = () => resolve((req.result as KnownDevicesEnvelope | undefined) ?? undefined);
+        req.onerror = () => reject(req.error);
+      });
+      const list = Array.isArray(env?.devices) ? env.devices : [];
+      if (list.length > 0) return list;
+
+      // Fallback to active_device if created before known_devices list existed
+      const active = await readCryptoMeta();
+      if (active?.accountId && active?.matrixDeviceId && active?.storeName) {
+        return [
+          {
+            accountId: active.accountId.toLowerCase(),
+            matrixDeviceId: active.matrixDeviceId,
+            storeName: active.storeName,
+            initializedAt: active.initializedAt,
+          },
+        ];
+      }
+      return [];
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+export async function upsertKnownDevice(record: KnownDeviceRecord): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openMetaDb();
+  try {
+    const existing = await new Promise<KnownDeviceRecord[]>((resolve) => {
+      const tx = db.transaction(META_STORE_NAME, "readonly");
+      const req = tx.objectStore(META_STORE_NAME).get(KNOWN_DEVICES_KEY);
+      req.onsuccess = () => {
+        const env = req.result as KnownDevicesEnvelope | undefined;
+        resolve(Array.isArray(env?.devices) ? env.devices : []);
+      };
+      req.onerror = () => resolve([]);
+    });
+
+    const normAccount = record.accountId.toLowerCase();
+    const filtered = existing.filter(
+      (d) => !(d.accountId.toLowerCase() === normAccount && d.matrixDeviceId === record.matrixDeviceId),
+    );
+    const updated: KnownDeviceRecord[] = [
+      {
+        accountId: normAccount,
+        matrixDeviceId: record.matrixDeviceId,
+        storeName: record.storeName,
+        initializedAt: record.initializedAt,
+      },
+      ...filtered,
+    ].slice(0, 25);
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(META_STORE_NAME, "readwrite");
+      const req = tx.objectStore(META_STORE_NAME).put({
+        key: KNOWN_DEVICES_KEY,
+        devices: updated,
+      } satisfies KnownDevicesEnvelope);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function removeKnownDevice(accountId: string, matrixDeviceId: string): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  try {
+    const db = await openMetaDb();
+    try {
+      const existing = await new Promise<KnownDeviceRecord[]>((resolve) => {
+        const tx = db.transaction(META_STORE_NAME, "readonly");
+        const req = tx.objectStore(META_STORE_NAME).get(KNOWN_DEVICES_KEY);
+        req.onsuccess = () => {
+          const env = req.result as KnownDevicesEnvelope | undefined;
+          resolve(Array.isArray(env?.devices) ? env.devices : []);
+        };
+        req.onerror = () => resolve([]);
+      });
+      const normAccount = accountId.toLowerCase();
+      const filtered = existing.filter(
+        (d) => !(d.accountId.toLowerCase() === normAccount && d.matrixDeviceId === matrixDeviceId),
+      );
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(META_STORE_NAME, "readwrite");
+        tx.objectStore(META_STORE_NAME).put({
+          key: KNOWN_DEVICES_KEY,
+          devices: filtered,
+        } satisfies KnownDevicesEnvelope);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Ignore storage error
   }
 }
 
@@ -275,6 +400,29 @@ export async function writeTrustedRoot(
   }
 }
 
+export async function deactivateActiveCryptoMeta(): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  try {
+    const db = await openMetaDb();
+    try {
+      await new Promise<void>((resolve) => {
+        if (!db.objectStoreNames.contains(META_STORE_NAME)) {
+          resolve();
+          return;
+        }
+        const tx = db.transaction([META_STORE_NAME], "readwrite");
+        tx.objectStore(META_STORE_NAME).delete("active_device");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Ignore cleanup errors when storage disabled
+  }
+}
+
 export async function clearCryptoMeta(): Promise<void> {
   try {
     const db = await openMetaDb();
@@ -286,6 +434,7 @@ export async function clearCryptoMeta(): Promise<void> {
         const tx = db.transaction(stores, "readwrite");
         if (db.objectStoreNames.contains(META_STORE_NAME)) {
           tx.objectStore(META_STORE_NAME).delete("active_device");
+          tx.objectStore(META_STORE_NAME).delete(KNOWN_DEVICES_KEY);
         }
         if (db.objectStoreNames.contains(ROOM_EPOCHS_STORE_NAME)) {
           tx.objectStore(ROOM_EPOCHS_STORE_NAME).clear();
@@ -302,6 +451,42 @@ export async function clearCryptoMeta(): Promise<void> {
   } catch {
     // Ignore cleanup errors when storage disabled
   }
+}
+
+export async function deleteOlmStoreDatabase(storeName: string): Promise<void> {
+  if (typeof indexedDB === "undefined" || typeof indexedDB.deleteDatabase !== "function" || !storeName) {
+    return;
+  }
+
+  const targetNames = new Set<string>([storeName]);
+  if (typeof indexedDB.databases === "function") {
+    try {
+      const dbs = await indexedDB.databases();
+      for (const d of dbs) {
+        if (d.name && d.name.includes(storeName)) {
+          targetNames.add(d.name);
+        }
+      }
+    } catch {
+      // Ignore enumeration errors
+    }
+  }
+
+  await Promise.all(
+    Array.from(targetNames).map(
+      (dbName) =>
+        new Promise<void>((resolve) => {
+          try {
+            const req = indexedDB.deleteDatabase(dbName);
+            req.onsuccess = () => resolve();
+            req.onerror = () => resolve();
+            req.onblocked = () => resolve();
+          } catch {
+            resolve();
+          }
+        }),
+    ),
+  );
 }
 
 export async function getStorageHealthSnapshot(): Promise<StorageHealthSnapshot> {
@@ -360,7 +545,10 @@ export async function checkKeyStoreHealth(
     };
   }
 
-  if (meta.accountId !== expectedAccountId || meta.matrixDeviceId !== expectedMatrixDeviceId) {
+  if (
+    meta.accountId.toLowerCase() !== expectedAccountId.toLowerCase() ||
+    meta.matrixDeviceId !== expectedMatrixDeviceId
+  ) {
     return {
       status: "KEY_EVICTED_OR_MISSING",
       reason: "Local device keys belong to a different device or were replaced.",
@@ -384,4 +572,68 @@ export async function checkKeyStoreHealth(
   }
 
   return { status: "OK", meta };
+}
+
+export async function checkKnownDeviceStoreHealth(
+  expectedAccountId: string,
+  expectedMatrixDeviceId: string,
+): Promise<KeyStoreCheckResult> {
+  if (typeof indexedDB === "undefined") {
+    return {
+      status: "UNAVAILABLE",
+      reason: "IndexedDB key storage is unavailable in this browser mode.",
+    };
+  }
+
+  const normAccount = expectedAccountId.toLowerCase();
+  const knownDevices = await readKnownDevices();
+  const matched = knownDevices.find(
+    (d) => d.accountId.toLowerCase() === normAccount && d.matrixDeviceId === expectedMatrixDeviceId,
+  );
+  const activeMeta = await readCryptoMeta();
+  const resolved =
+    matched ??
+    (activeMeta &&
+    activeMeta.accountId.toLowerCase() === normAccount &&
+    activeMeta.matrixDeviceId === expectedMatrixDeviceId
+      ? {
+          accountId: activeMeta.accountId,
+          matrixDeviceId: activeMeta.matrixDeviceId,
+          storeName: activeMeta.storeName,
+          initializedAt: activeMeta.initializedAt,
+        }
+      : null);
+
+  if (!resolved) {
+    return {
+      status: "KEY_EVICTED_OR_MISSING",
+      reason: "Local encryption keys for this browser could not be found.",
+    };
+  }
+
+  if (typeof indexedDB.databases === "function") {
+    try {
+      const dbs = await indexedDB.databases();
+      const found = dbs.some((d) => d.name && d.name.includes(resolved.storeName));
+      if (!found) {
+        return {
+          status: "KEY_EVICTED_OR_MISSING",
+          reason: "Browser evicted the IndexedDB cryptographic key store.",
+        };
+      }
+    } catch {
+      // Fallback: OlmMachine initialization confirms store integrity
+    }
+  }
+
+  return {
+    status: "OK",
+    meta: {
+      key: "active_device",
+      accountId: resolved.accountId,
+      matrixDeviceId: resolved.matrixDeviceId,
+      storeName: resolved.storeName,
+      initializedAt: resolved.initializedAt,
+    },
+  };
 }

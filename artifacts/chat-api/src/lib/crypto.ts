@@ -183,3 +183,77 @@ export function verifyDeviceEndorsementEnvelope(params: {
     signerEd25519Base64: params.signerEd25519,
   });
 }
+
+export function sanitizeDisplayNameToSlug(displayName: string): string {
+  const normalized = displayName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/\.{2,}/g, ".")
+    .replace(/^[._-]+|[._-]+$/g, "");
+
+  if (normalized.length < 2) {
+    return "user";
+  }
+  const clipped = normalized.slice(0, 18).replace(/[._-]+$/g, "");
+  return clipped.length >= 2 ? clipped : "user";
+}
+
+/**
+ * Derives a non-reversible 4-digit privacy-safe suffix from HMAC(phone) so
+ * publicly searchable @usernames never expose any digits of a user's mobile number.
+ */
+export function buildPrivacySafePhoneTag(normalizedPhone: string): string {
+  const digest = hmacPhoneDigest(normalizedPhone);
+  const num = (parseInt(digest.slice(0, 8), 16) % 9000) + 1000;
+  return String(num);
+}
+
+export function buildAutoUsernameBase(displayName: string, normalizedPhone: string): string {
+  const slug = sanitizeDisplayNameToSlug(displayName);
+  const tag = buildPrivacySafePhoneTag(normalizedPhone);
+  const base = `${slug}.${tag}`;
+  const checked = validateUsername(base);
+  return checked.ok ? checked.lower : `user.${tag}`;
+}
+
+export function buildAutoUsernameCandidates(displayName: string, normalizedPhone: string, count = 12): string[] {
+  const base = buildAutoUsernameBase(displayName, normalizedPhone);
+  const candidates: string[] = [base];
+  const alphabet = "23456789abcdefghjkmnpqrstuvwxyz";
+
+  // Deterministic short numeric/alnum extensions + random collision suffixes within 30-char max
+  for (let i = 1; i < count; i++) {
+    const suffixLen = i <= 4 ? 2 : 4;
+    const bytes = crypto.randomBytes(suffixLen);
+    let rand = "";
+    for (let j = 0; j < suffixLen; j++) {
+      rand += alphabet[bytes[j]! % alphabet.length];
+    }
+    const maxBaseLen = 30 - 1 - rand.length;
+    const trimmedBase = base.slice(0, maxBaseLen).replace(/[._-]+$/g, "") || "user";
+    const cand = `${trimmedBase}.${rand}`;
+    const v = validateUsername(cand);
+    if (v.ok && !candidates.includes(v.lower)) {
+      candidates.push(v.lower);
+    }
+  }
+  return candidates;
+}
+
+export function buildLoginChallengePayload(params: {
+  challengeId: string;
+  accountId: string;
+  matrixDeviceId: string;
+  nonce: string;
+}): string {
+  return JSON.stringify({
+    type: "bitebend_device_login_v1",
+    challengeId: params.challengeId,
+    accountId: params.accountId.toLowerCase(),
+    matrixDeviceId: params.matrixDeviceId,
+    nonce: params.nonce,
+  });
+}
+

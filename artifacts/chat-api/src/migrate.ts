@@ -17,6 +17,7 @@ const REQUIRED_TABLES = [
   "messaging_device_list_changes",
   "messaging_attachments",
   "messaging_audit_events",
+  "messaging_login_challenges",
 ];
 
 async function main() {

@@ -14,7 +14,8 @@ vi.hoisted(() => {
 });
 
 import { createChatApp } from "../app";
-import { chatDb, chatPool, ensureChatDbReady, messagingDevices } from "../db";
+import { chatDb, chatPool, ensureChatDbReady, messagingAccounts, messagingContactClaims, messagingDevices } from "../db";
+import { buildAutoUsernameBase, buildLoginChallengePayload, hmacPhoneDigest } from "../lib/crypto";
 
 function extractCookieJar(prevCookie: string, setCookieHeaders: string[]): string {
   const map = new Map<string, string>();
@@ -76,14 +77,28 @@ function makeRealEd25519DevicePayload(matrixDeviceId: string, otpkCount = 3) {
       },
     });
   };
-  return { payload, ed25519B64, signEndorsement };
+  const signLoginChallenge = (params: {
+    challengeId: string;
+    accountId: string;
+    matrixDeviceId: string;
+    nonce: string;
+  }) => {
+    const msg = buildLoginChallengePayload(params);
+    const sigB64 = crypto.sign(null, Buffer.from(msg, "utf8"), privateKey).toString("base64").replace(/=+$/, "");
+    return JSON.stringify({
+      [`@${params.accountId.toLowerCase()}:chat.bitebend.in`]: {
+        [`ed25519:${matrixDeviceId}`]: sigB64,
+      },
+    });
+  };
+  return { payload, ed25519B64, signEndorsement, signLoginChallenge };
 }
 
 function makeFakeDevicePayload(matrixDeviceId: string, otpkCount = 3) {
   return makeRealEd25519DevicePayload(matrixDeviceId, otpkCount).payload;
 }
 
-describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP LOCKED, seq, revocation)", () => {
+describe("Bitebend Chat API (isolated DB, mobile login, auto-username, handoff supersession, OTPK SKIP LOCKED, seq, revocation)", () => {
   let server: http.Server;
   let baseUrl: string;
   let mockHandoffServer: http.Server;
@@ -121,50 +136,237 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
     await chatPool.end();
   });
 
-  it("enforces case-insensitive @username uniqueness & non-unique phone claims", async () => {
+  it("auto-generates privacy-safe @usernames, enforces unique login mobile numbers, handles username collisions, and preserves legacy accounts", async () => {
     const aliceId = crypto.randomUUID();
     const res1 = await fetch(`${baseUrl}/api/chat/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: aliceId,
-        username: "Alice.B",
-        displayName: "Alice",
-        contactPhone: "9876543210",
+        displayName: "Alice Banerjee",
+        mobileNumber: "9876543210",
         device: makeFakeDevicePayload("ALICE_DEV1"),
       }),
     });
     expect(res1.status).toBe(201);
+    const aliceJson = (await res1.json()) as {
+      account: { id: string; username: string; displayName: string };
+    };
+    expect(aliceJson.account.username).toMatch(/^alice\.banerjee\.\d{4}$/);
+    // Zero real phone digits exposed in handle
+    expect(aliceJson.account.username).not.toContain("3210");
+    expect(aliceJson.account.username).not.toContain("9876");
 
-    // Same username with different casing rejected 409
-    const resDup = await fetch(`${baseUrl}/api/chat/register`, {
+    // Duplicate registration with formatted variant of same mobile number rejected with 409 EXISTING_ACCOUNT_FOUND
+    const resDupPhone = await fetch(`${baseUrl}/api/chat/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: crypto.randomUUID(),
-        username: "alice.b",
-        displayName: "Imposter",
-        device: makeFakeDevicePayload("IMP_DEV1"),
+        displayName: "Different Name",
+        mobileNumber: "+91 98765-43210",
+        device: makeFakeDevicePayload("DUP_PHONE_DEV"),
       }),
     });
-    expect(resDup.status).toBe(409);
+    expect(resDupPhone.status).toBe(409);
+    const dupPhoneJson = (await resDupPhone.json()) as { code?: string };
+    expect(dupPhoneJson.code).toBe("EXISTING_ACCOUNT_FOUND");
 
-    // Different username with identical unverified phone succeeds as a separate account (NO phone-based merge!)
+    // Forced username collision: pre-occupy expected base username for Bob -> registration still succeeds with unique suffix via SAVEPOINT retry
+    const collisionPhone = "919800001122";
+    const expectedBase = buildAutoUsernameBase("Bob", collisionPhone);
+    const legacyId = crypto.randomUUID();
+    await chatDb.insert(messagingAccounts).values({
+      id: legacyId,
+      username: expectedBase,
+      usernameLower: expectedBase,
+      displayName: "Legacy User",
+      loginPhoneHmac: null, // legacy account has no loginPhoneHmac
+      identityStatus: "active",
+    });
+    await chatDb.insert(messagingContactClaims).values({
+      accountId: legacyId,
+      phoneHmac: hmacPhoneDigest("919999999999"),
+      phoneMasked: "••••••9999",
+      source: "legacy_claim",
+      verificationStatus: "unverified",
+    });
+
     const resBob = await fetch(`${baseUrl}/api/chat/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: crypto.randomUUID(),
-        username: "bob_dining",
         displayName: "Bob",
-        contactPhone: "9876543210",
+        mobileNumber: "9800001122",
         device: makeFakeDevicePayload("BOB_DEV1"),
       }),
     });
     expect(resBob.status).toBe(201);
+    const bobJson = (await resBob.json()) as { account: { username: string } };
+    expect(bobJson.account.username).not.toBe(expectedBase);
+    expect(bobJson.account.username.startsWith(`${expectedBase}.`)).toBe(true);
   });
 
-  it("supersedes Draft A when Handoff B is exchanged, and never overwrites active session", async () => {
+  it("supports passwordless Ed25519 challenge-response login on same browser and enforces LINK_REQUIRED on fresh browsers", async () => {
+    const aliceId = crypto.randomUUID();
+    const dev1 = makeRealEd25519DevicePayload("LOGIN_D1", 2);
+    const reg = await fetch(`${baseUrl}/api/chat/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        proposedAccountId: aliceId,
+        displayName: "Priya Login",
+        mobileNumber: "9811223344",
+        device: dev1.payload,
+      }),
+    });
+    expect(reg.status).toBe(201);
+    const firstCookies = extractCookieJar("", reg.headers.getSetCookie());
+
+    // Logout normally (revokes server session; device keys stay preserved on browser)
+    const outRes = await fetch(`${baseUrl}/api/chat/logout`, {
+      method: "POST",
+      headers: { Cookie: firstCookies },
+    });
+    expect(outRes.status).toBe(200);
+
+    // 1) Unknown number -> 404 ACCOUNT_NOT_FOUND
+    const unknownRes = await fetch(`${baseUrl}/api/chat/login/challenge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mobileNumber: "9000000001", knownDevices: [] }),
+    });
+    expect(unknownRes.status).toBe(404);
+    expect(((await unknownRes.json()) as { code?: string }).code).toBe("ACCOUNT_NOT_FOUND");
+
+    // 2) Fresh browser (empty knownDevices) -> LINK_REQUIRED without leaking accountId/username
+    const freshRes = await fetch(`${baseUrl}/api/chat/login/challenge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mobileNumber: "9811223344", knownDevices: [] }),
+    });
+    expect(freshRes.status).toBe(200);
+    const freshJson = (await freshRes.json()) as Record<string, unknown>;
+    expect(freshJson.status).toBe("LINK_REQUIRED");
+    expect(freshJson.accountId).toBeUndefined();
+    expect(freshJson.matrixDeviceId).toBeUndefined();
+    expect(freshJson.username).toBeUndefined();
+
+    // 3) Same browser with matching knownDevices -> CHALLENGE_ISSUED
+    const chal1Res = await fetch(`${baseUrl}/api/chat/login/challenge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mobileNumber: "+91 9811223344",
+        knownDevices: [{ accountId: aliceId, matrixDeviceId: "LOGIN_D1" }],
+      }),
+    });
+    expect(chal1Res.status).toBe(200);
+    const chal1 = (await chal1Res.json()) as {
+      status: string;
+      challengeId: string;
+      accountId: string;
+      matrixDeviceId: string;
+      nonce: string;
+    };
+    expect(chal1.status).toBe("CHALLENGE_ISSUED");
+    expect(chal1.accountId).toBe(aliceId);
+    expect(chal1.matrixDeviceId).toBe("LOGIN_D1");
+
+    // 4) Bad Ed25519 signature rejected 401 and consumes single-use challenge
+    const badVerify = await fetch(`${baseUrl}/api/chat/login/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        challengeId: chal1.challengeId,
+        accountId: aliceId,
+        matrixDeviceId: "LOGIN_D1",
+        signatureEnvelopeJson: JSON.stringify({
+          [`@${aliceId}:chat.bitebend.in`]: {
+            "ed25519:LOGIN_D1": Buffer.alloc(64, 5).toString("base64").replace(/=+$/, ""),
+          },
+        }),
+      }),
+    });
+    expect(badVerify.status).toBe(401);
+
+    const replayAfterBad = await fetch(`${baseUrl}/api/chat/login/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        challengeId: chal1.challengeId,
+        accountId: aliceId,
+        matrixDeviceId: "LOGIN_D1",
+        signatureEnvelopeJson: dev1.signLoginChallenge(chal1),
+      }),
+    });
+    expect(replayAfterBad.status).toBe(401);
+
+    // 5) Fresh challenge + valid Ed25519 signature mints working session cookie
+    const chal2 = (await (
+      await fetch(`${baseUrl}/api/chat/login/challenge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mobileNumber: "9811223344",
+          knownDevices: [{ accountId: aliceId, matrixDeviceId: "LOGIN_D1" }],
+        }),
+      })
+    ).json()) as { challengeId: string; accountId: string; matrixDeviceId: string; nonce: string };
+
+    const okVerify = await fetch(`${baseUrl}/api/chat/login/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        challengeId: chal2.challengeId,
+        accountId: aliceId,
+        matrixDeviceId: "LOGIN_D1",
+        signatureEnvelopeJson: dev1.signLoginChallenge(chal2),
+      }),
+    });
+    expect(okVerify.status).toBe(200);
+    const reloggedCookies = extractCookieJar("", okVerify.headers.getSetCookie());
+    const reloggedJson = (await okVerify.json()) as { account: { id: string; username: string } };
+    expect(reloggedJson.account.id).toBe(aliceId);
+
+    const convCheck = await fetch(`${baseUrl}/api/chat/conversations`, {
+      headers: { Cookie: reloggedCookies },
+    });
+    expect(convCheck.status).toBe(200);
+
+    // 6) Replaying single-use challenge again fails
+    const replayOk = await fetch(`${baseUrl}/api/chat/login/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        challengeId: chal2.challengeId,
+        accountId: aliceId,
+        matrixDeviceId: "LOGIN_D1",
+        signatureEnvelopeJson: dev1.signLoginChallenge(chal2),
+      }),
+    });
+    expect(replayOk.status).toBe(401);
+
+    // 7) Revoked device cannot get login challenge -> returns LINK_REQUIRED
+    await fetch(`${baseUrl}/api/chat/logout`, {
+      method: "POST",
+      headers: { Cookie: reloggedCookies },
+    });
+    await chatDb.update(messagingDevices).set({ status: "revoked", revokedAt: new Date() });
+    const afterRevokeChallenge = await fetch(`${baseUrl}/api/chat/login/challenge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mobileNumber: "9811223344",
+        knownDevices: [{ accountId: aliceId, matrixDeviceId: "LOGIN_D1" }],
+      }),
+    });
+    expect(afterRevokeChallenge.status).toBe(200);
+    expect(((await afterRevokeChallenge.json()) as { status: string }).status).toBe("LINK_REQUIRED");
+  });
+
+  it("supersedes Draft A when Handoff B is exchanged, activates without manual username, and never overwrites active session", async () => {
     issuedHandoffs.set("tok_customer_A", {
       handoffId: crypto.randomUUID(),
       restaurantId: 10,
@@ -214,20 +416,45 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
     });
     expect((await staleCheck.json() as { state: string }).state).toBe("NO_HANDOFF");
 
-    // Customer B activates
+    // Customer B activates WITHOUT supplying manual username
     const actB = await fetch(`${baseUrl}/api/chat/activate-from-draft`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookies },
       body: JSON.stringify({
         proposedAccountId: crypto.randomUUID(),
-        username: "customer_beta",
         device: makeFakeDevicePayload("BETA_DEV1"),
       }),
     });
     expect(actB.status).toBe(201);
+    const actBJson = (await actB.json()) as { account: { username: string } };
+    expect(actBJson.account.username).toMatch(/^customer\.beta\.\d{4}$/);
     cookies = extractCookieJar(cookies, actB.headers.getSetCookie());
 
-    // Now if Customer C leaves a handoff cookie, active session MUST be preserved!
+    // Subsequent QR handoff for the same phone in another browser still activates cleanly without login_phone_hmac conflict
+    issuedHandoffs.set("tok_customer_B_second", {
+      handoffId: crypto.randomUUID(),
+      restaurantId: 12,
+      customerName: "Customer Beta",
+      customerPhone: "919222222222",
+    });
+    let cookiesB2 = "bb_msg_handoff=tok_customer_B_second";
+    const exB2 = await fetch(`${baseUrl}/api/chat/handoff/exchange`, {
+      method: "POST",
+      headers: { Cookie: cookiesB2 },
+    });
+    expect(exB2.status).toBe(201);
+    cookiesB2 = extractCookieJar(cookiesB2, exB2.headers.getSetCookie());
+    const actB2 = await fetch(`${baseUrl}/api/chat/activate-from-draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookiesB2 },
+      body: JSON.stringify({
+        proposedAccountId: crypto.randomUUID(),
+        device: makeFakeDevicePayload("BETA_DEV2"),
+      }),
+    });
+    expect(actB2.status).toBe(201);
+
+    // Now if Customer C leaves a handoff cookie on original browser, active session MUST be preserved!
     issuedHandoffs.set("tok_customer_C", {
       handoffId: crypto.randomUUID(),
       restaurantId: 14,
@@ -253,11 +480,12 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: user1Id,
-        username: "sender_one",
-        displayName: "Sender",
+        displayName: "Sender One",
+        mobileNumber: "9810001001",
         device: makeFakeDevicePayload("DEV_S1", 2),
       }),
     });
+    expect(r1.status).toBe(201);
     const cookie1 = extractCookieJar("", r1.headers.getSetCookie());
 
     const user2Id = crypto.randomUUID();
@@ -266,11 +494,13 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: user2Id,
-        username: "receiver_two",
-        displayName: "Receiver",
+        displayName: "Receiver Two",
+        mobileNumber: "9810001002",
         device: makeFakeDevicePayload("DEV_R2", 2),
       }),
     });
+    expect(r2.status).toBe(201);
+    const r2Json = (await r2.json()) as { account: { username: string } };
     const cookie2 = extractCookieJar("", r2.headers.getSetCookie());
 
     // Concurrent OTPK claims against receiver_two's 2 OTPKs (+1 fallback)
@@ -290,7 +520,7 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
     const convRes = await fetch(`${baseUrl}/api/chat/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie1 },
-      body: JSON.stringify({ kind: "direct", targetUsername: "receiver_two" }),
+      body: JSON.stringify({ kind: "direct", targetUsername: r2Json.account.username }),
     });
     const { conversationId } = (await convRes.json()) as { conversationId: string };
 
@@ -365,8 +595,8 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: accId,
-        username: "multi_dev_user",
         displayName: "Multi User",
+        mobileNumber: "9810002001",
         device: d1Dev.payload,
       }),
     });
@@ -379,17 +609,18 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: crypto.randomUUID(),
-        username: "multi_dev_peer",
         displayName: "Peer",
+        mobileNumber: "9810002002",
         device: makeFakeDevicePayload("PEER_D1", 1),
       }),
     });
     expect(peerRes.status).toBe(201);
+    const peerJson = (await peerRes.json()) as { account: { username: string } };
 
     const convRes = await fetch(`${baseUrl}/api/chat/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: d1Cookies },
-      body: JSON.stringify({ kind: "direct", targetUsername: "multi_dev_peer" }),
+      body: JSON.stringify({ kind: "direct", targetUsername: peerJson.account.username }),
     });
     const { conversationId } = (await convRes.json()) as { conversationId: string };
 
@@ -583,8 +814,8 @@ describe("Bitebend Chat API (isolated DB, auth, handoff supersession, OTPK SKIP 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proposedAccountId: accId,
-        username: "lock_test_user",
         displayName: "Lock Test",
+        mobileNumber: "9810003001",
         device: d1Dev.payload,
       }),
     });

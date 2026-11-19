@@ -3,10 +3,15 @@ import * as ed25519 from "@noble/ed25519";
 import { withCryptoLock } from "./lock";
 import {
   checkKeyStoreHealth,
+  checkKnownDeviceStoreHealth,
   clearCryptoMeta,
+  deactivateActiveCryptoMeta,
+  deleteOlmStoreDatabase,
   readAllRoomEpochs,
   readRoomEpoch,
   readTrustedRoot,
+  removeKnownDevice,
+  upsertKnownDevice,
   writeCryptoMeta,
   writeRoomEpoch,
   writeTrustedRoot,
@@ -97,6 +102,21 @@ export function buildDeviceEndorsementPayload(params: {
     accountId: params.accountId.toLowerCase(),
     matrixDeviceId: params.matrixDeviceId,
     ed25519: params.ed25519,
+  });
+}
+
+export function buildLoginChallengePayload(params: {
+  challengeId: string;
+  accountId: string;
+  matrixDeviceId: string;
+  nonce: string;
+}): string {
+  return JSON.stringify({
+    type: "bitebend_device_login_v1",
+    challengeId: params.challengeId,
+    accountId: params.accountId.toLowerCase(),
+    matrixDeviceId: params.matrixDeviceId,
+    nonce: params.nonce,
   });
 }
 
@@ -302,11 +322,18 @@ export class ChatCryptoSession {
             JSON.stringify({ one_time_key_counts: counts }),
           );
           if (!isInMemory && storeName) {
+            const initializedAt = new Date().toISOString();
             await writeCryptoMeta({
               accountId: opts.proposedAccountId,
               matrixDeviceId: opts.matrixDeviceId,
               storeName,
-              initializedAt: new Date().toISOString(),
+              initializedAt,
+            });
+            await upsertKnownDevice({
+              accountId: opts.proposedAccountId,
+              matrixDeviceId: opts.matrixDeviceId,
+              storeName,
+              initializedAt,
             });
             await writeTrustedRoot(
               opts.proposedAccountId,
@@ -392,7 +419,86 @@ export class ChatCryptoSession {
 
     const session = new ChatCryptoSession(accountId, matrixDeviceId, storeName, machine, false);
     session.knownRoomEpochs = await readAllRoomEpochs(accountId, matrixDeviceId);
+    await upsertKnownDevice({
+      accountId,
+      matrixDeviceId,
+      storeName,
+      initializedAt: health.meta.initializedAt,
+    });
     return session;
+  }
+
+  /**
+   * Re-opens an existing local OlmMachine for passwordless challenge-response login
+   * without touching `"active_device"` until the server verifies the signature.
+   */
+  public static async signLoginChallengeAndPrepareOpen(opts: {
+    accountId: string;
+    matrixDeviceId: string;
+    challengeId: string;
+    nonce: string;
+  }): Promise<{
+    signatureEnvelopeJson: string;
+    activateSession: () => Promise<ChatCryptoSession>;
+  }> {
+    await ensureCryptoWasm();
+    const health = await checkKnownDeviceStoreHealth(opts.accountId, opts.matrixDeviceId);
+    if (health.status !== "OK") {
+      throw Object.assign(new Error(health.reason), { code: health.status });
+    }
+
+    const storeName = health.meta.storeName;
+    const { machine, signatureEnvelopeJson } = await withCryptoLock(storeName, async () => {
+      const m = await cryptoWasm.OlmMachine.initialize(
+        new cryptoWasm.UserId(makeMatrixUserId(opts.accountId)),
+        new cryptoWasm.DeviceId(opts.matrixDeviceId),
+        storeName,
+      );
+      const payload = buildLoginChallengePayload({
+        challengeId: opts.challengeId,
+        accountId: opts.accountId,
+        matrixDeviceId: opts.matrixDeviceId,
+        nonce: opts.nonce,
+      });
+      const sigs = await m.sign(payload);
+      return { machine: m, signatureEnvelopeJson: sigs.asJSON() };
+    });
+
+    const session = new ChatCryptoSession(opts.accountId, opts.matrixDeviceId, storeName, machine, false);
+    session.knownRoomEpochs = await readAllRoomEpochs(opts.accountId, opts.matrixDeviceId);
+
+    return {
+      signatureEnvelopeJson,
+      activateSession: async () => {
+        const initializedAt = health.meta.initializedAt || new Date().toISOString();
+        await writeCryptoMeta({
+          accountId: opts.accountId,
+          matrixDeviceId: opts.matrixDeviceId,
+          storeName,
+          initializedAt,
+        });
+        await upsertKnownDevice({
+          accountId: opts.accountId,
+          matrixDeviceId: opts.matrixDeviceId,
+          storeName,
+          initializedAt,
+        });
+        return session;
+      },
+    };
+  }
+
+  public async signLoginChallenge(params: { challengeId: string; nonce: string }): Promise<string> {
+    return await withCryptoLock(this.storeName, async () => {
+      const payload = buildLoginChallengePayload({
+        challengeId: params.challengeId,
+        accountId: this.accountId,
+        matrixDeviceId: this.matrixDeviceId,
+        nonce: params.nonce,
+      });
+      const sigs = await this.machine.sign(payload);
+      return sigs.asJSON();
+    });
   }
 
   public async endorseLinkedDevice(
@@ -781,6 +887,24 @@ export class ChatCryptoSession {
         };
       }
     });
+  }
+
+  public static async deactivateActiveSession(): Promise<void> {
+    await deactivateActiveCryptoMeta();
+  }
+
+  public static async eraseLocalDeviceData(
+    storeName?: string,
+    accountId?: string,
+    matrixDeviceId?: string,
+  ): Promise<void> {
+    if (accountId && matrixDeviceId) {
+      await removeKnownDevice(accountId, matrixDeviceId);
+    }
+    await clearCryptoMeta();
+    if (storeName && storeName !== "memory") {
+      await deleteOlmStoreDatabase(storeName);
+    }
   }
 
   public static async clearLocalMetadata(): Promise<void> {

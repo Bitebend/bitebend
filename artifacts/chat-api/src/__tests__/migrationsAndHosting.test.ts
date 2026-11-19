@@ -23,7 +23,7 @@ import { createChatApp } from "../app";
 import { attachChatWebSocketServer } from "../ws";
 import { chatPool, ensureChatDbReady, runChatMigrations, findMigrationsDir } from "../db";
 
-const REQUIRED_16_TABLES = [
+const REQUIRED_TABLES = [
   "rate_limit_windows",
   "messaging_accounts",
   "messaging_contact_claims",
@@ -40,6 +40,7 @@ const REQUIRED_16_TABLES = [
   "messaging_device_list_changes",
   "messaging_attachments",
   "messaging_audit_events",
+  "messaging_login_challenges",
 ];
 
 describe("Phase 1 DB Migrations & Railway/WS Hosting", () => {
@@ -49,41 +50,46 @@ describe("Phase 1 DB Migrations & Railway/WS Hosting", () => {
   });
 
   it(
-    "locates non-empty SQL migrations directory and creates all 16 tables idempotently on fresh DB",
+    "locates non-empty SQL migrations directory and creates all 17 tables idempotently on fresh DB",
     async () => {
       const migDir = findMigrationsDir();
       expect(migDir).not.toBeNull();
-      const sqlFiles = fs.readdirSync(migDir!).filter((f) => f.endsWith(".sql"));
-      expect(sqlFiles.length).toBeGreaterThanOrEqual(1);
+      const sqlFiles = fs
+        .readdirSync(migDir!)
+        .filter((f) => f.endsWith(".sql"))
+        .sort();
+      expect(sqlFiles.length).toBeGreaterThanOrEqual(2);
       expect(sqlFiles).toContain("0000_init_messaging.sql");
+      expect(sqlFiles).toContain("0001_mobile_login_recovery.sql");
 
       // Verify transactional SQL execution on a brand new isolated PGlite directory
       const freshPg = new PGlite(path.join(tempDir, "fresh-db"));
       await freshPg.waitReady;
-      const rawSql = fs.readFileSync(path.join(migDir!, "0000_init_messaging.sql"), "utf8");
-      const statements = rawSql
-        .split("--> statement-breakpoint")
-        .map((s) => s.trim())
-        .filter(Boolean);
 
-      await freshPg.exec("BEGIN");
-      for (const stmt of statements) {
-        await freshPg.exec(stmt);
-      }
-      await freshPg.exec("COMMIT");
+      const execAllMigrations = async () => {
+        for (const file of sqlFiles) {
+          const rawSql = fs.readFileSync(path.join(migDir!, file), "utf8");
+          const statements = rawSql
+            .split("--> statement-breakpoint")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          await freshPg.exec("BEGIN");
+          for (const stmt of statements) {
+            await freshPg.exec(stmt);
+          }
+          await freshPg.exec("COMMIT");
+        }
+      };
 
+      await execAllMigrations();
       // Second run must be 100% idempotent
-      await freshPg.exec("BEGIN");
-      for (const stmt of statements) {
-        await freshPg.exec(stmt);
-      }
-      await freshPg.exec("COMMIT");
+      await execAllMigrations();
 
       const tablesRes = await freshPg.query<{ table_name: string }>(
         `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
       );
       const created = new Set(tablesRes.rows.map((r) => r.table_name));
-      for (const t of REQUIRED_16_TABLES) {
+      for (const t of REQUIRED_TABLES) {
         expect(created.has(t), `Missing table ${t}`).toBe(true);
       }
       await freshPg.close();
@@ -153,8 +159,8 @@ describe("Phase 1 DB Migrations & Railway/WS Hosting", () => {
         },
         body: JSON.stringify({
           proposedAccountId: crypto.randomUUID(),
-          username: "ws_tester_1",
           displayName: "WS Tester",
+          mobileNumber: "9810004001",
           device: {
             deviceLabel: "Test Browser",
             matrixDeviceId: "WSDEV1",

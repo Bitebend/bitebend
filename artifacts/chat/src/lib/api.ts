@@ -122,9 +122,8 @@ export const chatApi = {
     ),
   register: (body: {
     proposedAccountId: string;
-    username: string;
     displayName: string;
-    contactPhone?: string;
+    mobileNumber: string;
     device: {
       deviceLabel: string;
       matrixDeviceId: string;
@@ -138,7 +137,6 @@ export const chatApi = {
   }),
   activateFromDraft: (body: {
     proposedAccountId: string;
-    username: string;
     displayName?: string;
     device: {
       deviceLabel: string;
@@ -151,6 +149,39 @@ export const chatApi = {
     method: "POST",
     body: JSON.stringify(body),
   }),
+  loginChallenge: (body: {
+    mobileNumber: string;
+    knownDevices: Array<{ accountId: string; matrixDeviceId: string }>;
+  }) =>
+    jsonFetch<
+      | {
+          status: "CHALLENGE_ISSUED";
+          challengeId: string;
+          accountId: string;
+          matrixDeviceId: string;
+          nonce: string;
+        }
+      | {
+          status: "LINK_REQUIRED";
+          message: string;
+        }
+    >("/api/chat/login/challenge", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  loginVerify: (body: {
+    challengeId: string;
+    accountId: string;
+    matrixDeviceId: string;
+    signatureEnvelopeJson: string;
+  }) =>
+    jsonFetch<{
+      account: NonNullable<BootstrapResponse["account"]>;
+      device: NonNullable<BootstrapResponse["currentDevice"]>;
+    }>("/api/chat/login/verify", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   logout: () => jsonFetch<{ ok: boolean }>("/api/chat/logout", { method: "POST" }),
   logoutAll: () => jsonFetch<{ ok: boolean }>("/api/chat/logout-all", { method: "POST" }),
   lookupUser: (username: string) =>

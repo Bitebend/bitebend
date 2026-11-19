@@ -19,6 +19,8 @@ export const rateLimitWindows = pgTable("rate_limit_windows", {
   count: integer("count").notNull().default(1),
 });
 
+import { sql } from "drizzle-orm";
+
 export const messagingAccounts = pgTable(
   "messaging_accounts",
   {
@@ -26,10 +28,16 @@ export const messagingAccounts = pgTable(
     username: text("username").notNull(),
     usernameLower: text("username_lower").notNull(),
     displayName: text("display_name").notNull(),
+    loginPhoneHmac: text("login_phone_hmac"),
     identityStatus: text("identity_status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [uniqueIndex("uq_messaging_accounts_username_lower").on(t.usernameLower)],
+  (t) => [
+    uniqueIndex("uq_messaging_accounts_username_lower").on(t.usernameLower),
+    uniqueIndex("uq_messaging_accounts_login_phone_hmac")
+      .on(t.loginPhoneHmac)
+      .where(sql`${t.loginPhoneHmac} IS NOT NULL`),
+  ],
 );
 
 export const messagingContactClaims = pgTable(
@@ -141,6 +149,7 @@ export const messagingHandoffDrafts = pgTable(
     maskedName: text("masked_name").notNull(),
     maskedPhone: text("masked_phone").notNull(),
     phoneHmac: text("phone_hmac").notNull(),
+    suggestedUsernameBase: text("suggested_username_base"),
     status: text("status").notNull().default("pending"), // pending | superseded | activated | expired
     activatedAccountId: uuid("activated_account_id"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -150,6 +159,25 @@ export const messagingHandoffDrafts = pgTable(
     uniqueIndex("uq_handoff_drafts_token_hash").on(t.draftTokenHash),
     uniqueIndex("uq_handoff_drafts_source_handoff").on(t.sourceHandoffId),
   ],
+);
+
+export const messagingLoginChallenges = pgTable(
+  "messaging_login_challenges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => messagingAccounts.id, { onDelete: "cascade" }),
+    deviceId: uuid("device_id")
+      .notNull()
+      .references(() => messagingDevices.id, { onDelete: "cascade" }),
+    matrixDeviceId: text("matrix_device_id").notNull(),
+    nonce: text("nonce").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_login_challenges_account_expires").on(t.accountId, t.expiresAt)],
 );
 
 export const messagingDeviceLinkTokens = pgTable(

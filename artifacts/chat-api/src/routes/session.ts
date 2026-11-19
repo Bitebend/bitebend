@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import crypto from "node:crypto";
-import { and, eq, gt, ilike, isNull, ne } from "drizzle-orm";
+import { and, eq, gt, ilike, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   chatDb,
@@ -9,18 +9,25 @@ import {
   messagingDevices,
   messagingFallbackKeys,
   messagingHandoffDrafts,
+  messagingLoginChallenges,
   messagingOneTimePrekeys,
   messagingSessions,
 } from "../db";
 import {
+  buildAutoUsernameBase,
+  buildAutoUsernameCandidates,
+  buildLoginChallengePayload,
+  extractMatrixEd25519Signature,
   generateOpaqueToken,
   hmacPhoneDigest,
   maskDisplayName,
   maskPhone,
   normalizePhone,
+  sanitizeDisplayNameToSlug,
   sha256Hex,
   toMatrixUserId,
   validateUsername,
+  verifyEd25519Signature,
 } from "../lib/crypto";
 import {
   COOKIE_NAMES,
@@ -60,18 +67,40 @@ const deviceBundleSchema = z.object({
 
 const registerSchema = z.object({
   proposedAccountId: z.string().uuid().optional(),
-  username: z.string().trim().min(3).max(32),
   displayName: z.string().trim().min(1).max(60),
-  contactPhone: z.string().trim().max(24).optional(),
+  mobileNumber: z.string().trim().min(6).max(24).optional(),
+  contactPhone: z.string().trim().min(6).max(24).optional(),
   device: deviceBundleSchema,
 });
 
 const activateDraftSchema = z.object({
   proposedAccountId: z.string().uuid().optional(),
-  username: z.string().trim().min(3).max(32),
   displayName: z.string().trim().min(1).max(60).optional(),
   device: deviceBundleSchema,
 });
+
+const loginChallengeSchema = z.object({
+  mobileNumber: z.string().trim().min(6).max(24),
+  knownDevices: z
+    .array(
+      z.object({
+        accountId: z.string().uuid(),
+        matrixDeviceId: z.string().trim().min(4).max(64),
+      }),
+    )
+    .max(25)
+    .optional()
+    .default([]),
+});
+
+const loginVerifySchema = z.object({
+  challengeId: z.string().uuid(),
+  accountId: z.string().uuid(),
+  matrixDeviceId: z.string().trim().min(4).max(64),
+  signatureEnvelopeJson: z.string().min(16).max(4096),
+});
+
+const LOGIN_CHALLENGE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 function extractKeysFromUpload(
   matrixDeviceId: string,
@@ -90,9 +119,10 @@ function extractKeysFromUpload(
 
 async function createAccountAndInitialDevice(params: {
   proposedAccountId?: string;
-  username: string;
-  usernameLower: string;
+  usernameCandidates: string[];
   displayName: string;
+  loginPhoneHmac: string | null;
+  avoidLoginPhoneCollision?: boolean;
   device: z.infer<typeof deviceBundleSchema>;
   claim?: {
     phoneHmac: string;
@@ -132,16 +162,87 @@ async function createAccountAndInitialDevice(params: {
         }
       }
 
-      const [account] = await tx
-        .insert(messagingAccounts)
-        .values({
-          id: accountId,
-          username: params.username,
-          usernameLower: params.usernameLower,
-          displayName: params.displayName,
-          identityStatus: "active",
-        })
-        .returning();
+      let effectiveLoginPhoneHmac = params.loginPhoneHmac;
+      if (effectiveLoginPhoneHmac) {
+        const [existingPhoneOwner] = await tx
+          .select({ id: messagingAccounts.id })
+          .from(messagingAccounts)
+          .where(eq(messagingAccounts.loginPhoneHmac, effectiveLoginPhoneHmac))
+          .limit(1);
+        if (existingPhoneOwner) {
+          if (params.avoidLoginPhoneCollision) {
+            effectiveLoginPhoneHmac = null;
+          } else {
+            throw Object.assign(new Error("EXISTING_ACCOUNT_FOUND"), { code: "EXISTING_ACCOUNT_FOUND" });
+          }
+        }
+      }
+
+      const validCandidates = params.usernameCandidates
+        .map((c) => validateUsername(c))
+        .filter((v): v is { ok: true; username: string; lower: string } => v.ok)
+        .map((v) => v.lower);
+
+      if (validCandidates.length === 0) {
+        throw new Error("No valid auto-generated username candidates");
+      }
+
+      const takenRows = await tx
+        .select({ usernameLower: messagingAccounts.usernameLower })
+        .from(messagingAccounts)
+        .where(inArray(messagingAccounts.usernameLower, validCandidates));
+      const takenSet = new Set(takenRows.map((r) => r.usernameLower));
+
+      const orderedCandidates = [
+        ...validCandidates.filter((c) => !takenSet.has(c)),
+        // Append extra random candidates in case all pre-built candidates collided simultaneously
+        ...Array.from({ length: 6 }, () => {
+          const rand = crypto.randomBytes(3).toString("hex");
+          const stem = validCandidates[0]!.slice(0, 23).replace(/[._-]+$/g, "") || "user";
+          return `${stem}.${rand}`;
+        }),
+      ];
+
+      let account: typeof messagingAccounts.$inferSelect | null = null;
+      for (const candidate of orderedCandidates) {
+        await tx.execute(sql.raw("SAVEPOINT sp_account_insert"));
+        try {
+          const [insertedAccount] = await tx
+            .insert(messagingAccounts)
+            .values({
+              id: accountId,
+              username: candidate,
+              usernameLower: candidate,
+              displayName: params.displayName,
+              loginPhoneHmac: effectiveLoginPhoneHmac,
+              identityStatus: "active",
+            })
+            .returning();
+          await tx.execute(sql.raw("RELEASE SAVEPOINT sp_account_insert"));
+          account = insertedAccount;
+          break;
+        } catch (insertErr: unknown) {
+          await tx.execute(sql.raw("ROLLBACK TO SAVEPOINT sp_account_insert"));
+          const ie = insertErr as { code?: string; message?: string; cause?: { code?: string; message?: string } };
+          const icode = ie?.code ?? ie?.cause?.code;
+          const imsg = `${ie?.message ?? ""} ${ie?.cause?.message ?? ""}`;
+          if (imsg.includes("uq_messaging_accounts_login_phone_hmac")) {
+            if (params.avoidLoginPhoneCollision) {
+              effectiveLoginPhoneHmac = null;
+              continue;
+            }
+            throw Object.assign(new Error("EXISTING_ACCOUNT_FOUND"), { code: "EXISTING_ACCOUNT_FOUND" });
+          }
+          if (icode === "23505" && (imsg.includes("uq_messaging_accounts_username_lower") || imsg.includes("username_lower"))) {
+            continue;
+          }
+          throw insertErr;
+        }
+      }
+
+      if (!account) {
+        throw new Error("Unable to allocate unique auto-generated username");
+      }
 
       const [device] = await tx
         .insert(messagingDevices)
@@ -244,6 +345,13 @@ async function createAccountAndInitialDevice(params: {
     const msg = `${e?.message ?? ""} ${e?.cause?.message ?? ""}`;
     if (code === "DRAFT_EXPIRED_OR_CONSUMED") {
       return { error: "Your restaurant handoff draft expired. Please create an account manually or scan a new QR.", status: 410 as const };
+    }
+    if (code === "EXISTING_ACCOUNT_FOUND" || msg.includes("uq_messaging_accounts_login_phone_hmac")) {
+      return {
+        error: "An account with this mobile number already exists. Please sign in instead.",
+        code: "EXISTING_ACCOUNT_FOUND",
+        status: 409 as const,
+      };
     }
     if (code === "23505" || msg.includes("uq_messaging_accounts_username_lower") || msg.includes("unique constraint")) {
       return { error: "That @username is already taken. Please pick another.", status: 409 as const };
@@ -397,10 +505,12 @@ router.post("/handoff/exchange", authLimiter, async (req: Request, res: Response
   const newDraftHash = sha256Hex(newRawDraft);
   const expiresAt = new Date(Date.now() + DRAFT_TTL_MS);
 
+  const rawCustomerName = verification.customerName ?? "Guest";
   const normalizedPhone = normalizePhone(verification.customerPhone) ?? verification.customerPhone;
-  const maskedName = maskDisplayName(verification.customerName ?? "Guest");
+  const maskedName = maskDisplayName(rawCustomerName);
   const maskedPhone = maskPhone(normalizedPhone);
   const phoneHmac = hmacPhoneDigest(normalizedPhone);
+  const suggestedUsernameBase = buildAutoUsernameBase(rawCustomerName, normalizedPhone);
 
   const createdDraft = await chatDb.transaction(async (tx) => {
     if (oldRawDraft) {
@@ -424,6 +534,7 @@ router.post("/handoff/exchange", authLimiter, async (req: Request, res: Response
         maskedName,
         maskedPhone,
         phoneHmac,
+        suggestedUsernameBase,
         status: "pending",
         expiresAt,
       })
@@ -513,37 +624,32 @@ router.post("/register", authLimiter, async (req: Request, res: Response) => {
     return;
   }
 
-  const uv = validateUsername(parsed.data.username);
-  if (!uv.ok) {
-    res.status(400).json({ error: uv.error });
+  const rawPhone = (parsed.data.mobileNumber ?? parsed.data.contactPhone ?? "").trim();
+  const normPhone = normalizePhone(rawPhone);
+  if (!normPhone) {
+    res.status(400).json({ error: "Please enter a valid mobile number (10+ digits)." });
     return;
   }
 
-  let claim: { phoneHmac: string; phoneMasked: string; source: string } | null = null;
-  if (parsed.data.contactPhone && parsed.data.contactPhone.trim()) {
-    const norm = normalizePhone(parsed.data.contactPhone);
-    if (!norm) {
-      res.status(400).json({ error: "Invalid optional phone number format" });
-      return;
-    }
-    claim = {
-      phoneHmac: hmacPhoneDigest(norm),
-      phoneMasked: maskPhone(norm),
-      source: "manual_optional",
-    };
-  }
+  const phoneHmac = hmacPhoneDigest(normPhone);
+  const phoneMasked = maskPhone(normPhone);
+  const usernameCandidates = buildAutoUsernameCandidates(parsed.data.displayName, normPhone);
 
   const created = await createAccountAndInitialDevice({
     proposedAccountId: parsed.data.proposedAccountId,
-    username: uv.username,
-    usernameLower: uv.lower,
+    usernameCandidates,
     displayName: parsed.data.displayName,
+    loginPhoneHmac: phoneHmac,
     device: parsed.data.device,
-    claim,
+    claim: {
+      phoneHmac,
+      phoneMasked,
+      source: "mobile_registration",
+    },
   });
 
   if (!created.ok) {
-    res.status(created.status).json({ error: created.error });
+    res.status(created.status).json({ error: created.error, code: (created as { code?: string }).code });
     return;
   }
 
@@ -584,12 +690,6 @@ router.post("/activate-from-draft", authLimiter, async (req: Request, res: Respo
     return;
   }
 
-  const uv = validateUsername(parsed.data.username);
-  if (!uv.ok) {
-    res.status(400).json({ error: uv.error });
-    return;
-  }
-
   const [draft] = await chatDb
     .select()
     .from(messagingHandoffDrafts)
@@ -608,11 +708,32 @@ router.post("/activate-from-draft", authLimiter, async (req: Request, res: Respo
     return;
   }
 
+  const fallbackTag = String((parseInt(draft.phoneHmac.slice(0, 8), 16) % 9000) + 1000);
+  const draftTagMatch = /\.(\d{4})$/.exec(draft.suggestedUsernameBase ?? "");
+  const tag = draftTagMatch ? draftTagMatch[1]! : fallbackTag;
+  const baseHandle = parsed.data.displayName?.trim()
+    ? `${sanitizeDisplayNameToSlug(parsed.data.displayName)}.${tag}`
+    : (draft.suggestedUsernameBase ?? `guest.${tag}`);
+
+  const alphabet = "23456789abcdefghjkmnpqrstuvwxyz";
+  const usernameCandidates = [
+    baseHandle,
+    ...Array.from({ length: 10 }, (_, idx) => {
+      const len = idx < 4 ? 2 : 4;
+      const bytes = crypto.randomBytes(len);
+      let r = "";
+      for (let j = 0; j < len; j++) r += alphabet[bytes[j]! % alphabet.length];
+      const stem = baseHandle.slice(0, 30 - 1 - r.length).replace(/[._-]+$/g, "") || "guest";
+      return `${stem}.${r}`;
+    }),
+  ];
+
   const created = await createAccountAndInitialDevice({
     proposedAccountId: parsed.data.proposedAccountId,
-    username: uv.username,
-    usernameLower: uv.lower,
+    usernameCandidates,
     displayName: parsed.data.displayName?.trim() || draft.maskedName,
+    loginPhoneHmac: draft.phoneHmac,
+    avoidLoginPhoneCollision: true,
     device: parsed.data.device,
     claim: {
       phoneHmac: draft.phoneHmac,
@@ -623,7 +744,7 @@ router.post("/activate-from-draft", authLimiter, async (req: Request, res: Respo
   });
 
   if (!created.ok) {
-    res.status(created.status).json({ error: created.error });
+    res.status(created.status).json({ error: created.error, code: (created as { code?: string }).code });
     return;
   }
 
@@ -638,6 +759,252 @@ router.post("/activate-from-draft", authLimiter, async (req: Request, res: Respo
   res.status(201).json({
     account: created.account,
     device: created.device,
+  });
+});
+
+/**
+ * POST /api/chat/login/challenge
+ * Passwordless existing-account reconnection:
+ * - Same browser with active local OlmMachine keypair -> issues single-use Ed25519 challenge nonce.
+ * - Fresh browser / missing keys -> returns LINK_REQUIRED without leaking account PII or bypassing E2EE.
+ */
+router.post("/login/challenge", authLimiter, async (req: Request, res: Response) => {
+  const sessionState = await resolveSessionFromCookieHeader(req.headers.cookie);
+  if (sessionState.status === "ok") {
+    res.status(409).json({ error: "Already signed in on this browser", code: "ALREADY_AUTHENTICATED" });
+    return;
+  }
+
+  const parsed = loginChallengeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Please enter a valid mobile number." });
+    return;
+  }
+
+  const normPhone = normalizePhone(parsed.data.mobileNumber);
+  if (!normPhone) {
+    res.status(400).json({ error: "Please enter a valid mobile number (10+ digits)." });
+    return;
+  }
+
+  const phoneHmac = hmacPhoneDigest(normPhone);
+  const [account] = await chatDb
+    .select({
+      id: messagingAccounts.id,
+      identityStatus: messagingAccounts.identityStatus,
+    })
+    .from(messagingAccounts)
+    .where(eq(messagingAccounts.loginPhoneHmac, phoneHmac))
+    .limit(1);
+
+  if (!account || account.identityStatus !== "active") {
+    res.status(404).json({
+      status: "NOT_FOUND",
+      code: "ACCOUNT_NOT_FOUND",
+      error: "No account is registered with that mobile number.",
+    });
+    return;
+  }
+
+  const matchingHints = parsed.data.knownDevices.filter(
+    (kd) => kd.accountId.toLowerCase() === account.id.toLowerCase(),
+  );
+
+  let matchedDevice: { id: string; matrixDeviceId: string } | null = null;
+  if (matchingHints.length > 0) {
+    const candidateMatrixIds = Array.from(new Set(matchingHints.map((h) => h.matrixDeviceId)));
+    const [foundDevice] = await chatDb
+      .select({
+        id: messagingDevices.id,
+        matrixDeviceId: messagingDevices.matrixDeviceId,
+      })
+      .from(messagingDevices)
+      .where(
+        and(
+          eq(messagingDevices.accountId, account.id),
+          inArray(messagingDevices.matrixDeviceId, candidateMatrixIds),
+          eq(messagingDevices.status, "active"),
+          isNull(messagingDevices.revokedAt),
+        ),
+      )
+      .limit(1);
+    matchedDevice = foundDevice ?? null;
+  }
+
+  if (!matchedDevice) {
+    res.json({
+      status: "LINK_REQUIRED",
+      message:
+        "This browser does not hold your local encryption keys. Approve this browser from an already signed-in device using Link Existing.",
+    });
+    return;
+  }
+
+  const nonce = generateOpaqueToken(32);
+  const expiresAt = new Date(Date.now() + LOGIN_CHALLENGE_TTL_MS);
+  const [challenge] = await chatDb
+    .insert(messagingLoginChallenges)
+    .values({
+      accountId: account.id,
+      deviceId: matchedDevice.id,
+      matrixDeviceId: matchedDevice.matrixDeviceId,
+      nonce,
+      expiresAt,
+    })
+    .returning();
+
+  res.json({
+    status: "CHALLENGE_ISSUED",
+    challengeId: challenge.id,
+    accountId: account.id,
+    matrixDeviceId: matchedDevice.matrixDeviceId,
+    nonce: challenge.nonce,
+  });
+});
+
+/**
+ * POST /api/chat/login/verify
+ * Verifies single-use Ed25519 challenge signature from an intact local OlmMachine
+ * and re-mints a session cookie for that exact device without altering E2EE trust.
+ */
+router.post("/login/verify", authLimiter, async (req: Request, res: Response) => {
+  const sessionState = await resolveSessionFromCookieHeader(req.headers.cookie);
+  if (sessionState.status === "ok") {
+    res.status(409).json({ error: "Already signed in on this browser", code: "ALREADY_AUTHENTICATED" });
+    return;
+  }
+
+  const parsed = loginVerifySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid login verification payload" });
+    return;
+  }
+
+  const normAccountId = parsed.data.accountId.toLowerCase();
+  const now = new Date();
+  const rawSession = generateOpaqueToken(32);
+  const sessionTokenHash = sha256Hex(rawSession);
+  const sessionExpiresAt = new Date(Date.now() + SESSION_TTL_MS);
+
+  const verified = await chatDb.transaction(async (tx) => {
+    const [consumed] = await tx
+      .update(messagingLoginChallenges)
+      .set({ consumedAt: now })
+      .where(
+        and(
+          eq(messagingLoginChallenges.id, parsed.data.challengeId),
+          eq(messagingLoginChallenges.accountId, normAccountId),
+          eq(messagingLoginChallenges.matrixDeviceId, parsed.data.matrixDeviceId),
+          isNull(messagingLoginChallenges.consumedAt),
+          gt(messagingLoginChallenges.expiresAt, now),
+        ),
+      )
+      .returning();
+
+    if (!consumed) {
+      return { ok: false as const, status: 401 as const, error: "Login challenge expired or already used", code: "CHALLENGE_INVALID" };
+    }
+
+    const [device] = await tx
+      .select()
+      .from(messagingDevices)
+      .where(
+        and(
+          eq(messagingDevices.id, consumed.deviceId),
+          eq(messagingDevices.accountId, consumed.accountId),
+          eq(messagingDevices.status, "active"),
+          isNull(messagingDevices.revokedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!device) {
+      return { ok: false as const, status: 401 as const, error: "Device is no longer active", code: "DEVICE_REVOKED" };
+    }
+
+    const [account] = await tx
+      .select()
+      .from(messagingAccounts)
+      .where(
+        and(
+          eq(messagingAccounts.id, consumed.accountId),
+          eq(messagingAccounts.identityStatus, "active"),
+        ),
+      )
+      .limit(1);
+
+    if (!account) {
+      return { ok: false as const, status: 401 as const, error: "Account not active", code: "ACCOUNT_INACTIVE" };
+    }
+
+    const matrixUserId = toMatrixUserId(account.id);
+    const sigBytes = extractMatrixEd25519Signature(
+      parsed.data.signatureEnvelopeJson,
+      matrixUserId,
+      device.matrixDeviceId,
+    );
+    if (!sigBytes) {
+      return { ok: false as const, status: 401 as const, error: "Malformed device signature", code: "INVALID_DEVICE_PROOF" };
+    }
+
+    const expectedPayload = buildLoginChallengePayload({
+      challengeId: consumed.id,
+      accountId: account.id,
+      matrixDeviceId: device.matrixDeviceId,
+      nonce: consumed.nonce,
+    });
+
+    const sigOk = verifyEd25519Signature({
+      payload: expectedPayload,
+      signatureBytes: sigBytes,
+      signerEd25519Base64: device.identityKeyEd25519,
+    });
+    if (!sigOk) {
+      return { ok: false as const, status: 401 as const, error: "Device cryptographic proof failed", code: "INVALID_DEVICE_PROOF" };
+    }
+
+    await tx
+      .update(messagingDevices)
+      .set({ lastSeenAt: now })
+      .where(eq(messagingDevices.id, device.id));
+
+    await tx.insert(messagingSessions).values({
+      accountId: account.id,
+      deviceId: device.id,
+      tokenHash: sessionTokenHash,
+      expiresAt: sessionExpiresAt,
+    });
+
+    return {
+      ok: true as const,
+      account: {
+        id: account.id,
+        username: account.username,
+        displayName: account.displayName,
+        matrixUserId,
+      },
+      device: {
+        id: device.id,
+        matrixDeviceId: device.matrixDeviceId,
+        deviceLabel: device.deviceLabel,
+        identityKeyEd25519: device.identityKeyEd25519,
+      },
+    };
+  });
+
+  if (!verified.ok) {
+    res.status(verified.status).json({ error: verified.error, code: verified.code });
+    return;
+  }
+
+  setHostCookie(req, res, COOKIE_NAMES.SESSION_PROD, COOKIE_NAMES.SESSION_DEV, rawSession, SESSION_TTL_MS);
+  clearHostCookie(res, COOKIE_NAMES.DRAFT_PROD, COOKIE_NAMES.DRAFT_DEV);
+  clearHandoffSourceCookie(req, res);
+
+  await recordAuditEvent("session_login_device_challenge", verified.account.id, verified.device.id);
+  res.json({
+    account: verified.account,
+    device: verified.device,
   });
 });
 

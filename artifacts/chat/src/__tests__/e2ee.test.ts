@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import crypto from "node:crypto";
 import * as cryptoWasm from "@matrix-org/matrix-sdk-crypto-wasm";
 import {
+  buildLoginChallengePayload,
   ChatCryptoSession,
   createDevice2EciesOffer,
   establishDevice1EciesChannel,
@@ -12,10 +13,15 @@ import {
   type EndorsementNodeInfo,
 } from "../crypto/e2eeClient";
 import {
+  checkKeyStoreHealth,
+  checkKnownDeviceStoreHealth,
   clearCryptoMeta,
+  deactivateActiveCryptoMeta,
   readAllRoomEpochs,
   readCryptoMeta,
+  readKnownDevices,
   readTrustedRoot,
+  upsertKnownDevice,
   writeCryptoMeta,
   writeRoomEpoch,
   writeTrustedRoot,
@@ -122,6 +128,12 @@ function installMockIndexedDb() {
         req.onsuccess?.({});
       });
       return req;
+    },
+    deleteDatabase(name: string) {
+      return makeReq(() => {
+        databases.delete(name);
+        return undefined;
+      });
     },
   };
 
@@ -636,5 +648,175 @@ describe("Bitebend E2EE WASM, Persistence, Endorsements, SAS & Attachment Encryp
     const tampered = new Uint8Array(encryptedBytes);
     tampered[500] ^= 0xff;
     await expect(decryptAttachmentBytes(tampered, meta)).rejects.toThrow();
+  });
+
+  it("preserves known_devices, room epochs & trusted roots across normal sign-out, signs login challenges with OlmMachine Ed25519, and decrypts prior Megolm messages", async () => {
+    restoreIdb = installMockIndexedDb();
+    const aliceAcc = crypto.randomUUID();
+    const bobAcc = crypto.randomUUID();
+    const aliceUid = makeMatrixUserId(aliceAcc);
+    const bobUid = makeMatrixUserId(bobAcc);
+
+    const bobPrep = await ChatCryptoSession.prepareNewDeviceForRegistration({
+      proposedAccountId: bobAcc,
+      matrixDeviceId: "BOB_PERSIST1",
+      inMemory: true,
+    });
+    await bobPrep.markRegistered({ signed_curve25519: 50 });
+
+    const alicePrep = await ChatCryptoSession.prepareNewDeviceForRegistration({
+      proposedAccountId: aliceAcc,
+      matrixDeviceId: "ALICE_PERSIST1",
+      inMemory: true,
+    });
+    await alicePrep.markRegistered({ signed_curve25519: 50 });
+
+    const aliceMetaRecord = {
+      accountId: aliceAcc,
+      matrixDeviceId: "ALICE_PERSIST1",
+      storeName: `bb_chat_olm_${aliceAcc}_ALICE_PERSIST1`,
+      initializedAt: new Date().toISOString(),
+    };
+    const convId = crypto.randomUUID();
+    await writeCryptoMeta(aliceMetaRecord);
+    await upsertKnownDevice(aliceMetaRecord);
+    await writeRoomEpoch(aliceAcc, "ALICE_PERSIST1", convId, 1);
+    await writeTrustedRoot(aliceAcc, "ALICE_PERSIST1", bobUid, "BOB_PERSIST1", bobPrep.session.ed25519Key);
+
+    // Bob shares Megolm room key & encrypts a message BEFORE Alice signs out
+    const bobOtpkMap = { ...(bobPrep.uploadPayload.oneTimeKeys as Record<string, Record<string, unknown>>) };
+    const toDeviceForAlice: Array<{ sender: string; type: string; content: Record<string, unknown> }> = [];
+    const aliceToDeviceForBob: Array<{ sender: string; type: string; content: Record<string, unknown> }> = [];
+
+    const transport: ChatApiTransport = {
+      uploadKeys: async () => ({ one_time_key_counts: { signed_curve25519: 50 } }),
+      queryKeys: async () => ({
+        device_keys: {
+          [aliceUid]: { ALICE_PERSIST1: alicePrep.uploadPayload.deviceKeysJson },
+          [bobUid]: { BOB_PERSIST1: bobPrep.uploadPayload.deviceKeysJson },
+        },
+        failures: {},
+        endorsements: {
+          [aliceUid]: {
+            ALICE_PERSIST1: {
+              isRoot: true,
+              ed25519: alicePrep.session.ed25519Key,
+              endorsedByMatrixDeviceId: null,
+              endorsedByEd25519: null,
+              endorsementSig: null,
+            },
+          },
+          [bobUid]: {
+            BOB_PERSIST1: {
+              isRoot: true,
+              ed25519: bobPrep.session.ed25519Key,
+              endorsedByMatrixDeviceId: null,
+              endorsedByEd25519: null,
+              endorsementSig: null,
+            },
+          },
+        },
+      }),
+      claimKeys: async () => {
+        const first = Object.entries(bobOtpkMap)[0];
+        const claimed = first
+          ? { [bobUid]: { BOB_PERSIST1: { [first[0]]: first[1] } } }
+          : {};
+        return { one_time_keys: claimed, failures: {} };
+      },
+      sendToDevice: async (eventType, _txnId, body) => {
+        const msgs = (body["messages"] as Record<string, Record<string, Record<string, unknown>>>) ?? {};
+        for (const [devId, content] of Object.entries(msgs[bobUid] ?? {})) {
+          if (devId === "BOB_PERSIST1") {
+            aliceToDeviceForBob.push({ sender: aliceUid, type: eventType, content });
+          }
+        }
+        return {};
+      },
+      sync: async () => ({
+        next_batch: "td:0|dl:0",
+        to_device: { events: [] },
+        device_lists: { changed: [] },
+        device_one_time_keys_count: { signed_curve25519: 50 },
+        device_unused_fallback_key_types: [],
+      }),
+    };
+
+    const historicalCiphertext = await alicePrep.session.encryptMessageForConversation(
+      transport,
+      convId,
+      [bobAcc],
+      1,
+      { msgtype: "m.text", body: "Message sent before normal sign out" },
+    );
+    await bobPrep.session.syncOnce({
+      ...transport,
+      sync: async () => ({
+        next_batch: "td:1|dl:0",
+        to_device: { events: aliceToDeviceForBob },
+        device_lists: { changed: [] },
+        device_one_time_keys_count: { signed_curve25519: 50 },
+        device_unused_fallback_key_types: [],
+      }),
+    });
+    const bobHistoricDec = await bobPrep.session.decryptRoomEvent(convId, {
+      id: "hist1",
+      senderMatrixUserId: aliceUid,
+      createdAt: new Date().toISOString(),
+      payloadJson: historicalCiphertext,
+    });
+    expect(bobHistoricDec.decrypted).toBe(true);
+    expect(bobHistoricDec.body).toBe("Message sent before normal sign out");
+    expect(toDeviceForAlice).toHaveLength(0);
+
+    // Normal Sign Out: deactivates active_device ONLY; preserves known_devices, room_epochs & trusted_roots
+    await deactivateActiveCryptoMeta();
+    expect(await readCryptoMeta()).toBeNull();
+    expect((await checkKeyStoreHealth(aliceAcc, "ALICE_PERSIST1")).status).toBe("KEY_EVICTED_OR_MISSING");
+
+    const known = await readKnownDevices();
+    expect(known).toHaveLength(1);
+    expect(known[0]?.accountId).toBe(aliceAcc.toLowerCase());
+    expect(known[0]?.matrixDeviceId).toBe("ALICE_PERSIST1");
+    expect((await checkKnownDeviceStoreHealth(aliceAcc, "ALICE_PERSIST1")).status).toBe("OK");
+    expect((await readAllRoomEpochs(aliceAcc, "ALICE_PERSIST1")).get(convId)).toBe(1);
+    expect(await readTrustedRoot(aliceAcc, "ALICE_PERSIST1", bobUid)).not.toBeNull();
+
+    // Sign challenge using OlmMachine Ed25519 key & verify signature with Node crypto
+    const challengeId = crypto.randomUUID();
+    const nonce = "nonce_abc_123";
+    const sigEnvelopeJson = await alicePrep.session.signLoginChallenge({ challengeId, nonce });
+    const parsedSig = JSON.parse(sigEnvelopeJson) as Record<string, Record<string, string>>;
+    const sigB64 = parsedSig[aliceUid]?.["ed25519:ALICE_PERSIST1"] ?? "";
+    expect(sigB64.length).toBeGreaterThan(20);
+
+    const payload = buildLoginChallengePayload({
+      challengeId,
+      accountId: aliceAcc,
+      matrixDeviceId: "ALICE_PERSIST1",
+      nonce,
+    });
+    const pubDer = Buffer.concat([
+      Buffer.from("302a300506032b6570032100", "hex"),
+      Buffer.from(alicePrep.session.ed25519Key, "base64"),
+    ]);
+    const pubKeyObj = crypto.createPublicKey({ key: pubDer, format: "der", type: "spki" });
+    const sigBytes = Buffer.from(sigB64, "base64");
+    expect(crypto.verify(null, Buffer.from(payload, "utf8"), pubKeyObj, sigBytes)).toBe(true);
+
+    // Preserved OlmMachine still decrypts historical Megolm message after re-login
+    const aliceHistoricDec = await alicePrep.session.decryptRoomEvent(convId, {
+      id: "hist1",
+      senderMatrixUserId: aliceUid,
+      createdAt: new Date().toISOString(),
+      payloadJson: historicalCiphertext,
+    });
+    expect(aliceHistoricDec.decrypted).toBe(true);
+    expect(aliceHistoricDec.body).toBe("Message sent before normal sign out");
+
+    // Explicit key erasure removes known_devices, active_device, room_epochs & trusted_roots
+    await ChatCryptoSession.eraseLocalDeviceData(aliceMetaRecord.storeName, aliceAcc, "ALICE_PERSIST1");
+    expect(await readKnownDevices()).toHaveLength(0);
+    expect((await checkKnownDeviceStoreHealth(aliceAcc, "ALICE_PERSIST1")).status).toBe("KEY_EVICTED_OR_MISSING");
   });
 });

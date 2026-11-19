@@ -16,6 +16,9 @@ import {
   UserMinus,
   ShieldAlert,
   X,
+  Copy,
+  Check,
+  Trash2,
 } from "lucide-react";
 import { ChatCryptoSession, type DecryptedMessageContent } from "../crypto/e2eeClient";
 import {
@@ -63,6 +66,9 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
   // Modals
   const [showDevices, setShowDevices] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
+  const [showSignOutModal, setShowSignOutModal] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [copiedMyHandle, setCopiedMyHandle] = useState(false);
   const [newChatTab, setNewChatTab] = useState<"direct" | "group">("direct");
   const [lookupInput, setLookupInput] = useState("");
   const [searchResults, setSearchResults] = useState<
@@ -441,11 +447,44 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
     }
   };
 
-  const handleLogout = async () => {
-    await chatApi.logout();
-    await ChatCryptoSession.clearLocalMetadata();
-    broadcastTabSync({ type: "logout" });
-    await onLoggedOut();
+  const handleCopyMyUsername = async () => {
+    try {
+      await navigator.clipboard.writeText(`@${account.username}`);
+      setCopiedMyHandle(true);
+      window.setTimeout(() => setCopiedMyHandle(false), 1800);
+    } catch {
+      // Clipboard unavailable
+    }
+  };
+
+  const handleSignOutKeepKeys = async () => {
+    setSigningOut(true);
+    try {
+      await chatApi.logout().catch(() => undefined);
+      await ChatCryptoSession.deactivateActiveSession();
+      broadcastTabSync({ type: "logout" });
+      setShowSignOutModal(false);
+      await onLoggedOut();
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
+  const handleSignOutAndEraseKeys = async () => {
+    setSigningOut(true);
+    try {
+      await chatApi.logout().catch(() => undefined);
+      await ChatCryptoSession.eraseLocalDeviceData(
+        cryptoSession.storeName,
+        account.id,
+        cryptoSession.matrixDeviceId,
+      );
+      broadcastTabSync({ type: "logout" });
+      setShowSignOutModal(false);
+      await onLoggedOut();
+    } finally {
+      setSigningOut(false);
+    }
   };
 
   return (
@@ -489,8 +528,21 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
           <div className="px-4 py-3.5 bg-[#047857] text-white flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-sm font-extrabold truncate">Bitebend Chat</div>
-              <div className="text-[11px] text-emerald-100 truncate">
-                @{account.username} · {wsConnected ? "Live Sync" : "Reconnecting…"}
+              <div className="text-[11px] text-emerald-100 flex items-center gap-1.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyMyUsername()}
+                  title="Copy your @username"
+                  className="inline-flex items-center gap-1 truncate hover:text-white"
+                >
+                  <span className="truncate font-mono">@{account.username}</span>
+                  {copiedMyHandle ? (
+                    <Check className="w-3 h-3 shrink-0" />
+                  ) : (
+                    <Copy className="w-3 h-3 shrink-0 opacity-75" />
+                  )}
+                </button>
+                <span className="shrink-0">· {wsConnected ? "Live Sync" : "Reconnecting…"}</span>
               </div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -512,7 +564,7 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
               </button>
               <button
                 type="button"
-                onClick={() => void handleLogout()}
+                onClick={() => setShowSignOutModal(true)}
                 title="Sign Out"
                 className="w-8 h-8 rounded-lg bg-white/15 hover:bg-white/25 flex items-center justify-center"
               >
@@ -938,6 +990,53 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
           onClose={() => setShowDevices(false)}
           onSyncNeeded={refreshConversationsAndSync}
         />
+      )}
+
+      {showSignOutModal && (
+        <div className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#ede8e3] bg-white p-5 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold text-[#1a0a00]">Sign Out Options</h3>
+              <button
+                type="button"
+                disabled={signingOut}
+                onClick={() => setShowSignOutModal(false)}
+                className="w-8 h-8 rounded-lg bg-[#f5f0eb] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#6b7280] leading-relaxed">
+              Keeping your encryption keys on this browser lets you sign back in with your mobile number later and read all your existing messages.
+            </p>
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                disabled={signingOut}
+                onClick={() => void handleSignOutKeepKeys()}
+                className="w-full rounded-xl bg-[#059669] py-3 px-4 text-sm font-bold text-white hover:bg-[#047857] disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {signingOut ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
+                Sign Out (Keep Keys on This Browser)
+              </button>
+
+              <button
+                type="button"
+                disabled={signingOut}
+                onClick={() => void handleSignOutAndEraseKeys()}
+                className="w-full rounded-xl border border-[#fecaca] bg-[#fef2f2] py-3 px-4 text-xs font-bold text-[#b91c1c] hover:bg-[#fee2e2] disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                Sign Out &amp; Erase Local Keys
+              </button>
+              <p className="text-[11px] text-[#991b1b] text-center leading-relaxed">
+                Warning: erasing local keys removes decryption keys from this browser. Future logins on this browser will require re-linking from another active device.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

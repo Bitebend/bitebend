@@ -7,6 +7,7 @@ import {
   ensureChatDbReady,
   messagingDeviceLinkTokens,
   messagingHandoffDrafts,
+  messagingLoginChallenges,
 } from "./db";
 import { attachChatWebSocketServer } from "./ws";
 import { logger } from "./lib/logger";
@@ -34,6 +35,10 @@ async function purgeExpiredChatRecords(): Promise<void> {
     await chatDb
       .delete(messagingDeviceLinkTokens)
       .where(lte(messagingDeviceLinkTokens.expiresAt, dayAgo));
+
+    await chatDb
+      .delete(messagingLoginChallenges)
+      .where(lte(messagingLoginChallenges.expiresAt, dayAgo));
   } catch (err) {
     logger.warn({ err: (err as Error).message }, "Expired chat token cleanup skipped");
   }
