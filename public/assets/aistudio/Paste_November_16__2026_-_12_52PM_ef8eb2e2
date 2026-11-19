@@ -1,0 +1,1007 @@
+# BITEBEND SECURE MESSAGING
+## STRICT READ-ONLY — COMPLETE ARCHITECTURE, RAILWAY ENVIRONMENT & IMPLEMENTATION READINESS AUDIT
+
+You are acting as a Principal Software Architect, Backend Security Engineer, E2EE Cryptography Architect, Database Architect, and Railway Infrastructure Engineer.
+
+Your task is to perform a comprehensive, repository-grounded architectural audit of the existing Bitebend monorepo and design a production-ready implementation architecture for **Bitebend Secure Messaging**.
+
+This is an architecture and implementation-readiness audit ONLY.
+
+**STRICTLY READ-ONLY. DO NOT IMPLEMENT ANYTHING.**
+
+Do not edit code, create files, modify environment variables, install packages, change Railway services, modify databases, generate migrations, trigger builds or deployments, or perform any other write operation.
+
+Your responsibility is to understand the existing system deeply, verify the earlier audit findings against the current repository, identify all required changes, and prepare a detailed implementation blueprint that can later be executed in separately authorised phases.
+
+---
+
+# PART 1 — UNDERSTAND THE EXISTING BITEBEND ARCHITECTURE
+
+Bitebend is an existing QR-based restaurant ordering SaaS built as a monorepo.
+
+Important application boundaries:
+
+- `artifacts/api-server`: Central Express 5 API server.
+- `artifacts/menu`: Restaurant customer-facing QR menu and ordering platform.
+- `artifacts/portal`: Restaurant owner, partner and Super Admin dashboard.
+- `artifacts/home`: Public Bitebend Home and platform discovery.
+- `lib/db`: Shared Drizzle ORM and PostgreSQL schema.
+
+Existing production domains:
+
+- `bitebend.in`: Public Home platform.
+- `menu.bitebend.in`: Customer QR menu and ordering.
+- `portal.bitebend.in`: Owner, partner and Super Admin portal.
+- API domain: Central backend.
+- `wa.bitebend.in`: Existing WhatsApp bridge.
+
+Railway is the existing hosting environment.
+
+Do not propose replacing the existing architecture with an unrelated framework, a separate microservice ecosystem, or a new hosting provider without a demonstrated technical requirement.
+
+First inspect:
+
+1. Current Railway project and service structure, where accessible.
+2. Existing Railway deployment configuration.
+3. API server startup and production deployment command.
+4. Existing PostgreSQL connection and Drizzle configuration.
+5. Existing environment-variable management and service networking.
+6. Existing domain and routing configuration.
+7. Current build, workspace and package dependency structure.
+8. Existing authentication and authorisation boundaries.
+9. Existing real-time infrastructure.
+10. Existing file/image/media storage implementation.
+
+Use repository evidence wherever available. If Railway dashboard details or credentials are not accessible, explicitly identify what could not be verified. Never guess that a service or configuration exists.
+
+---
+
+# PART 2 — PRODUCT REQUIREMENTS AND DECISIONS ALREADY DISCUSSED
+
+These are the current proposed product requirements. Treat them as the baseline for architecture design, not as permission to implement.
+
+## 2.1 Secure Messaging Product
+
+Bitebend will have a native, WhatsApp-like messaging platform.
+
+It should support:
+
+- One-to-one customer and restaurant conversations.
+- Text messages.
+- Images and GIFs.
+- Videos.
+- Audio files and voice notes.
+- PDF and other digital documents.
+- File attachments.
+- Location sharing.
+- Contact/profile cards where appropriate.
+- Restaurant menu, order and bill cards.
+- Reply to messages.
+- Reactions.
+- Edit/delete message controls with clearly defined semantics.
+- Message delivery and read receipts.
+- Typing indicators.
+- Online/offline presence.
+- Multi-device support.
+- Secure multimedia transfer.
+- Message history and offline message synchronisation.
+
+**Explicit exclusions:**
+
+- No voice calling.
+- No video calling.
+- No audio-call infrastructure.
+- No video-call infrastructure.
+
+Do not add a Calls tab or call-related functionality.
+
+The platform must feel like a complete messaging product, not merely a support-chat widget.
+
+## 2.2 Customer Authentication
+
+Selected direction:
+
+**Guest QR ordering + optional account/passkey registration.**
+
+Requirements:
+
+- Customers must be able to scan a restaurant QR and place an order without mandatory account registration.
+- Do not force customers to create accounts before browsing the menu or ordering.
+- A guest customer should be able to use a temporary messaging identity associated with the authenticated/verified guest ordering session.
+- Optional customer account registration and passkey authentication can provide longer-term account continuity.
+- Customer messaging identity must not depend on the raw mobile number.
+- Do not assume that passkey registration automatically restores E2EE keys. Design authentication and cryptographic key recovery as separate systems.
+
+Explain the lifecycle of a guest messaging identity, its relationship with a QR/table session, and what happens when the guest session expires.
+
+## 2.3 Customer Identity Visible to Restaurants
+
+Selected direction:
+
+**Customer name + Table/Order number.**
+
+Restaurant staff should see an understandable identity, for example:
+
+Customer: Rahul  
+Table: 05  
+Order: BB1048
+
+Do not show customer phone numbers in restaurant messaging interfaces or APIs.
+
+Important architectural requirement:
+
+Customer name and table/order number are display labels, NOT unique cryptographic identities.
+
+Use opaque, non-guessable internal IDs for customer accounts, devices, sessions and conversations.
+
+The customer phone number must remain in a separate protected PII domain.
+
+## 2.4 Customer Phone Privacy
+
+This is a critical requirement.
+
+Customer phone numbers are collected during the existing ordering process where operationally required.
+
+The privacy rules are:
+
+- Customer can access their own phone number.
+- Waiters must not access customer phone numbers.
+- Chefs must not access customer phone numbers.
+- Restaurant owners/managers must not access customer phone numbers.
+- Channel partners must not access customer phone numbers.
+- Other customers must not access customer phone numbers.
+- Authorised Super Admin may retain access to customer phone numbers, subject to appropriate access controls and audit logging.
+
+Do not simply hide phone numbers in the frontend.
+
+Enforce privacy at the database query, API response, serialisation, authorisation and export levels.
+
+Investigate every existing endpoint that exposes customer phone information.
+
+Separate customer contact PII from messaging identity and encrypted message data.
+
+## 2.5 Device Loss and Browser Data Clearance
+
+Selected direction:
+
+**Without recovery credentials, start a fresh encrypted chat; retain existing order and bill records.**
+
+Expected behaviour:
+
+- If customer loses the device or clears browser storage, their old local cryptographic keys may be lost.
+- Without valid recovery credentials, old encrypted chat history cannot be decrypted or restored.
+- Customer can establish a fresh messaging identity/session and start a new encrypted chat.
+- Existing order records, bill records, payment records and restaurant transaction history remain intact.
+- Device revocation and replacement-device handling must be designed.
+- Never provide a hidden Super Admin recovery key or server-side decryption bypass.
+
+Investigate whether optional encrypted key backup should remain a future feature. Do not make it mandatory under the currently selected direction.
+
+## 2.6 Infrastructure Direction
+
+Selected infrastructure direction:
+
+**Use Railway as the primary infrastructure provider.**
+
+Evaluate:
+
+1. Existing Railway API service for WebSocket messaging.
+2. Railway Redis for real-time event distribution.
+3. Railway Storage Bucket for encrypted multimedia.
+4. Existing Railway PostgreSQL for persistent encrypted messages, conversations, metadata and device records.
+
+Do not assume Cloudflare R2 or Amazon S3 is necessary.
+
+Railway Storage Bucket is S3-compatible. Evaluate its suitability for the proposed media-upload and download pipeline.
+
+Do not conduct Railway plan comparisons, pricing research or subscription recommendations. These are explicitly outside this audit's scope.
+
+---
+
+# PART 3 — VERIFY THE PREVIOUS ARCHITECTURAL AUDIT FINDINGS
+
+A previous STRICT READ-ONLY audit reported that Bitebend currently has UI concepts but no complete functional messaging backend.
+
+Verify all the following findings against the current code. Do not blindly trust the previous report.
+
+## 3.1 Existing Messaging UI
+
+Previously identified:
+
+- `artifacts/menu/src/pages/MessagingPlatformPage.tsx`
+- `artifacts/home/src/pages/MessagingPlatformPage.tsx`
+
+The menu messaging page was reportedly a Coming Soon concept.
+
+The Home messaging page reportedly contains a static mockup with sample conversations and a Calls tab.
+
+Check whether these files have changed.
+
+Identify:
+
+- What is functional?
+- What is mock data?
+- What is placeholder UI?
+- What components can be reused?
+- What must be redesigned?
+- Which application should own customer messaging?
+- Which application should own restaurant messaging?
+- How should customer and restaurant experiences share a common messaging backend?
+
+Do not implement UI changes.
+
+## 3.2 Existing Realtime Infrastructure
+
+Previous audit identified:
+
+`artifacts/api-server/src/lib/orderEvents.ts`
+
+It reportedly uses an in-memory Map of Express Response objects for SSE order updates.
+
+Verify:
+
+- Current SSE implementation.
+- Whether it works across multiple Railway API replicas.
+- Whether Redis is already installed or configured.
+- Whether WebSocket or Socket.IO already exists.
+- Whether there are shared event or notification abstractions.
+- Whether existing SSE functionality needs migration, coexistence or independent treatment.
+
+Design a secure authenticated WebSocket architecture for messaging.
+
+Do not automatically replace existing order SSE. Assess the impact and recommend a safe migration or coexistence strategy.
+
+## 3.3 Existing Media Storage
+
+Previous audit identified:
+
+`artifacts/api-server/src/lib/objectStorage.ts`
+
+It reportedly contains a stub implementation that returns ObjectNotFoundError.
+
+It also identified:
+
+- Base64 image storage in PostgreSQL `image_blobs`.
+- Data URI usage in `session_bills.screenshot_url`.
+- Public unauthenticated `GET /api/images/:id`.
+- Missing object-storage abstraction.
+
+Verify the current implementation.
+
+Identify every place where media is stored, uploaded, served or referenced.
+
+Assess how Railway Storage Bucket can be introduced without breaking existing restaurant image, bill screenshot and payment workflows.
+
+Do not migrate existing media as part of this audit.
+
+---
+
+# PART 4 — RAILWAY ENVIRONMENT COMPATIBILITY AND REQUIRED CHANGES
+
+This is a major section of the audit.
+
+Do not audit Railway plan or pricing.
+
+Only determine what changes the existing Railway environment needs to support Secure Messaging.
+
+## 4.1 API Server and WebSocket
+
+Inspect the current Express server startup.
+
+Determine:
+
+- Whether the existing HTTP server can safely host WebSocket connections.
+- Whether a dedicated WebSocket path such as `/ws/messaging` is suitable.
+- Whether the current Railway service supports the required persistent WebSocket connections.
+- Whether WebSocket upgrade handling conflicts with existing Express routes or proxies.
+- Whether graceful shutdown, connection cleanup and reconnect handling are needed.
+- Whether horizontal API scaling requires Redis-backed event distribution.
+- Whether a separate Railway service is genuinely necessary or the existing API server is sufficient.
+
+Prefer the existing API server if technically sound.
+
+Do not create an unnecessary independent messaging microservice.
+
+## 4.2 Railway Redis
+
+Evaluate adding a Railway Redis service to the existing project.
+
+Identify:
+
+- Required service creation/configuration.
+- Private networking requirements.
+- Required environment variables.
+- Redis connection URL handling.
+- Authentication and secret handling.
+- TLS requirements where applicable.
+- Reconnection strategy.
+- Pub/Sub channel design.
+- Presence management.
+- Multi-instance event distribution.
+- Redis failure behaviour.
+- Whether Redis persistence is needed for any proposed use.
+- Whether Redis must be highly available for the intended deployment architecture.
+
+Important:
+
+PostgreSQL remains the durable source of truth for messages.
+
+Redis must not be the only place where a message exists.
+
+Do not use Redis Pub/Sub as the only offline-delivery mechanism.
+
+Design message persistence, sequence numbers and reconnect catch-up independently of Redis.
+
+## 4.3 Railway Storage Bucket
+
+Evaluate using Railway Storage Bucket as the primary media object storage.
+
+Identify:
+
+- Required bucket creation/configuration.
+- S3-compatible SDK requirements.
+- Endpoint and bucket configuration.
+- Access key and secret handling.
+- Presigned upload and download support.
+- CORS requirements for customer and portal domains.
+- Maximum upload-size considerations.
+- MIME-type and file validation.
+- Object naming strategy.
+- Short-lived URL design.
+- File deletion and retention strategy.
+- Malware/content safety considerations.
+- Whether direct browser uploads are technically suitable.
+- Whether bucket objects can remain private.
+
+Determine whether existing `objectStorage.ts` should become a provider-neutral storage abstraction with a Railway S3-compatible adapter.
+
+Do not hardcode Railway-specific credentials in frontend code.
+
+Do not expose permanent storage credentials to browsers.
+
+The server must issue narrowly scoped, short-lived presigned URLs only after authorisation.
+
+## 4.4 PostgreSQL
+
+Identify required database additions.
+
+Assess:
+
+- Messaging tables.
+- Device and key records.
+- Conversation participants.
+- Encrypted message persistence.
+- Per-device message envelopes.
+- Encrypted media references.
+- Customer account identity.
+- Device revocation.
+- Message sequencing.
+- Idempotency.
+- Transactional consistency.
+- Indexing and retention.
+- Migration compatibility with the current Drizzle setup.
+
+All changes must be additive-first.
+
+Do not propose destructive changes to production tables.
+
+---
+
+# PART 5 — COMPLETE E2EE CRYPTOGRAPHIC ARCHITECTURE
+
+This is a critical requirement.
+
+Bitebend messaging must use genuine end-to-end encryption.
+
+The backend, PostgreSQL, Railway Storage Bucket and Super Admin must not be able to decrypt ordinary customer message contents or media.
+
+## 5.1 Protocol Evaluation
+
+Evaluate maintained, production-suitable Signal-compatible protocol implementations.
+
+Investigate:
+
+- X3DH or PQXDH session establishment.
+- Double Ratchet.
+- Identity keys.
+- Signed prekeys.
+- One-time prekeys.
+- Forward secrecy.
+- Post-compromise security.
+- Device identity verification.
+- Key changes and security notifications.
+- Browser/PWA compatibility.
+- IndexedDB key persistence.
+- WebCrypto compatibility.
+- Multi-device support.
+- Library maintenance, security review, licensing and platform support.
+
+Do not invent a custom cryptographic protocol.
+
+Do not assume WebCrypto alone is a Signal protocol implementation.
+
+Do not select a library solely because it appears in the earlier audit. Verify current suitability.
+
+If no suitable maintained library exists for the required browser architecture, explain the limitation and provide safe alternatives.
+
+## 5.2 Customer and Restaurant Multi-Device Encryption
+
+Restaurant messaging is not a simple one-to-one consumer chat.
+
+A restaurant may have:
+
+- Owner device.
+- Multiple authorised waiter devices.
+- Customer device.
+
+Design per-device key management and message encryption.
+
+Evaluate:
+
+- Per-recipient-device encrypted message envelopes.
+- Group messaging approaches.
+- Sender-key suitability.
+- Device addition.
+- Device removal.
+- Waiter reassignment.
+- Staff deactivation.
+- Lost device revocation.
+- Conversation membership changes.
+- Key rotation and rekeying.
+- Historical message access after a participant is removed.
+
+A removed waiter must not automatically retain future message access.
+
+Do not assume deleting a staff account automatically revokes cryptographic access to all previously downloaded content.
+
+Explain what historical access can and cannot be revoked.
+
+## 5.3 Super Admin Privacy Boundary
+
+Super Admin may access authorised customer phone PII.
+
+However, this does not grant permission to decrypt E2EE messaging.
+
+Clearly separate:
+
+- Customer PII administration.
+- Account administration.
+- Conversation routing metadata.
+- Encrypted message ciphertext.
+- Encrypted multimedia.
+- Device public keys.
+- Private encryption keys.
+
+The server must never hold a universal decryption key.
+
+Investigate protection against server-side key substitution and malicious device registration.
+
+Explain key verification/transparency requirements.
+
+## 5.4 E2EE Metadata
+
+Explicitly identify what the backend must still see to operate messaging:
+
+- Conversation ID.
+- Participant/device identifiers.
+- Restaurant ID.
+- Session/order references where necessary.
+- Message sequence.
+- Timestamps.
+- Ciphertext size.
+- Delivery/read state.
+- Media object identifiers.
+
+Distinguish routing metadata from encrypted content.
+
+Do not claim that E2EE hides all metadata.
+
+---
+
+# PART 6 — MULTIMEDIA ENCRYPTION AND RAILWAY BUCKET PIPELINE
+
+Design a complete client-side encrypted media workflow.
+
+Expected architecture:
+
+1. Customer or restaurant device selects a file.
+2. Client validates type and size.
+3. Client generates a random media encryption key and nonce.
+4. Client encrypts the file before upload.
+5. Client requests an authenticated media-upload permission from the API.
+6. API verifies conversation membership and permissions.
+7. API issues a short-lived Railway Bucket presigned upload URL.
+8. Client uploads ciphertext directly to Railway Bucket.
+9. PostgreSQL stores only media references and safe metadata.
+10. Sender sends the media key and file metadata inside an E2EE-encrypted message.
+11. Recipient obtains an authorised short-lived download URL.
+12. Recipient downloads ciphertext and verifies its integrity.
+13. Recipient decrypts locally on their authorised device.
+
+The API server and storage bucket must never receive the plaintext media key.
+
+Evaluate:
+
+- AES-GCM or other suitable authenticated encryption for media.
+- Nonce uniqueness.
+- Ciphertext integrity.
+- File size limits.
+- Upload interruption and retry.
+- Resumable upload suitability.
+- Secure download.
+- Temporary plaintext handling.
+- Browser object URL cleanup.
+- No public permanent media URLs.
+- File deletion and retention.
+- Storage object access control.
+- Image/video preview security.
+- Encrypted payment screenshots.
+
+Also determine how to avoid storing new messaging media as base64 in PostgreSQL.
+
+---
+
+# PART 7 — CUSTOMER IDENTITY AND PHONE NUMBER PRIVACY REMEDIATION
+
+The previous audit identified potentially serious phone exposure and unauthenticated customer data access.
+
+Verify each finding:
+
+1. `artifacts/menu/src/pages/MenuPage.tsx` reportedly stores `ts_name` and `ts_phone` in localStorage.
+2. `GET /api/menu/customer/orders?phone=...` reportedly permits unauthenticated phone-based order lookup.
+3. Customer session-status lookup reportedly relies on phone input.
+4. `table_sessions.customer_phone`.
+5. `orders.customer_phone`.
+6. `session_bills.customer_phone`.
+7. `payment_screenshot_inbox.sender_phone` and `sender_jid`.
+8. Owner API responses reportedly include customer phone information.
+9. Owner Customer Analytics reportedly returns phone even if the UI does not render it.
+10. Waiter API `staff.ts` reportedly returns `customerPhone`.
+11. Super Admin currently needs authorised customer phone visibility.
+12. WhatsApp bridge and screenshot matching depend on phone/JID.
+
+For every verified exposure, provide:
+
+- Exact file and function.
+- Current data flow.
+- Who can access the data.
+- Why access is necessary or unnecessary.
+- Required API/database change.
+- Regression risk.
+- Recommended test.
+
+Design a separate customer PII/authentication boundary.
+
+The customer phone number may be retained for legitimate ordering, payment and Super Admin operations, but it must not leak into restaurant-facing messaging APIs or customer identity payloads.
+
+Do not break existing QR ordering or customer order history.
+
+---
+
+# PART 8 — MESSAGING DATABASE AND BACKEND DESIGN
+
+Prepare a proposed Drizzle schema design.
+
+Evaluate the following conceptual entities:
+
+- `customer_accounts`
+- `messaging_devices`
+- `messaging_one_time_prekeys`
+- `messaging_key_backups` (optional future capability only)
+- `conversations`
+- `conversation_participants`
+- `encrypted_messages`
+- `encrypted_message_envelopes`
+- `encrypted_media_objects`
+- `messaging_delivery_state`
+- `messaging_device_revocations`
+
+These are candidate concepts, not mandatory table names. Consolidate or change them if a better design is supported.
+
+For every proposed table, specify:
+
+- Purpose.
+- Important columns.
+- Primary key.
+- Foreign keys.
+- Unique constraints.
+- Indexes.
+- Retention rules.
+- Security boundaries.
+- Relationship to existing tables.
+
+Evaluate nullable additive references such as `customer_account_id` and `customer_public_id` on existing `table_sessions`, `orders` and `session_bills`.
+
+Do not introduce migrations during this audit.
+
+## API Design
+
+Propose endpoint contracts for:
+
+- Guest messaging session creation/validation.
+- Customer account registration and passkey authentication.
+- Device registration.
+- Device revocation.
+- Public key/prekey publication and retrieval.
+- Conversation creation.
+- Conversation membership.
+- Message submission.
+- Message retrieval and offline catch-up.
+- Read/delivery acknowledgements.
+- Typing/presence events.
+- Media upload permission.
+- Media download permission.
+- Device/session synchronisation.
+
+Specify authentication, authorisation and validation for each endpoint.
+
+Do not implement endpoints.
+
+---
+
+# PART 9 — REAL-TIME WEBSOCKET ARCHITECTURE
+
+Design authenticated messaging WebSockets using the existing API server if feasible.
+
+Evaluate whether `ws` or Socket.IO is more suitable. Explain the choice based on existing repository dependencies and operational needs.
+
+Requirements:
+
+- Authenticated connection handshake.
+- Short-lived signed access token.
+- Correct customer, owner and staff identity validation.
+- Server-verified conversation membership.
+- Device-specific routing.
+- Restaurant and conversation isolation.
+- Redis Pub/Sub fan-out.
+- Typing events.
+- Read receipts.
+- Delivery acknowledgements.
+- Online/offline presence.
+- Reconnect handling.
+- Message sequence catch-up.
+- Rate limiting.
+- Connection limits.
+- Graceful shutdown.
+- Redis outage behaviour.
+- Multiple API instances.
+
+Do not trust a client-provided conversation ID or device ID without verifying membership and ownership.
+
+WebSocket events should carry encrypted message envelopes or non-sensitive metadata only.
+
+Push notifications must not contain plaintext message previews.
+
+Evaluate Web Push as an optional offline wake-up mechanism.
+
+---
+
+# PART 10 — RESTAURANT TEAM INBOX AND WAITER/CHEF COMPATIBILITY
+
+The restaurant messaging experience must work with the existing owner and staff workflow.
+
+Existing roles:
+
+- Owner.
+- Waiter.
+- Chef.
+- Partner.
+- Super Admin.
+
+Previously approved waiter/chef requirements must remain unchanged:
+
+- Owner-controlled staff PIN connection.
+- Waiter sees only orders assigned to them.
+- Owner retains full override.
+- Chef Mode remains optional.
+- Chef can mark Ready when enabled.
+- Waiter emergency Ready fallback requires a mandatory reason.
+- Owner can reassign waiter.
+- Activity logs remain append-only.
+- Existing waiter/chef authentication and authorisation must not be weakened.
+
+Design conversation participation and device access without altering these workflows.
+
+Determine:
+
+- Whether restaurant conversations belong to the owner, assigned waiter, or restaurant.
+- How owner access works.
+- How assigned waiter access works.
+- How waiter reassignment affects access.
+- How staff deactivation revokes future access.
+- Whether chef should have any customer conversation access (default should be no unless a specific justified requirement exists).
+- How every staff message is attributable to a specific device/staff member.
+
+Do not let a restaurant-wide shared private key bypass staff accountability.
+
+---
+
+# PART 11 — BILLING, ORDERS, PAYMENT SCREENSHOTS AND WHATSAPP TRANSITION
+
+Existing Bitebend billing and order workflows are production-critical.
+
+The messaging feature must be additive.
+
+Existing rules to preserve:
+
+- QR ordering.
+- Table-session lifecycle.
+- Existing session locking.
+- Order status pipeline.
+- Waiter assignment and overrides.
+- Chef workflow.
+- Bill generation.
+- Bill calculation.
+- Payment settlement.
+- Session closure.
+- Table occupancy release.
+- Payment screenshot verification.
+- Existing Super Admin payment visibility.
+
+## In-Chat Bill and Payment Flow
+
+Design a future integration where:
+
+1. Restaurant generates a bill through the existing billing service.
+2. Bill is delivered as an E2EE structured bill card in the customer conversation.
+3. UPI QR/intent is displayed where supported.
+4. Customer pays through their existing payment method.
+5. Customer sends a payment screenshot in the encrypted chat.
+6. The existing payment verification workflow receives the relevant authorised submission.
+7. The correct session bill is updated deterministically.
+8. Existing payment settlement rules remain unchanged.
+
+Evaluate the difference between encrypted chat content and payment-verification data.
+
+Important: If existing automated OCR or verification requires server access to the screenshot, it conflicts with a strict zero-server-plaintext E2EE design.
+
+Do not silently weaken E2EE.
+
+Present secure options, such as explicit customer-authorised disclosure to a separate verification flow, and explain the privacy trade-off.
+
+## WhatsApp Transition
+
+Existing WhatsApp bridge must not be abruptly removed.
+
+Design a gradual transition:
+
+- Initial dual-run support.
+- Existing WhatsApp bill and screenshot workflow remains available.
+- New Bitebend Chat delivery channel can be introduced additively.
+- Deterministic session/conversation mapping replaces phone/JID heuristic matching for native chat.
+- Existing WhatsApp users can continue during transition.
+- WhatsApp bridge can be deprecated only after verified adoption and operational readiness.
+
+Do not implement or modify the WhatsApp bridge during this audit.
+
+---
+
+# PART 12 — SECURITY, PRIVACY AND ABUSE PREVENTION
+
+Create a threat model covering:
+
+- Database compromise.
+- Railway API compromise.
+- Redis compromise.
+- Storage Bucket credential compromise.
+- Malicious or compromised staff device.
+- Lost customer device.
+- Session hijacking.
+- Phone-number harvesting.
+- IDOR.
+- Unauthorised conversation access.
+- Device impersonation.
+- Public-key substitution.
+- Malicious participant addition.
+- XSS and browser key theft.
+- Replay attacks.
+- Duplicate message submission.
+- Message tampering.
+- Media URL leakage.
+- Malicious file uploads.
+- Notification content leakage.
+- Excessive metadata exposure.
+
+For every threat provide:
+
+1. Attack scenario.
+2. Existing exposure, if any.
+3. Recommended mitigation.
+4. Which layer enforces it.
+5. How it will be tested.
+
+Also address rate limiting, abuse reporting, blocking, spam prevention, retention and privacy-policy disclosures.
+
+An abuse-report mechanism must not create hidden administrative decryption access. Any user-authorised disclosure of reported content must be explicit and limited to the selected evidence.
+
+---
+
+# PART 13 — IMPLEMENTATION ROADMAP FOR AI STUDIO
+
+After completing the architecture audit, provide an implementation roadmap in independent, reviewable phases.
+
+Suggested phase structure:
+
+**Phase 0 — Existing Security and Privacy Hygiene**
+- Verify and prioritise existing customer phone exposure.
+- Remove unnecessary phone fields from waiter and owner-facing APIs.
+- Assess unauthenticated phone-based order-history access.
+- Establish customer PII boundaries.
+- Confirm token revocation requirements.
+- Do not combine unrelated password-recovery work unless a direct dependency is demonstrated.
+
+**Phase 1 — Customer Identity Foundation**
+- Guest messaging identity.
+- Customer account and optional passkey architecture.
+- Opaque internal customer IDs.
+- Session and conversation identity mapping.
+- Backward compatibility.
+
+**Phase 2 — Railway Infrastructure Foundation**
+- Railway Redis.
+- Railway Storage Bucket.
+- WebSocket-capable API server configuration.
+- Environment-variable requirements.
+- Private networking and storage permissions.
+- Observability and failure handling.
+
+**Phase 3 — Messaging Database and Realtime Core**
+- Conversations.
+- Participants.
+- Device records.
+- Encrypted message persistence.
+- WebSocket transport.
+- Redis distribution.
+- Offline catch-up and delivery acknowledgements.
+
+**Phase 4 — E2EE Cryptographic Foundation**
+- Verified protocol/library selection.
+- Device key generation.
+- Prekeys.
+- Secure session establishment.
+- Per-device message envelopes.
+- Device revocation and verification.
+
+**Phase 5 — Secure Multimedia**
+- Railway Bucket integration.
+- Client-side encryption.
+- Presigned upload/download.
+- Integrity verification.
+- Retention and deletion.
+
+**Phase 6 — Customer and Restaurant Messaging UI**
+- Customer messaging interface.
+- Restaurant inbox.
+- Waiter access.
+- Owner access.
+- Device and conversation management.
+
+**Phase 7 — Orders, Bills and Payment Integration**
+- Encrypted order/bill cards.
+- In-chat payment proof.
+- Explicitly authorised verification handoff.
+- Existing billing and settlement compatibility.
+- WhatsApp dual-run.
+
+**Phase 8 — Production Readiness**
+- Security testing.
+- Multi-device testing.
+- Load and reconnect testing.
+- Redis outage testing.
+- Bucket failure testing.
+- Privacy verification.
+- Backup/recovery testing.
+- Controlled rollout.
+
+You may revise phase order if repository evidence demonstrates a better dependency structure. Explain all changes.
+
+For every phase provide:
+
+- Objective.
+- Exact files likely to change.
+- Existing modules to reuse.
+- New modules likely required.
+- Database changes.
+- Railway environment changes.
+- API changes.
+- Frontend changes.
+- Security requirements.
+- Dependencies.
+- Risks.
+- Regression tests.
+- Acceptance criteria.
+- Explicit exclusions.
+
+Separate prerequisites from optional future enhancements.
+
+---
+
+# PART 14 — REQUIRED FINAL AUDIT REPORT
+
+Produce a detailed, structured report with the following sections:
+
+1. Executive Summary.
+2. Current Repository Architecture Verified.
+3. Previous Audit Findings — Confirmed / Partially Confirmed / Not Found.
+4. Existing Messaging Infrastructure Gap Analysis.
+5. Existing Customer Phone and PII Exposure Matrix.
+6. Recommended Product and Identity Architecture.
+7. Complete E2EE Architecture.
+8. Multi-Device and Restaurant Team Encryption Architecture.
+9. Railway Environment Changes Required.
+10. Railway Redis Integration Design.
+11. Railway Storage Bucket Integration Design.
+12. PostgreSQL and Drizzle Schema Proposal.
+13. API Endpoint and WebSocket Contract Proposal.
+14. Multimedia Upload/Download Architecture.
+15. Waiter/Chef Compatibility.
+16. Billing and Payment Screenshot Integration.
+17. WhatsApp Migration Strategy.
+18. Threat Model and Security Controls.
+19. Phase-by-Phase Implementation Roadmap.
+20. Exact Files Likely to Change by Phase.
+21. Testing and Acceptance Criteria.
+22. Unresolved Technical Decisions.
+23. Implementation Risks and Dependencies.
+24. Final Readiness Verdict.
+
+For Railway environment changes, provide a dedicated table:
+
+| Existing Railway Component | Required Change | New Service/Resource? | Configuration Needed | Reason | Risk |
+|---|---|---|---|---|---|
+
+For existing code findings, provide:
+
+| File / Module | Current Verified Behaviour | Required Future Change | Phase | Risk |
+|---|---|---|---|---|
+
+For privacy findings, provide:
+
+| Endpoint / File | Data Exposed | Current Access | Required Access | Priority |
+|---|---|---|---|---|
+
+For implementation phases, provide:
+
+| Phase | Objective | Dependencies | Files/Modules | DB Changes | Railway Changes | Acceptance Criteria |
+|---|---|---|---|---|---|---|
+
+---
+
+# PART 15 — STRICT SCOPE AND SAFETY RULES
+
+These rules are mandatory.
+
+1. READ-ONLY audit only.
+2. Do not edit any source code.
+3. Do not create or modify database schemas.
+4. Do not generate or run migrations.
+5. Do not install packages.
+6. Do not modify package.json or lockfiles.
+7. Do not modify Railway configuration.
+8. Do not create Redis or Bucket resources.
+9. Do not modify environment variables.
+10. Do not trigger builds or deployments.
+11. Do not change DNS or domains.
+12. Do not modify existing UI.
+13. Do not modify WhatsApp bridge.
+14. Do not modify billing or payment logic.
+15. Do not modify waiter/chef workflows.
+16. Do not modify existing QR ordering logic.
+17. Do not remove existing customer phone data or production records.
+18. Do not expose secrets, credentials, tokens or private keys in the report.
+19. Do not claim a feature exists unless verified in code or configuration.
+20. Distinguish verified facts, previous audit findings, architectural recommendations and unverified assumptions.
+
+If something cannot be inspected, report it as NOT VERIFIED and explain what evidence is needed.
+
+Do not make implementation decisions that conflict with the product requirements above without explaining the reason and presenting alternatives.
+
+**Final instruction:**
+
+Complete the entire audit and return the architectural report.
+
+Do not begin implementation automatically.
+
+At the end, explicitly state:
+
+**"STRICT READ-ONLY AUDIT COMPLETE — NO CODE, DATABASE, ENVIRONMENT, RAILWAY SERVICE OR DEPLOYMENT CHANGES MADE. IMPLEMENTATION NOT AUTHORISED."**

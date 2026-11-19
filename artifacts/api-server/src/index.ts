@@ -182,10 +182,15 @@ startBridgeManager();
 
 import { purgeExpiredBills } from "./lib/billService";
 import { purgeExpiredScreenshots } from "./lib/screenshotCleanup";
+import { purgeExpiredHandoffRecords } from "./routes/messagingHandoff";
 
 // Run once on startup, then every 24 h — removes expired bill_links + their blobs
 purgeExpiredBills().catch(() => void 0);
 setInterval(() => { purgeExpiredBills().catch(() => void 0); }, 24 * 60 * 60 * 1000).unref();
+
+// Run hourly cleanup of expired messaging handoff tokens & S2S nonces
+purgeExpiredHandoffRecords().catch(() => void 0);
+setInterval(() => { purgeExpiredHandoffRecords().catch(() => void 0); }, 60 * 60 * 1000).unref();
 
 // Run once on startup, then hourly (default: 60m) — permanently deletes screenshot media blobs
 // for archived screenshots (24h), attached screenshots (24h), and legacy/unattached (30d).

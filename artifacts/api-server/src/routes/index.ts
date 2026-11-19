@@ -20,6 +20,7 @@ import partnerPortalRouter from "./partnerPortal";
 import adminHardwareRouter from "./adminHardware";
 import restaurantsRouter from "./restaurants";
 import staffRouter from "./staff";
+import messagingHandoffRouter from "./messagingHandoff";
 
 const router: IRouter = Router();
 
@@ -44,5 +45,6 @@ router.use(partnerPortalRouter);
 router.use(adminHardwareRouter);
 router.use(restaurantsRouter);
 router.use(staffRouter);
+router.use(messagingHandoffRouter);
 
 export default router;

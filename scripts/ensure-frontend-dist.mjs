@@ -10,10 +10,12 @@ const homeIndex = path.resolve(rootDir, "artifacts/home/dist/index.html");
 const portalIndex = path.resolve(rootDir, "artifacts/portal/dist/index.html");
 const menuIndex1 = path.resolve(rootDir, "artifacts/menu/dist/public/index.html");
 const menuIndex2 = path.resolve(rootDir, "artifacts/menu/dist/index.html");
+const chatIndex = path.resolve(rootDir, "artifacts/chat/dist/index.html");
 
 const isHomeBuilt = existsSync(homeIndex);
 const isPortalBuilt = existsSync(portalIndex);
 const isMenuBuilt = existsSync(menuIndex1) || existsSync(menuIndex2);
+const isChatBuilt = existsSync(chatIndex);
 
 let pmCmd = "npm --workspace=";
 try {
@@ -58,6 +60,19 @@ if (!isMenuBuilt) {
     });
   } catch (err) {
     console.error("[ensure-frontend-dist] Failed to build menu:", err);
+    process.exit(1);
+  }
+}
+
+if (!isChatBuilt) {
+  console.log("[ensure-frontend-dist] Building chat application...");
+  try {
+    execSync(`${pmCmd}@workspace/chat run build`, {
+      cwd: rootDir,
+      stdio: "inherit",
+    });
+  } catch (err) {
+    console.error("[ensure-frontend-dist] Failed to build chat:", err);
     process.exit(1);
   }
 }

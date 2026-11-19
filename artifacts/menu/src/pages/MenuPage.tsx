@@ -109,6 +109,7 @@ export default function MenuPage() {
 
   // Items from the placed order — used by PaymentBillView
   const [placedOrderItems, setPlacedOrderItems] = useState<PlacedOrderItem[]>([]);
+  const [chatHandoffReady, setChatHandoffReady] = useState(false);
 
   // Legacy Razorpay checkout state — non-null only when CUSTOMER_RAZORPAY_ENABLED=true
   const [razorpayCheckout, setRazorpayCheckout] = useState<(RazorpayCheckoutState & { customerName: string; customerPhone: string }) | null>(null);
@@ -473,6 +474,35 @@ export default function MenuPage() {
       );
       setCart([]);
       setProofResult(null);
+      setChatHandoffReady(false);
+
+      // Non-blocking post-order messaging handoff mint (cookie-only; never blocks order success)
+      const submittedPhone = customerPhone.trim();
+      const targetRestaurantId = restaurant?.id;
+      if (targetRestaurantId && data.id && submittedPhone) {
+        void (async () => {
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), 3500);
+          try {
+            const handoffRes = await fetch(`${BASE}/api/menu/messaging-handoff`, {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                restaurantId: targetRestaurantId,
+                orderId: data.id,
+                customerPhone: submittedPhone,
+              }),
+              signal: controller.signal,
+            });
+            if (handoffRes.ok) setChatHandoffReady(true);
+          } catch {
+            // Non-blocking: order flow completes cleanly even if handoff fails or times out
+          } finally {
+            window.clearTimeout(timer);
+          }
+        })();
+      }
 
       setView("success");
     } catch (err) {
@@ -613,8 +643,10 @@ export default function MenuPage() {
           setNotes("");
           setPlaceError("");
           setProofResult(null);
+          setChatHandoffReady(false);
         }}
         onGoToOrders={goToMyOrders}
+        chatHandoffReady={chatHandoffReady}
       />
     );
   }

@@ -1,0 +1,991 @@
+# BITEBEND MESSAGING — FINAL FROZEN IMPLEMENTATION BLUEPRINT
+## Master Architecture & Phased Implementation Specification
+
+**Task Type:** FINAL IMPLEMENTATION BLUEPRINT PREPARATION  
+**Mode:** STRICT READ-ONLY REPOSITORY INSPECTION  
+**Implementation Authorization:** NOT GRANTED  
+**Architecture Status:** SPECIFICATION-LEVEL FROZEN  
+**Priority:** Security, data isolation, zero regression, controlled phased rollout
+
+---
+
+## 1. PRIMARY OBJECTIVE
+
+Prepare one complete, consolidated, implementation-ready blueprint for the independent Bitebend Messaging application.
+
+The blueprint must combine all previously completed architecture audits, security corrections, final state-machine decisions, and the mandatory security conditions listed below.
+
+This is a planning and specification task only.
+
+### ABSOLUTE RESTRICTIONS
+
+- Do not edit, create, delete, rename, or move any source files.
+- Do not create database migrations or execute SQL.
+- Do not install or update packages.
+- Do not change environment variables or deployment settings.
+- Do not modify DNS, reverse proxies, CORS configuration, or cookies.
+- Do not commit, push, deploy, or trigger builds.
+- Do not perform any production database writes.
+- Do not implement any phase.
+
+Inspect the actual repository and produce the final blueprint only.
+
+The final report must explicitly attest that zero code changes, database writes, migrations, package installations, commits, or deployments were performed.
+
+---
+
+# 2. FROZEN PRODUCT AND ARCHITECTURE DECISIONS
+
+These decisions are mandatory. Do not redesign or replace them.
+
+### 2.1 Independent Messaging Application
+
+Production destination:
+
+`https://chat.bitebend.in`
+
+Messaging must have its own:
+
+- Frontend application.
+- Backend/API boundary.
+- Messaging database schema.
+- Authentication and session management.
+- Device identity and cryptographic keys.
+- Conversations, memberships, and encrypted message storage.
+- Deployment configuration.
+
+Suggested repository locations, subject to actual repository verification:
+
+- `artifacts/chat/`
+- `artifacts/chat-api/`
+
+Do not assume these directories already exist.
+
+### 2.2 First-Release Features
+
+- One-to-one messaging.
+- Group messaging.
+- Text messaging.
+- Multimedia messaging.
+- Digital file/message attachments.
+- Production-ready end-to-end encryption.
+- Basic multi-device support.
+- Unique username / Messaging ID.
+- Display name and profile information.
+
+Explicitly excluded:
+
+- Voice calls.
+- Video calls.
+- Homegrown cryptography.
+- Automatic import or merging of existing restaurant customer accounts.
+- Access to customer messaging by chefs.
+- Changes to existing waiter assignment logic.
+
+Use an audited, maintained cryptographic protocol/library. Do not invent encryption algorithms or protocols.
+
+### 2.3 Identity Separation
+
+Keep these concepts separate:
+
+1. Bitebend Identity: account identity and authentication.
+2. Bitebend Profile: username, display name, profile picture, privacy.
+3. Messaging Device Identity: independent device-specific cryptographic identity and keys.
+4. Application Authorization: separately authorized access to Messaging and future Bitebend applications.
+
+Do not introduce a broad shared authentication token across applications.
+
+Future Universal Bitebend Identity must remain logically extensible without merging existing restaurant users or QR customer records into Messaging.
+
+---
+
+# 3. FROZEN QR-TO-HOME-TO-MESSAGING ACTIVATION FLOW
+
+The following user journey is approved.
+
+1. Customer scans an existing restaurant QR code.
+2. Customer uses the existing QR ordering system.
+3. Customer enters their phone number during checkout, as currently supported.
+4. When the customer later visits `bitebend.in` and opens Messaging, the phone number may be securely prefilled through a server-backed handoff.
+5. A unique username/Messaging ID is generated.
+6. Account creation occurs only after the customer explicitly clicks **Activate Messaging Account**.
+7. A persistent authenticated session is established on the same browser/device.
+8. Returning to Messaging from that browser should not require repeated phone/password entry while the session remains valid.
+9. A direct visitor without QR handoff may manually enter a phone number and register.
+10. The phone number is initially unverified.
+
+### Mandatory phone-number restrictions
+
+- Phone number is not proof of ownership.
+- Phone number alone must never authenticate an existing account.
+- Phone number alone must never recover an account.
+- Phone number must not be publicly discoverable.
+- Unverified duplicate phone claims must be permitted.
+- No automatic merging of accounts based on phone number.
+- Do not reveal whether a phone number is already associated with an account.
+- Phone verification and advanced recovery remain outside the initial MVP unless separately approved.
+
+### Existing-session behavior
+
+If a valid Messaging session exists, it always has priority over an incoming QR handoff.
+
+Never silently overwrite an authenticated account or expose another account's phone number.
+
+If a new handoff arrives while another account is authenticated, show an explicit account-switch decision.
+
+---
+
+# 4. MANDATORY SECURITY REQUIREMENTS — NON-NEGOTIABLE
+
+All conditions below are mandatory implementation requirements.
+
+## 4.1 Handoff Token Security
+
+- Generate a cryptographically secure random token with at least 256 bits of entropy.
+- Store only a SHA-256 hash of the token in the database.
+- Never store the raw token.
+- Never expose the token in URLs, query parameters, frontend storage, or logs.
+- Make every handoff single-use.
+- Expire handoff tokens after the approved short lifetime (20 minutes).
+- Invalidate the previous unconsumed handoff when a new handoff is issued for the same browser context.
+- Consume tokens atomically to prevent replay or concurrent redemption.
+- Reject expired, malformed, replayed, invalidated, and duplicate-cookie-ambiguous tokens.
+
+Use an HttpOnly, Secure, SameSite=Lax parent-domain cookie for the handoff, with a narrowly defined Domain, Path, and lifetime.
+
+Do not treat SameSite=Lax as sufficient CSRF protection.
+
+## 4.2 Mandatory Cookie Precedence and State Machine
+
+Implement the following exact precedence:
+
+`bb_chat_sess > bb_msg_handoff > bb_chat_draft > NO_HANDOFF`
+
+Required states:
+
+- `NO_HANDOFF`
+- `VALID_UNCONSUMED_HANDOFF`
+- `EXPIRED_HANDOFF`
+- `INVALIDATED_HANDOFF`
+- `DRAFT_AWAITING_CONSENT`
+- `DRAFT_REPLACED`
+- `AUTHENTICATED_SESSION`
+- `SESSION_SWITCH_REQUIRED`
+- `ACTIVATION_COMPLETED`
+
+### A. Existing authenticated session
+
+If a valid `bb_chat_sess` exists:
+
+- Preserve the authenticated session.
+- Do not automatically consume a new handoff.
+- Do not reveal the handoff phone number.
+- Display an explicit account-switch decision.
+- “Stay signed in” must clear or invalidate the pending handoff.
+- “Log out & switch account” must revoke the current session before exchanging the new handoff.
+
+### B. New handoff when an old draft exists
+
+This is a critical security condition.
+
+When an unauthenticated browser submits a handoff exchange request:
+
+1. Inspect the incoming handoff cookie.
+2. Unconditionally invalidate any previous draft identified by the incoming `bb_chat_draft` cookie.
+3. Clear the previous draft cookie.
+4. Only then validate and exchange the new handoff.
+5. If the new handoff is invalid, expired, malformed, or unavailable, do not restore the old draft.
+6. Return to manual registration.
+
+A stale draft must never be displayed after a different customer initiates a new handoff.
+
+The draft invalidation and new draft creation must be implemented with safe transactional/atomic semantics.
+
+### C. Draft metadata
+
+Messaging activation drafts must support:
+
+- `invalidated_at`
+- `created_at`
+- `replaced_by_draft_id`
+
+Use these fields to track replacement and invalidation safely.
+
+### D. Activation
+
+Only an explicit user action may activate an account.
+
+Activation must atomically:
+
+- Validate and consume the activation draft.
+- Create the Messaging account.
+- Create the initial device identity.
+- Establish the Messaging session.
+- Clear the activation draft cookie.
+- Set the authenticated session cookie.
+
+“Use a different number” must invalidate the current draft, clear its cookie, and return to manual registration.
+
+An expired draft must be cleared and must not be recoverable.
+
+## 4.3 Session Cookie
+
+Use a separate host-only cookie:
+
+`bb_chat_sess`
+
+Mandatory properties:
+
+- HttpOnly.
+- Secure.
+- SameSite=Lax.
+- Path=/.
+- No parent-domain sharing.
+- Opaque cryptographically random session secret.
+- Store only the session-secret hash in the database.
+- Revocable server-side session.
+- 30-day sliding expiration, subject to a clearly specified renewal policy.
+- Explicit logout and session revocation.
+
+Never store authentication secrets in localStorage or sessionStorage.
+
+## 4.4 CSRF and Same-Site Subdomain Protection
+
+The Messaging frontend and API must operate under the same origin:
+
+`https://chat.bitebend.in`
+
+Use `/api/*` through a same-origin reverse proxy.
+
+For sensitive Messaging API requests, enforce:
+
+- Exact Origin allowlist.
+- `Sec-Fetch-Site: same-origin` where supported and required by the endpoint.
+- JSON Content-Type.
+- A custom `X-Bitebend-Client` header.
+- Rejection of cross-site requests.
+- Strict validation of cookie ambiguity and duplicate cookie names.
+
+CORS alone is not a CSRF defence.
+
+Remember that sibling subdomains under `.bitebend.in` are same-site. Do not rely on SameSite=Lax to prevent malicious sibling-subdomain requests or cookie tossing.
+
+Parent-domain cookie ambiguity must fail closed. Never accept a malformed or ambiguous cookie as a valid handoff.
+
+## 4.5 Internal API Authentication
+
+Communication between the existing API server and the independent Messaging service must use a dedicated internal authentication mechanism.
+
+Requirements:
+
+- Dedicated secret, separate from `SESSION_SECRET`.
+- Key-version identifier and rotation strategy.
+- HMAC-SHA256.
+- Timestamp validation.
+- Nonce-based replay protection.
+- Server-side replay/nonce storage.
+- Timing-safe signature comparison.
+- Strict request-body and endpoint validation.
+- Fail application startup in production if the required internal secret is missing.
+- Never use a hardcoded development fallback in production.
+- Never log phone numbers, raw tokens, signatures, or sensitive payloads.
+
+Messaging must not directly access restaurant/order tables or the restaurant database.
+
+## 4.6 Phone Number Database Semantics
+
+Proposed account model:
+
+- UUID primary key.
+- Unique case-insensitive username.
+- Nullable `phone_claim_normalized`.
+- `phone_verified` boolean.
+- `phone_verified_at`.
+- Account status.
+
+Unverified phone claims must be non-unique.
+
+A partial unique index may apply only to verified, non-null phone numbers belonging to eligible active accounts, once the verification process is implemented and approved.
+
+Do not use a unique constraint on unverified phone numbers.
+
+---
+
+# 5. EXISTING BITEBEND SYSTEMS — STRICT CHANGE BOUNDARIES
+
+Existing systems must remain operational and unchanged except for the explicitly approved, minimal integration points.
+
+### Frozen systems
+
+- Existing QR ordering.
+- Checkout and order placement business logic.
+- Table sessions and occupancy.
+- Billing and bill calculation.
+- Payment settlement and screenshot verification.
+- WhatsApp Bridge and bill delivery.
+- WhatsApp screenshot ingestion and matching.
+- Owner dashboard.
+- Partner dashboard.
+- Admin dashboard.
+- Waiter workflow.
+- Chef workflow.
+- Staff authentication and assignment.
+- Existing restaurant user authentication.
+- Existing customer order history.
+
+### Approved minimal integration points
+
+The blueprint may propose only these existing-system modifications:
+
+1. New Messaging handoff endpoint in `api-server`.
+2. A non-blocking handoff request from the existing Menu checkout action.
+3. Minimal Home navigation update to open `chat.bitebend.in`.
+4. Strict route-level security for the new handoff functionality.
+5. A carefully phased global CORS correction, only after production-origin discovery and regression validation.
+
+### Existing QR checkout trigger
+
+Repository inspection previously identified:
+
+- `artifacts/menu/src/pages/MenuPage.tsx`
+- `handlePlaceOrder`
+- Existing phone validation before `doPlaceOrder()`.
+- Existing API route `api-server/src/routes/menu.ts`.
+- Existing `placeOrder` logic must not be modified.
+
+The approved design is a separate:
+
+`POST /api/menu/messaging-handoff`
+
+The request must be:
+
+- Triggered only after the customer has entered a valid phone number and explicitly initiates checkout.
+- Fire-and-forget.
+- Non-blocking.
+- Subject to a short timeout (approximately 3 seconds).
+- Independent of the existing `placeOrder` success/failure result.
+- Deduplicated within the current page lifecycle where appropriate.
+
+Do not await this request before submitting or completing an existing order.
+
+It must not change existing checkout validation, order placement, payment, or session behavior.
+
+Known limitation: this trigger does not cover customers who abandon checkout without initiating Place Order. Document this limitation rather than changing the trigger behavior.
+
+Do not modify `placeOrder` in `api-server/src/routes/menu.ts`.
+
+---
+
+# 6. PHASED IMPLEMENTATION PLAN
+
+Prepare the final implementation blueprint using the following phases.
+
+For every phase, specify:
+
+- Objective.
+- Exact files to create.
+- Exact existing files to modify.
+- Exact functions/components to modify.
+- Database changes.
+- API contracts.
+- Security requirements.
+- Dependencies on previous phases.
+- Acceptance criteria.
+- Regression tests.
+- Rollback procedure.
+- Explicit go/no-go gate.
+
+Do not start any phase.
+
+## Phase 0 — Repository and Environment Baseline
+
+Strictly inspect the current repository.
+
+Verify:
+
+- Actual monorepo structure.
+- Package manager and workspace configuration.
+- API server architecture.
+- Existing Menu API client.
+- Home routing/navigation.
+- Existing cookie/session middleware.
+- Existing CORS configuration.
+- Existing Socket.IO configuration.
+- Migration journal and latest migration.
+- Existing deployment and reverse-proxy configuration.
+- Existing environment-variable names.
+- Existing production and preview origins where verifiable.
+
+Identify exact current file paths and line/function references.
+
+Clearly separate:
+
+1. Repository-confirmed facts.
+2. Environment-dependent facts.
+3. Not-verifiable facts.
+
+Do not guess production DNS or deployment hostnames.
+
+## Phase 1 — Security Foundation and Messaging Service Skeleton
+
+Define:
+
+- Independent Messaging frontend.
+- Independent Messaging API.
+- Independent Messaging database connection.
+- Same-origin `/api/*` routing.
+- Strict security middleware.
+- Cookie parsing and validation.
+- Internal HMAC authentication.
+- Nonce/replay protection.
+- Production secret requirements.
+- Logging redaction.
+- Health checks and service isolation.
+
+Do not modify existing global CORS behavior in this phase.
+
+## Phase 2 — Database Foundation
+
+Specify the exact Messaging database tables, fields, types, indexes, constraints, foreign keys, and deletion behavior.
+
+At minimum, evaluate and define:
+
+1. `messaging_accounts`
+2. `messaging_devices`
+3. `messaging_sessions`
+4. `messaging_activation_drafts`
+5. `messaging_conversations`
+6. `messaging_conversation_members`
+7. `messaging_messages`
+8. Attachment/media metadata tables, if required.
+9. Device/pre-key/key metadata tables required by the selected E2EE protocol.
+
+Existing API database additions:
+
+1. `messaging_handoff_tokens`
+2. `internal_request_nonces`
+
+For each table, specify:
+
+- Primary key.
+- Important columns and data types.
+- Unique indexes.
+- Partial indexes.
+- Foreign keys.
+- Expiration/cleanup strategy.
+- Sensitive data handling.
+- Retention policy.
+- Whether it belongs to the existing API database or independent Messaging database.
+
+Do not create a new shared database dependency between restaurant ordering and Messaging.
+
+The database design must support atomic token consumption, draft invalidation, session revocation, independent device keys, and encrypted message storage.
+
+## Phase 3 — QR Handoff API
+
+Specify the exact API contracts for:
+
+- Handoff issuance.
+- Handoff exchange.
+- Previous handoff invalidation.
+- Activation draft creation.
+- Draft validation.
+- Draft replacement.
+- Expired/invalid handoff handling.
+
+Include:
+
+- HTTP methods and routes.
+- Authentication requirements.
+- Request and response schemas.
+- Cookie behavior.
+- Error codes.
+- Rate limits.
+- Idempotency/concurrency behavior.
+- Logging rules.
+- Transaction boundaries.
+
+The new handoff endpoint must be separate from existing order placement.
+
+## Phase 4 — Account Activation and Authentication
+
+Specify:
+
+- Manual registration.
+- QR-prefilled registration.
+- Username/Messaging ID generation.
+- Username uniqueness and collision handling.
+- Display name.
+- Explicit activation consent.
+- Initial device creation.
+- Persistent session.
+- Logout.
+- Session revocation.
+- Account-switch workflow.
+- “Use a different number” workflow.
+- Duplicate unverified phone behavior.
+
+Never permit phone-only login or recovery.
+
+Do not reveal existing account membership based on phone-number input.
+
+## Phase 5 — E2EE and Multi-Device Technical Validation
+
+Before implementation, define a separate technical compatibility spike.
+
+Evaluate maintained, audited E2EE libraries/protocols for:
+
+- Browser support.
+- iOS Safari.
+- Android Chrome.
+- Device-specific cryptographic identities.
+- One-to-one conversations.
+- Group conversations.
+- Key establishment.
+- Session/key rotation.
+- Device addition and revocation.
+- Offline message delivery.
+- Encrypted attachment handling.
+- Backup/recovery limitations.
+- Forward secrecy and post-compromise security, where supported.
+
+Do not invent a cryptographic protocol.
+
+Do not claim production-ready E2EE until the selected library passes the compatibility and security validation.
+
+Document what the server can and cannot access.
+
+The server must store encrypted message content and must not be able to decrypt normal E2EE message content.
+
+Phone-number PII may remain available to authorized operational systems under strict access controls, but that does not grant access to message plaintext.
+
+## Phase 6 — Messaging Core
+
+Specify implementation for:
+
+- One-to-one conversations.
+- Group conversations.
+- Membership and permissions.
+- Message sending and receiving.
+- Encrypted multimedia/file attachments.
+- Delivery and read states, where compatible with the selected protocol.
+- Device synchronization.
+- Offline delivery.
+- Message retention and deletion rules.
+
+Do not introduce voice or video calling.
+
+## Phase 7 — Home and Menu Integration
+
+Specify exact minimal changes for:
+
+- Home Messaging card/navigation.
+- QR-to-Messaging handoff trigger in Menu.
+- Existing customer checkout behavior preservation.
+- Direct Messaging registration path.
+- Same-origin navigation and cookie behavior.
+
+Do not redesign the Home interface or Menu checkout.
+
+## Phase 8 — CORS and Production-Origin Rollout
+
+Use a phased zero-regression approach.
+
+### Stage A — New route-level security
+
+- Mount cookie-parser only where required.
+- Apply strict Origin validation to new Messaging handoff routes.
+- Preserve existing legacy global CORS temporarily.
+- Shadow-log allowed/observed origins without logging sensitive request data.
+- Verify the new route's behavior independently.
+
+### Stage B — Origin discovery
+
+Collect and verify actual production origins for at least 48–72 hours.
+
+Explicitly validate:
+
+- Home.
+- Menu.
+- Portal.
+- Partner.
+- Admin.
+- API.
+- WhatsApp Bridge.
+- Socket.IO polling.
+- Socket.IO websocket.
+- Development origins.
+- Preview/deployment origins.
+
+Do not assume the current repository's origin list is complete.
+
+### Stage C — Global allowlist cutover
+
+Only after actual origin discovery and regression testing:
+
+- Define a strict explicit allowlist.
+- Preserve required credentials behavior.
+- Validate Socket.IO polling and websocket.
+- Validate all existing applications.
+- Maintain a tested rollback path.
+
+Never globally tighten CORS in a way that silently breaks existing Menu, Portal, Partner, Admin, or WhatsApp Bridge functionality.
+
+## Phase 9 — Production Readiness and Controlled Release
+
+Specify:
+
+- Environment variables and secret management.
+- Database migration order.
+- Deployment order.
+- Health checks.
+- Observability.
+- Security monitoring.
+- Data retention and cleanup.
+- Backup strategy.
+- Rollback procedures.
+- Production smoke tests.
+- Gradual release gates.
+
+No production release until all mandatory acceptance criteria pass.
+
+---
+
+# 7. EXACT FILE-CHANGE REGISTER
+
+Produce a consolidated file-change table.
+
+For every proposed file, include:
+
+| Field | Required detail |
+|---|---|
+| File path | Exact repository path |
+| Action | Create / Modify / No change |
+| Phase | Associated implementation phase |
+| Existing function/component | Exact target |
+| Proposed change | Narrow technical description |
+| Reason | Why this change is necessary |
+| Risk | Low / Medium / High |
+| Regression protection | Specific test |
+| Rollback | Exact reversal approach |
+
+Inspect actual files before finalizing paths.
+
+Previously identified candidate locations include:
+
+- `artifacts/api-server/src/app.ts`
+- `artifacts/api-server/src/routes/index.ts`
+- `artifacts/api-server/src/routes/messagingHandoff.ts` (new)
+- `artifacts/menu/src/pages/MenuPage.tsx`
+- Home `HomePage.tsx` and navigation/routing files.
+- New `artifacts/chat/` application.
+- New `artifacts/chat-api/` service.
+- Existing API database migration directory and migration journal.
+- New Messaging database schema and migration files.
+
+These are candidates, not permission to modify them.
+
+For every existing file, state whether it is:
+
+- Approved for minimal modification.
+- Read-only dependency.
+- Explicitly frozen / must not be modified.
+
+Explicitly list the frozen files and modules, including the existing order placement route and WhatsApp, billing, payment, waiter/chef, owner, partner and admin workflows.
+
+If implementation appears to require a change outside the approved scope, mark it as a separate approval requirement. Do not silently expand scope.
+
+---
+
+# 8. API CONTRACT REGISTER
+
+Produce one consolidated API table.
+
+For each endpoint include:
+
+- Method.
+- Full path.
+- Owning service.
+- Authentication.
+- CSRF requirements.
+- Request schema.
+- Response schema.
+- Cookie changes.
+- Database tables affected.
+- Transaction boundaries.
+- Rate limits.
+- Error handling.
+- Idempotency/replay behavior.
+
+At minimum cover:
+
+1. QR handoff issuance.
+2. Handoff exchange.
+3. Activation draft inspection.
+4. Account activation.
+5. Manual registration.
+6. Session inspection.
+7. Logout.
+8. Account switching.
+9. Device registration.
+10. Device revocation.
+11. Internal service authentication.
+
+Keep existing restaurant APIs unchanged except for the new isolated handoff route.
+
+---
+
+# 9. MANDATORY SECURITY AND REGRESSION TEST MATRIX
+
+Create a detailed test matrix with test ID, scenario, expected result, and phase.
+
+At minimum include:
+
+### Handoff security
+
+- Valid token exchange.
+- Expired token.
+- Invalid token.
+- Replayed token.
+- Concurrent token exchange.
+- Token reuse after consumption.
+- Previous token invalidation.
+- Duplicate handoff cookie.
+- Malformed cookie.
+- Cookie tossing from sibling subdomain.
+- Handoff issued from an unauthorized Origin.
+- Handoff request without valid phone input.
+- Handoff API unavailable during checkout.
+
+### Draft collision
+
+- Customer A has a valid unactivated draft.
+- Customer B initiates a new valid handoff.
+- Customer A's draft is invalidated.
+- Customer B receives only Customer B's draft.
+- Customer B submits an expired handoff.
+- Customer B submits a malformed handoff.
+- Old draft must remain unavailable in every failure case.
+- “Use a different number” invalidates the current draft.
+- Expired draft returns to manual registration.
+
+### Session and account switching
+
+- Existing session plus incoming handoff.
+- Stay signed in.
+- Log out and switch account.
+- Logout with no handoff.
+- Revoked session reuse.
+- Expired session.
+- Session fixation attempt.
+- Session cookie replay.
+
+### CSRF and origin validation
+
+- Exact allowed Origin.
+- Unauthorized sibling-subdomain Origin.
+- Cross-site form POST.
+- Cross-site JSON request.
+- Missing custom header.
+- Incorrect Content-Type.
+- Invalid Sec-Fetch-Site.
+- Missing or malformed Origin where required.
+- CORS preflight.
+- Duplicate cookie ambiguity.
+
+### Internal HMAC
+
+- Valid signature.
+- Invalid signature.
+- Expired timestamp.
+- Replayed nonce.
+- Incorrect key version.
+- Missing production secret.
+- Timing-safe comparison.
+- Altered request body.
+- Unauthorized internal caller.
+
+### Phone and account privacy
+
+- Duplicate unverified phone claims.
+- Existing phone-number collision.
+- Phone-only login attempt.
+- Phone-only account recovery attempt.
+- Account enumeration attempt.
+- Username collision.
+- Case-insensitive username uniqueness.
+- Phone number absent from public profile/API responses.
+- Phone number absent from URLs and logs.
+
+### E2EE
+
+- One-to-one encryption/decryption.
+- Group encryption/decryption.
+- New device registration.
+- Device revocation.
+- Offline delivery.
+- Encrypted attachment handling.
+- Server-side inability to decrypt messages.
+- Browser compatibility on iOS Safari and Android Chrome.
+
+### Existing Bitebend regression tests
+
+Explicitly validate:
+
+- QR scan and menu loading.
+- Existing customer checkout.
+- Existing order creation.
+- Table-session behavior.
+- Billing.
+- Payment settlement.
+- Payment screenshot ingestion.
+- WhatsApp Bridge connection.
+- WhatsApp bill delivery.
+- Owner dashboard.
+- Partner dashboard.
+- Admin dashboard.
+- Waiter assignment and order visibility.
+- Chef mode and order status workflow.
+- Socket.IO polling and websocket connections.
+
+No Messaging implementation may regress these existing systems.
+
+---
+
+# 10. ROLLBACK BOUNDARIES
+
+This section is mandatory.
+
+Define rollback independently for each phase.
+
+### Database rollback
+
+- Specify migration ordering.
+- Specify reversible migrations wherever safely possible.
+- Identify irreversible data operations.
+- Never drop or alter existing restaurant tables as part of Messaging rollback.
+- Never delete existing QR order, billing, payment, WhatsApp, or staff data.
+- Explain how new Messaging data is retained, quarantined, or safely rolled back.
+
+### API rollback
+
+- New Messaging endpoints must be independently disableable.
+- Existing order placement must continue if Messaging is unavailable.
+- Handoff failure must never fail or delay QR order placement.
+- Internal Messaging service failure must not affect existing restaurant APIs.
+
+### Frontend rollback
+
+- Home Messaging link can be reverted independently.
+- Menu handoff trigger can be disabled independently.
+- Existing Menu checkout must continue to work without Messaging.
+- Existing customer data must not be deleted or rewritten.
+
+### CORS rollback
+
+- Preserve a tested pre-cutover configuration.
+- Define how to restore the previous CORS behavior immediately.
+- Do not perform global CORS cutover until Socket.IO and all existing application origins are validated.
+
+### Deployment rollback
+
+- Specify service deployment order.
+- Specify health-check failure response.
+- Specify traffic rollback.
+- Specify environment-secret rollback.
+- Ensure independent Messaging deployment can be disabled without taking down existing Bitebend applications.
+
+---
+
+# 11. ACCEPTANCE GATES
+
+The blueprint must define explicit pass/fail gates.
+
+No implementation phase may begin until its predecessor's acceptance criteria are approved.
+
+Mandatory global gates:
+
+1. Independent Messaging service and database boundary is clear.
+2. QR handoff does not modify order placement logic.
+3. Cookie precedence is implemented exactly.
+4. Old draft invalidation is mandatory and fail-closed.
+5. Existing authenticated session is never silently overwritten.
+6. Phone-only authentication and recovery are impossible.
+7. Handoff tokens are single-use and replay-protected.
+8. CSRF protection covers sibling-subdomain threats.
+9. Internal HMAC uses a dedicated production secret.
+10. Production origins are verified before global CORS changes.
+11. E2EE library passes the separate compatibility spike.
+12. Existing Bitebend regression tests pass.
+13. Rollback procedures are tested and documented.
+
+A phase must be marked BLOCKED if a mandatory security or regression requirement is unresolved.
+
+Do not convert conditional passes into unconditional passes.
+
+---
+
+# 12. REQUIRED FINAL REPORT FORMAT
+
+Return one consolidated report with these sections:
+
+1. Executive Summary.
+2. Frozen Product Decisions.
+3. Frozen Architecture Diagram.
+4. Trust Boundaries and Data Flow.
+5. QR-to-Messaging Activation Sequence.
+6. Cookie Precedence and State-Machine Specification.
+7. Database Schema Register.
+8. API Contract Register.
+9. Exact File-Change Register.
+10. Phased Implementation Roadmap.
+11. E2EE Technical Compatibility Spike.
+12. Security Test Matrix.
+13. Existing-System Regression Matrix.
+14. Rollback and Recovery Plan.
+15. Deployment and Environment Requirements.
+16. Acceptance Gates.
+17. Open Risks and External Dependencies.
+18. Final Implementation Readiness Verdict.
+19. Strict Read-Only Attestation.
+
+Use Mermaid diagrams for:
+
+- Overall service architecture.
+- QR handoff sequence.
+- Cookie/session precedence.
+- Database/service boundaries.
+- Deployment and rollback flow.
+
+### Important reporting rules
+
+- Separate verified repository facts from proposed design.
+- Do not invent file paths, function names, environment variables, DNS records, or deployment origins.
+- If a detail cannot be verified, mark it `NOT VERIFIED`.
+- If a security issue remains unresolved, mark it `BLOCKED`.
+- If a change requires additional approval, identify it explicitly.
+- Do not omit risks merely to achieve a PASS verdict.
+- Do not change any frozen product decision.
+- Do not start implementation.
+
+---
+
+# FINAL INSTRUCTION
+
+This blueprint is the single source of truth for the future Bitebend Messaging implementation.
+
+Treat all listed security conditions as mandatory, not optional recommendations.
+
+The purpose is to make implementation predictable, phased, auditable, reversible, and isolated from existing Bitebend operations.
+
+**Architecture specification may be frozen. Implementation is NOT authorized by this request.**
+
+Wait for separate, explicit implementation authorization after the complete blueprint has been reviewed and approved.
+
+At the end, provide a clear verdict:
+
+- `BLUEPRINT COMPLETE`
+- `BLUEPRINT COMPLETE WITH BLOCKERS`
+- `BLUEPRINT INCOMPLETE`
+
+Also provide a strict read-only attestation confirming that no repository files, databases, packages, deployment settings, or production systems were changed.

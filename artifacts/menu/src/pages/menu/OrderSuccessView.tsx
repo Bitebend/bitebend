@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import {
   CheckCircle2, ShoppingBag, UtensilsCrossed,
   Upload, Loader2, BadgeCheck, AlertTriangle,
-  ArrowLeft, ArrowRight, Banknote, QrCode, RefreshCw, Receipt,
+  ArrowLeft, ArrowRight, Banknote, QrCode, RefreshCw, Receipt, MessageSquare,
 } from "lucide-react";
 import type { RestaurantData, OrderType } from "./types";
 
@@ -29,6 +29,7 @@ interface Props {
   onReplaceProof: (file: File) => void;
   onGoToMenu: () => void;
   onGoToOrders: () => void;
+  chatHandoffReady?: boolean;
 }
 
 const C = {
@@ -57,7 +58,13 @@ export function OrderSuccessView({
   onReplaceProof,
   onGoToMenu,
   onGoToOrders,
+  chatHandoffReady,
 }: Props) {
+  const chatAppUrl =
+    (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_CHAT_URL ||
+    (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+      ? "http://localhost:5175"
+      : "https://chat.bitebend.in");
   const isTakeAway = orderType === "take_away";
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
@@ -412,6 +419,38 @@ export function OrderSuccessView({
             <ArrowRight style={{ width: "16px", height: "16px" }} />
           </button>
         </div>
+
+        <a
+          href={chatAppUrl}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            marginTop: "14px",
+            padding: "14px 16px",
+            borderRadius: "14px",
+            backgroundColor: "#ecfdf5",
+            border: "1px solid #a7f3d0",
+            textDecoration: "none",
+            color: "#065f46",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+            <MessageSquare style={{ width: "18px", height: "18px", color: "#059669", flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "#047857" }}>
+                Continue in Bitebend Chat
+              </div>
+              <div style={{ fontSize: "11px", color: "#065f46", lineHeight: 1.4 }}>
+                {chatHandoffReady
+                  ? "Activate your encrypted chat account with one tap."
+                  : "Open private encrypted messaging (or sign up anytime)."}
+              </div>
+            </div>
+          </div>
+          <ArrowRight style={{ width: "16px", height: "16px", color: "#059669", flexShrink: 0 }} />
+        </a>
 
         <p style={{ textAlign: "center", fontSize: "12px", color: C.muted, marginTop: "14px" }}>
           Thank you for ordering from {restaurant.name} 🙏

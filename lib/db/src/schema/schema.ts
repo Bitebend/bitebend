@@ -815,4 +815,47 @@ export const restaurantHardwareOrders = pgTable(
   ],
 );
 
+// ── Minimal QR-to-Messaging Handoff Bridge (migration 0040) ───────────────────
+// Stores only hashed, short-lived (20 min), single-use QR order handoff tokens
+// and S2S replay nonces. All Messaging identity, E2EE, and chat tables live in
+// the isolated bitebend_chat database owned by @workspace/chat-api.
+export const messagingHandoffTokens = pgTable(
+  "messaging_handoff_tokens",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    browserBindHash: text("browser_bind_hash").notNull(),
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    customerName: text("customer_name").notNull(),
+    customerPhone: text("customer_phone").notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_msg_handoff_browser_bind").on(t.browserBindHash),
+    index("idx_msg_handoff_expires_at").on(t.expiresAt),
+    index("idx_msg_handoff_order_id").on(t.orderId),
+  ],
+);
+
+export const internalRequestNonces = pgTable(
+  "internal_request_nonces",
+  {
+    nonceHash: text("nonce_hash").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_internal_nonces_expires_at").on(t.expiresAt),
+  ],
+);
+
+
 

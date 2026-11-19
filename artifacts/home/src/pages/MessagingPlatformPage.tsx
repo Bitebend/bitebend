@@ -31,6 +31,11 @@ export default function MessagingPlatformPage() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState<"chats" | "updates" | "calls">("chats");
   const [chatMessage, setChatMessage] = useState("");
+  const chatAppUrl =
+    (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_CHAT_URL ||
+    (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+      ? "http://localhost:5175"
+      : "https://chat.bitebend.in");
 
   const sampleChats = [
     {
@@ -119,7 +124,7 @@ export default function MessagingPlatformPage() {
               }}
             >
               <Sparkles style={{ width: "12px", height: "12px" }} />
-              Platform Preview
+              End-to-End Encrypted
             </span>
           </div>
 
@@ -143,8 +148,29 @@ export default function MessagingPlatformPage() {
                 color: C.muted,
               }}
             >
-              A WhatsApp-style conversational platform built for instant dining communications, direct merchant chats, and real-time order alerts.
+              An independent, end-to-end encrypted web messaging platform for direct customer chats, `@username` connections, and multi-device pairing without sharing phone numbers.
             </p>
+          </div>
+
+          <div>
+            <a
+              href={chatAppUrl}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "12px 20px",
+                borderRadius: "12px",
+                backgroundColor: C.emerald,
+                color: "#ffffff",
+                fontSize: "14px",
+                fontWeight: 700,
+                textDecoration: "none",
+              }}
+            >
+              <MessageSquare style={{ width: "16px", height: "16px" }} />
+              Open Bitebend Chat
+            </a>
           </div>
         </section>
 

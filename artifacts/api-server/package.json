@@ -16,7 +16,7 @@
     "test:e2e-partner": "npm run build && node dist/e2e-partner-test.mjs",
     "test:e2e-phase3a": "npm run build && node dist/e2e-phase3a-test.mjs",
     "test:e2e-phase4": "npm run build && node dist/e2e-phase4-test.mjs",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts --maxWorkers=2"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

@@ -20,6 +20,7 @@ export default [
       "artifacts/home/src/**/*.{ts,tsx}",
       "artifacts/menu/src/**/*.{ts,tsx}",
       "artifacts/portal/src/**/*.{ts,tsx}",
+      "artifacts/chat/src/**/*.{ts,tsx}",
     ],
     languageOptions: {
       parser: tsParser,

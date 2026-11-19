@@ -219,7 +219,7 @@ export default function HomePage() {
                       }}
                     >
                       <Sparkles style={{ width: "9px", height: "9px" }} />
-                      Soon
+                      E2EE Live
                     </span>
                   </div>
                   <div style={{ fontSize: "12px", color: C.muted, marginTop: "2px" }} className="truncate">

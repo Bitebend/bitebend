@@ -45,6 +45,9 @@ const REQUIRED_TABLES = [
   "restaurant_staff",
   "session_activity_logs",
   "order_activity_logs",
+  // 0040_messaging_handoff_tokens
+  "messaging_handoff_tokens",
+  "internal_request_nonces",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
