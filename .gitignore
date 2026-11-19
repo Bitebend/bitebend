@@ -68,3 +68,4 @@ services/whatsapp-bridge/.wwebjs_cache/
 pgdata/
 *.sql
 !lib/db/drizzle/*.sql
+!artifacts/chat-api/src/drizzle/*.sql
