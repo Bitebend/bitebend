@@ -31,7 +31,7 @@ export interface BootstrapResponse {
 
 export interface ConversationItem {
   id: string;
-  kind: "direct" | "group";
+  kind: "direct" | "group" | "system_readonly";
   title: string | null;
   keyEpoch: number;
   nextSeq: number;
@@ -50,6 +50,7 @@ export interface ConversationItem {
     senderAccountId: string;
     senderMatrixUserId: string;
     serverSeq: number;
+    eventType?: string;
     keyEpoch: number;
     payloadJson: Record<string, unknown>;
     createdAt: string;

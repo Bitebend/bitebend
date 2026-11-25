@@ -25,7 +25,10 @@ export function generateShortCode(): string {
 export function getPhonePepper(): string {
   const configured = process.env["CHAT_PHONE_PEPPER"]?.trim();
   if (configured) return configured;
-  if (process.env["NODE_ENV"] === "production") {
+  const isAiStudio = Boolean(
+    process.env["APPLET_ID"] || process.env["DEFAULT_APP_PORT"],
+  );
+  if (process.env["NODE_ENV"] === "production" && !isAiStudio) {
     throw new Error("CHAT_PHONE_PEPPER is required in production");
   }
   return "bitebend-dev-chat-phone-pepper";

@@ -3,8 +3,16 @@ import { logger } from "./lib/logger";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
-import { db, ensureDbReady } from "@workspace/db";
+import { db, ensureDbReady, pool } from "@workspace/db";
 import { WORKSPACE_ROOT } from "./lib/workspace";
+import { validateMainApiSecurityStartupConfig } from "./lib/profilePinCrypto";
+import { validateStartupRequiredTables } from "./lib/startupSchemaCheck";
+import { setStartupBootPromise } from "./lib/startupGate";
+import { startBridgeManager } from "./lib/bridgeManager";
+import { purgeExpiredBills } from "./lib/billService";
+import { purgeExpiredScreenshots } from "./lib/screenshotCleanup";
+import { purgeExpiredHandoffRecords } from "./routes/messagingHandoff";
+import { runSecurityOtpReconciliationSweep } from "./lib/chatSecurityClient";
 
 // The AI Studio environment runs Nginx on PORT 8080 and proxies traffic to 3000.
 // In AI Studio, dev servers MUST run on port 3000.
@@ -13,6 +21,8 @@ const isAiStudio = Boolean(process.env["APPLET_ID"] || process.env["DEFAULT_APP_
 const port = isAiStudio
   ? Number(process.env["DEFAULT_APP_PORT"] || 3000)
   : Number(process.env["PORT"] || 3000);
+
+validateMainApiSecurityStartupConfig();
 
 // ── Startup: log build metadata ───────────────────────────────────────────────
 //
@@ -101,39 +111,45 @@ if (existsSync(buildInfoPath)) {
 // requests. Exits with code 1 if anything is missing so that a broken
 // deployment surfaces immediately instead of silently serving 500s.
 
-const STARTUP_REQUIRED_TABLES = [
+export const STARTUP_REQUIRED_TABLES = [
   "users", "restaurants", "sessions",
   "resources", "orders", "owner_password_reset_tokens",
   "table_sessions", "session_bills",
+  "restaurant_profile_pins",
+  "profile_pin_otp_challenges",
+  "owner_security_audit_logs",
 ] as const;
 
-const dbBootStart = Date.now();
-logger.info("[DB_BOOT_START] Running startup schema check");
-try {
+async function initializeStartupServices(): Promise<void> {
+  const isExternalProduction = process.env.NODE_ENV === "production" && !isAiStudio;
+  const dbBootStart = Date.now();
+  logger.info("[DB_BOOT_START] Running startup schema check");
+  try {
   await ensureDbReady();
-  const tableRows = await db.execute<{ table_name: string }>(sql`
-    SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
-  `);
-  const found = new Set(tableRows.rows.map((r) => r.table_name));
-  const missing = STARTUP_REQUIRED_TABLES.filter((t) => !found.has(t));
-  if (missing.length > 0) {
-    for (const t of missing) {
-      logger.error(`[MIGRATION_ERROR] missing table: ${t}`);
+  const checkRes = await validateStartupRequiredTables({
+    fetchExistingTableNames: async () => {
+      const tableRows = await db.execute<{ table_name: string }>(sql`
+        SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
+      `);
+      return tableRows.rows.map((r) => r.table_name);
+    },
+    requiredTables: STARTUP_REQUIRED_TABLES,
+    isProduction: process.env.NODE_ENV === "production",
+    onMissingTable: (msg) => logger.error(msg),
+    onFailureMessage: (msg) => logger.error(msg),
+  });
+    if (!checkRes.ok && isExternalProduction) {
+      process.exit(1);
     }
-    logger.error("[MIGRATION_ERROR] DB startup check failed — tables may still be initializing or run 'pnpm migrate'");
-    if (process.env.NODE_ENV === "production") {
+    const dbBootDurationMs = Date.now() - dbBootStart;
+    logger.info({ durationMs: dbBootDurationMs }, "[DB_BOOT_COMPLETE] Startup schema check passed");
+    logger.info("[DB_SCHEMA_VALIDATED] Startup schema check passed");
+  } catch (dbCheckErr) {
+    logger.error({ err: dbCheckErr }, "[MIGRATION_ERROR] Could not connect to database — check DATABASE_URL or waiting for local db");
+    if (isExternalProduction) {
       process.exit(1);
     }
   }
-  const dbBootDurationMs = Date.now() - dbBootStart;
-  logger.info({ durationMs: dbBootDurationMs }, "[DB_BOOT_COMPLETE] Startup schema check passed");
-  logger.info("[DB_SCHEMA_VALIDATED] Startup schema check passed");
-} catch (dbCheckErr) {
-  logger.error({ err: dbCheckErr }, "[MIGRATION_ERROR] Could not connect to database — check DATABASE_URL or waiting for local db");
-  if (process.env.NODE_ENV === "production") {
-    process.exit(1);
-  }
-}
 
 // ── Auto-seed on empty database ───────────────────────────────────────────────
 //
@@ -165,9 +181,15 @@ try {
       logger.warn({ err: pErr }, "[AUTO_SEED] Could not verify demo partner account");
     }
   }
-} catch (seedErr) {
-  logger.warn({ err: seedErr }, "[AUTO_SEED] Seed check failed — continuing startup anyway");
+  } catch (seedErr) {
+    logger.warn({ err: seedErr }, "[AUTO_SEED] Seed check failed — continuing startup anyway");
+  }
 }
+
+const startupBootPromise = initializeStartupServices();
+setStartupBootPromise(startupBootPromise);
+
+void startupBootPromise.finally(() => {
 
 // ── WhatsApp Bridge lifecycle manager ────────────────────────────────────────
 //
@@ -175,14 +197,7 @@ try {
 // via health-checks. This eliminates the need for a separate Replit workflow
 // and the race condition that caused "Bridge not running" on fresh imports.
 
-import { startBridgeManager } from "./lib/bridgeManager";
-startBridgeManager();
-
-// ── Cleanup jobs ──────────────────────────────────────────────────────────────
-
-import { purgeExpiredBills } from "./lib/billService";
-import { purgeExpiredScreenshots } from "./lib/screenshotCleanup";
-import { purgeExpiredHandoffRecords } from "./routes/messagingHandoff";
+  startBridgeManager();
 
 // Run once on startup, then every 24 h — removes expired bill_links + their blobs
 purgeExpiredBills().catch(() => void 0);
@@ -191,6 +206,10 @@ setInterval(() => { purgeExpiredBills().catch(() => void 0); }, 24 * 60 * 60 * 1
 // Run hourly cleanup of expired messaging handoff tokens & S2S nonces
 purgeExpiredHandoffRecords().catch(() => void 0);
 setInterval(() => { purgeExpiredHandoffRecords().catch(() => void 0); }, 60 * 60 * 1000).unref();
+
+// Run every 60s to expire stale OTP challenges, sync cancellations, and probe uncertain deliveries
+runSecurityOtpReconciliationSweep().catch(() => void 0);
+setInterval(() => { runSecurityOtpReconciliationSweep().catch(() => void 0); }, 60 * 1000).unref();
 
 // Run once on startup, then hourly (default: 60m) — permanently deletes screenshot media blobs
 // for archived screenshots (24h), attached screenshots (24h), and legacy/unattached (30d).
@@ -206,6 +225,7 @@ setInterval(() => {
     logger.error({ err }, "Periodic screenshot cleanup failed");
   });
 }, CLEANUP_INTERVAL_MS).unref();
+});
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
@@ -243,3 +263,16 @@ httpServer.on("upgrade", (req) => {
     "[ws:trace] HTTP upgrade request received at API server",
   );
 });
+
+const shutdown = async (signal: string) => {
+  logger.info({ signal }, "Shutting down API server...");
+  httpServer.close(() => {
+    void pool.end().finally(() => process.exit(0));
+  });
+  setTimeout(() => {
+    void pool.end().finally(() => process.exit(0));
+  }, 3000).unref();
+};
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

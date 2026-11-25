@@ -37,23 +37,29 @@ console.log(
   `[build] commit=${commitHash} ts=${buildTime} v=${buildVersion}`,
 );
 
+const isServerOnly = process.argv.includes("--server-only");
+
 async function buildAll() {
   const distDir = path.resolve(artifactDir, "dist");
-  await rm(distDir, { recursive: true, force: true });
+  if (!isServerOnly) {
+    await rm(distDir, { recursive: true, force: true });
+  }
+
+  const allEntryPoints = [
+    { in: path.resolve(artifactDir, "src/index.ts"),          out: "index" },
+    { in: path.resolve(artifactDir, "src/seed-admin.ts"),     out: "seed-admin" },
+    { in: path.resolve(artifactDir, "src/seed-partner.ts"),   out: "seed-partner" },
+    { in: path.resolve(artifactDir, "src/seed-dev-entry.ts"), out: "seed-dev" },
+    { in: path.resolve(artifactDir, "src/reset-db.ts"),       out: "reset-db" },
+    { in: path.resolve(artifactDir, "src/migrate.ts"),        out: "migrate" },
+    { in: path.resolve(artifactDir, "src/validate-db.ts"),    out: "validate-db" },
+    { in: path.resolve(artifactDir, "src/e2e-partner-test.ts"), out: "e2e-partner-test" },
+    { in: path.resolve(artifactDir, "src/e2e-phase3a-test.ts"), out: "e2e-phase3a-test" },
+    { in: path.resolve(artifactDir, "src/e2e-phase4-test.ts"),  out: "e2e-phase4-test" },
+  ];
 
   await esbuild({
-    entryPoints: [
-      { in: path.resolve(artifactDir, "src/index.ts"),          out: "index" },
-      { in: path.resolve(artifactDir, "src/seed-admin.ts"),     out: "seed-admin" },
-      { in: path.resolve(artifactDir, "src/seed-partner.ts"),   out: "seed-partner" },
-      { in: path.resolve(artifactDir, "src/seed-dev-entry.ts"), out: "seed-dev" },
-      { in: path.resolve(artifactDir, "src/reset-db.ts"),       out: "reset-db" },
-      { in: path.resolve(artifactDir, "src/migrate.ts"),        out: "migrate" },
-      { in: path.resolve(artifactDir, "src/validate-db.ts"),    out: "validate-db" },
-      { in: path.resolve(artifactDir, "src/e2e-partner-test.ts"), out: "e2e-partner-test" },
-      { in: path.resolve(artifactDir, "src/e2e-phase3a-test.ts"), out: "e2e-phase3a-test" },
-      { in: path.resolve(artifactDir, "src/e2e-phase4-test.ts"),  out: "e2e-phase4-test" },
-    ],
+    entryPoints: isServerOnly ? [allEntryPoints[0]] : allEntryPoints,
     platform: "node",
     bundle: true,
     format: "esm",

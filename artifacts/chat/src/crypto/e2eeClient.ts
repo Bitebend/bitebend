@@ -846,9 +846,18 @@ export class ChatCryptoSession {
       id: string;
       senderMatrixUserId: string;
       createdAt: string;
+      eventType?: string;
       payloadJson: Record<string, unknown>;
     },
   ): Promise<DecryptedMessageContent> {
+    if (event.eventType === "bb.system.security_otp") {
+      return {
+        decrypted: true,
+        msgtype: "bb.system.security_otp",
+        body: "",
+      };
+    }
+
     return await withCryptoLock(this.storeName, async () => {
       try {
         const rawMatrixEvent = JSON.stringify({

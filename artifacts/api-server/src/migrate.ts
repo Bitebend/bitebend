@@ -48,6 +48,10 @@ const REQUIRED_TABLES = [
   // 0040_messaging_handoff_tokens
   "messaging_handoff_tokens",
   "internal_request_nonces",
+  // 0041_profile_pin_and_otp
+  "restaurant_profile_pins",
+  "profile_pin_otp_challenges",
+  "owner_security_audit_logs",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
@@ -105,6 +109,21 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "order_activity_logs",          column: "action"           },
   // 0039_staff_pin_connection
   { table: "restaurant_staff",             column: "connection_pin_digest" },
+  // 0041_profile_pin_and_otp
+  { table: "users",                        column: "registration_phone" },
+  { table: "users",                        column: "registration_phone_norm" },
+  { table: "users",                        column: "registration_phone_source" },
+  { table: "users",                        column: "registration_phone_verified" },
+  { table: "restaurant_profile_pins",      column: "pin_version" },
+  { table: "profile_pin_otp_challenges",   column: "delivery_status" },
+  { table: "owner_security_audit_logs",    column: "event_type" },
+];
+
+const REQUIRED_INDEXES: Array<{ indexName: string; tableName: string }> = [
+  {
+    indexName: "uq_otp_challenges_one_active_per_owner_rest",
+    tableName: "profile_pin_otp_challenges",
+  },
 ];
 
 /**
@@ -281,9 +300,18 @@ async function validateSchema(): Promise<void> {
     .map(({ table, column }) => `${table}.${column}`)
     .filter((key) => !existingColumns.has(key));
 
+  const indexRows = await db.execute<{ indexname: string }>(sql`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+  `);
+  const existingIndexes = new Set(indexRows.rows.map((r) => r.indexname));
+  const missingIndexes = REQUIRED_INDEXES.filter((idx) => !existingIndexes.has(idx.indexName));
+
   const errors: string[] = [
     ...missingTables.map((t) => `missing table: ${t}`),
     ...missingColumns.map((c) => `missing column: ${c}`),
+    ...missingIndexes.map((idx) => `missing index: ${idx.indexName} on ${idx.tableName}`),
   ];
 
   if (errors.length > 0) {
@@ -296,6 +324,7 @@ async function validateSchema(): Promise<void> {
 
   console.log("[DB_SCHEMA_VALIDATED] All required tables present");
   console.log("[DB_SCHEMA_VALIDATED] All required columns present");
+  console.log("[DB_SCHEMA_VALIDATED] All required indexes present");
   console.log("[DB_SCHEMA_VALIDATED] Schema validation passed");
 }
 

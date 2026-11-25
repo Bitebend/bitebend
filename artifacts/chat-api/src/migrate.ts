@@ -18,6 +18,8 @@ const REQUIRED_TABLES = [
   "messaging_attachments",
   "messaging_audit_events",
   "messaging_login_challenges",
+  "chat_internal_request_nonces",
+  "messaging_security_otp_deliveries",
 ];
 
 async function main() {

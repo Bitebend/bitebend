@@ -288,6 +288,20 @@
       "when": 1786608000000,
       "tag": "0040_messaging_handoff_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786694400000,
+      "tag": "0041_profile_pin_and_otp",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1786780800000,
+      "tag": "0042_profile_pin_concurrency_and_otp_unique",
+      "breakpoints": true
     }
   ]
 }

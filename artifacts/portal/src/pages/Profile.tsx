@@ -1,12 +1,34 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { AppShell } from "@/components/layout/AppShell";
-import { apiFetch, resolveImageUrl } from "@/lib/api";
+import { apiFetch, ApiError, resolveImageUrl } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
-import type { Restaurant } from "@/lib/types";
+import type {
+  ProfilePinForgotOtpResponse,
+  ProfilePinStatus,
+  ProfilePinTokenResponse,
+  RestaurantProfile,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, Save, CheckCircle2, Eye, EyeOff, KeyRound, Smartphone, Zap, Upload, ScanLine, ShieldCheck } from "lucide-react";
+import {
+  Loader2,
+  Save,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Smartphone,
+  Zap,
+  Upload,
+  ScanLine,
+  ShieldCheck,
+  Lock,
+  LockOpen,
+  ShieldAlert,
+  Clock,
+  MessageSquareCode,
+} from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import jsQR from "jsqr";
 import { RestaurantLocationSection } from "@/components/location/RestaurantLocationSection";
@@ -217,7 +239,7 @@ const CUISINE_TYPES = [
 
 export default function Profile() {
   const { user, refresh: refreshAuth } = useAuth();
-  const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
+  const [restaurant, setRestaurant] = useState<RestaurantProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -261,6 +283,42 @@ export default function Profile() {
   const [credSaved, setCredSaved] = useState(false);
   const [credError, setCredError] = useState("");
 
+  const [pinStatus, setPinStatus] = useState<ProfilePinStatus | null>(null);
+  const [, setPinUnlockToken] = useState<string | null>(null);
+  const pinUnlockTokenRef = useRef<string | null>(null);
+  const setMemoryUnlockToken = useCallback((token: string | null) => {
+    pinUnlockTokenRef.current = token;
+    setPinUnlockToken(token);
+  }, []);
+
+  const [pinMode, setPinMode] = useState<"pin" | "forgot">("pin");
+  const [pinInput, setPinInput] = useState("");
+  const [setupPin, setSetupPin] = useState("");
+  const [setupConfirmPin, setSetupConfirmPin] = useState("");
+  const [showPinDigits, setShowPinDigits] = useState(false);
+  const [pinSubmitting, setPinSubmitting] = useState(false);
+  const [pinError, setPinError] = useState("");
+  const [pinNotice, setPinNotice] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Forgot PIN via Messaging OTP state
+  const [otpChallengeId, setOtpChallengeId] = useState<string | null>(null);
+  const [otpRequestedPhone, setOtpRequestedPhone] = useState<string | null>(null);
+  const [otpDeliveryInfo, setOtpDeliveryInfo] = useState<string>("");
+  const [otpCooldownEndsAtMs, setOtpCooldownEndsAtMs] = useState<number>(0);
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [resetNewPin, setResetNewPin] = useState("");
+  const [resetConfirmPin, setResetConfirmPin] = useState("");
+  const [otpResetting, setOtpResetting] = useState(false);
+
+  // Change PIN panel state (when Profile is unlocked)
+  const [showChangePin, setShowChangePin] = useState(false);
+  const [changePinForm, setChangePinForm] = useState({ currentPin: "", newPin: "", confirmPin: "" });
+  const [changePinSaving, setChangePinSaving] = useState(false);
+  const [changePinSaved, setChangePinSaved] = useState(false);
+  const [changePinError, setChangePinError] = useState("");
+
   // QR upload / decode state
   const [qrStatus, setQrStatus] = useState<"idle" | "scanning" | "success" | "error">("idle");
   const [qrMessage, setQrMessage] = useState("");
@@ -269,40 +327,115 @@ export default function Profile() {
   const [showAdvancedUpi, setShowAdvancedUpi] = useState(false);
   const qrFileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    apiFetch<Restaurant>("/owner/restaurant")
-      .then((r) => {
-        setRestaurant(r);
-        setForm({
-          name: r.name ?? "",
-          description: r.description ?? "",
-          cuisineType: r.cuisineType ?? "multi_cuisine",
-          address: r.address ?? "",
-          locality: r.locality ?? "",
-          city: r.city ?? "",
-          latitude: r.latitude ?? null,
-          longitude: r.longitude ?? null,
-          phone: r.phone ?? "",
-          email: r.email ?? "",
-          upiId: r.upiId ?? "",
-          upiName: r.upiName ?? "",
-          personalUpiEnabled: r.personalUpiEnabled ?? false,
-          upiVerified: r.upiVerified ?? false,
-          verifiedAt: r.verifiedAt ?? null,
-          qrImageData: r.qrImageData ?? null,
-          qrDecodedPayload: r.qrDecodedPayload ?? null,
-          qrMerchantName: r.qrMerchantName ?? "",
-          qrExtractedUpiId: r.qrExtractedUpiId ?? "",
-          paymentQrEnabled: r.paymentQrEnabled ?? false,
-          whatsappNumber: r.whatsappNumber ?? "",
-          taxPercent: String(r.taxPercent ?? 5),
-        });
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Failed to load profile");
-      })
-      .finally(() => setLoading(false));
+  const applyProfileData = useCallback((r: RestaurantProfile) => {
+    setRestaurant(r);
+    setForm({
+      name: r.name ?? "",
+      description: r.description ?? "",
+      cuisineType: r.cuisineType ?? "multi_cuisine",
+      address: r.address ?? "",
+      locality: r.locality ?? "",
+      city: r.city ?? "",
+      latitude: r.latitude ?? null,
+      longitude: r.longitude ?? null,
+      phone: r.phone ?? "",
+      email: r.email ?? "",
+      upiId: r.upiId ?? "",
+      upiName: r.upiName ?? "",
+      personalUpiEnabled: r.personalUpiEnabled ?? false,
+      upiVerified: r.upiVerified ?? false,
+      verifiedAt: r.verifiedAt ?? null,
+      qrImageData: r.qrImageData ?? null,
+      qrDecodedPayload: r.qrDecodedPayload ?? null,
+      qrMerchantName: r.qrMerchantName ?? "",
+      qrExtractedUpiId: r.qrExtractedUpiId ?? "",
+      paymentQrEnabled: r.paymentQrEnabled ?? false,
+      whatsappNumber: r.whatsappNumber ?? "",
+      taxPercent: String(r.taxPercent ?? 5),
+    });
   }, []);
+
+  const refreshPinStatusAndMaybeProfile = useCallback(
+    async (explicitToken?: string | null) => {
+      setLoading(true);
+      setError("");
+      try {
+        const status = await apiFetch<ProfilePinStatus>("/owner/profile/pin/status");
+        setPinStatus(status);
+        if (status.activeChallenge) {
+          setOtpChallengeId(status.activeChallenge.challengeId);
+          setOtpCooldownEndsAtMs(Date.parse(status.activeChallenge.cooldownEndsAt) || 0);
+        }
+
+        const activeToken = explicitToken !== undefined ? explicitToken : pinUnlockTokenRef.current;
+        if (status.configured && !status.locked && (status.unlocked || activeToken)) {
+          try {
+            const headers: Record<string, string> = activeToken
+              ? { "X-Profile-Pin-Token": activeToken }
+              : {};
+            const r = await apiFetch<RestaurantProfile>("/owner/profile", { headers });
+            applyProfileData(r);
+          } catch (profileErr) {
+            if (
+              profileErr instanceof ApiError &&
+              profileErr.status === 403 &&
+              profileErr.code?.startsWith("PIN_")
+            ) {
+              setMemoryUnlockToken(null);
+              setRestaurant(null);
+              const refreshed = await apiFetch<ProfilePinStatus>("/owner/profile/pin/status").catch(() => status);
+              setPinStatus(refreshed);
+            } else {
+              throw profileErr;
+            }
+          }
+        } else {
+          setRestaurant(null);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load profile status");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applyProfileData, setMemoryUnlockToken],
+  );
+
+  // Clear in-memory PIN token on unmount & whenever user logs out
+  useEffect(() => {
+    return () => {
+      pinUnlockTokenRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setMemoryUnlockToken(null);
+      setRestaurant(null);
+    }
+  }, [user, setMemoryUnlockToken]);
+
+  useEffect(() => {
+    void refreshPinStatusAndMaybeProfile();
+  }, [refreshPinStatusAndMaybeProfile]);
+
+  // Live 1s clock tick while lockout or OTP cooldown is active
+  useEffect(() => {
+    const hasLockout = Boolean(pinStatus?.lockedUntil && Date.parse(pinStatus.lockedUntil) > nowMs);
+    const hasCooldown = otpCooldownEndsAtMs > nowMs;
+    if (!hasLockout && !hasCooldown) return;
+
+    const timer = window.setInterval(() => {
+      const next = Date.now();
+      setNowMs(next);
+      if (pinStatus?.lockedUntil && Date.parse(pinStatus.lockedUntil) <= next && pinStatus.locked) {
+        void apiFetch<ProfilePinStatus>("/owner/profile/pin/status")
+          .then((s) => setPinStatus(s))
+          .catch(() => undefined);
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [pinStatus?.lockedUntil, pinStatus?.locked, otpCooldownEndsAtMs, nowMs]);
 
   const set = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -400,17 +533,223 @@ export default function Profile() {
         qrExtractedUpiId: payload.qrExtractedUpiId,
         qrMerchantName: payload.qrMerchantName,
       });
-      const updated = await apiFetch<Restaurant>("/owner/restaurant", {
+      const headers: Record<string, string> = pinUnlockTokenRef.current
+        ? { "X-Profile-Pin-Token": pinUnlockTokenRef.current }
+        : {};
+      const updated = await apiFetch<RestaurantProfile>("/owner/profile", {
         method: "PUT",
+        headers,
         body: JSON.stringify(payload),
       });
       setRestaurant(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed");
+      if (err instanceof ApiError && err.status === 403 && err.code?.startsWith("PIN_")) {
+        setMemoryUnlockToken(null);
+        setRestaurant(null);
+        setPinError(err.message);
+        await refreshPinStatusAndMaybeProfile(null);
+      } else {
+        setError(err instanceof Error ? err.message : "Save failed");
+      }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSetupPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinError("");
+    if (!/^\d{4}$/.test(setupPin)) {
+      setPinError("Profile PIN must be exactly 4 digits.");
+      return;
+    }
+    if (setupPin !== setupConfirmPin) {
+      setPinError("PIN and confirmation PIN do not match.");
+      return;
+    }
+    setPinSubmitting(true);
+    try {
+      const res = await apiFetch<ProfilePinTokenResponse>("/owner/profile/pin/setup", {
+        method: "POST",
+        body: JSON.stringify({ pin: setupPin, confirmPin: setupConfirmPin }),
+      });
+      setMemoryUnlockToken(res.unlockToken);
+      setSetupPin("");
+      setSetupConfirmPin("");
+      await refreshPinStatusAndMaybeProfile(res.unlockToken);
+    } catch (err) {
+      setPinError(err instanceof Error ? err.message : "Failed to set Profile PIN");
+    } finally {
+      setPinSubmitting(false);
+    }
+  };
+
+  const handleVerifyPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinError("");
+    setPinNotice("");
+    if (!/^\d{4}$/.test(pinInput)) {
+      setPinError("Enter your 4-digit Profile PIN.");
+      return;
+    }
+    setPinSubmitting(true);
+    try {
+      const res = await apiFetch<ProfilePinTokenResponse>("/owner/profile/pin/verify", {
+        method: "POST",
+        skipAuthResetOn401: true,
+        body: JSON.stringify({ pin: pinInput }),
+      });
+      setMemoryUnlockToken(res.unlockToken);
+      setPinInput("");
+      await refreshPinStatusAndMaybeProfile(res.unlockToken);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 429 && err.code === "PIN_LOCKED") {
+          const lockedUntil =
+            typeof err.data?.["lockedUntil"] === "string" ? err.data["lockedUntil"] : null;
+          const lockoutLevel =
+            typeof err.data?.["lockoutLevel"] === "number" ? err.data["lockoutLevel"] : 1;
+          setPinStatus((prev) =>
+            prev
+              ? { ...prev, locked: true, lockedUntil, lockoutLevel, unlocked: false }
+              : prev,
+          );
+        }
+        setPinError(err.message);
+      } else {
+        setPinError("Unable to verify Profile PIN");
+      }
+    } finally {
+      setPinSubmitting(false);
+    }
+  };
+
+  const handleRequestForgotOtp = async () => {
+    setPinError("");
+    setOtpDeliveryInfo("");
+    setOtpSending(true);
+    try {
+      const res = await apiFetch<ProfilePinForgotOtpResponse>("/owner/profile/pin/forgot-otp", {
+        method: "POST",
+        skipAuthResetOn401: true,
+        timeoutMs: 15_000,
+      });
+      setOtpChallengeId(res.challengeId);
+      setOtpRequestedPhone(res.maskedPhone);
+      setOtpCooldownEndsAtMs(Date.now() + res.cooldownSeconds * 1000);
+      setNowMs(Date.now());
+      setOtpDeliveryInfo(
+        res.deliveryStatus === "delivered"
+          ? `6-digit OTP sent to Bitebend Messaging (${res.maskedPhone}). Open Bitebend Chat and select "Bitebend Security".`
+          : `OTP request submitted (${res.deliveryStatus}). Check Bitebend Chat under "Bitebend Security".`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429 && typeof err.data?.["retryAfterSeconds"] === "number") {
+        setOtpCooldownEndsAtMs(Date.now() + err.data["retryAfterSeconds"] * 1000);
+        setNowMs(Date.now());
+      }
+      setPinError(err instanceof Error ? err.message : "Unable to request recovery OTP");
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const handleResetWithOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinError("");
+    if (!/^\d{6}$/.test(otpCode)) {
+      setPinError("Enter the 6-digit OTP from Bitebend Messaging.");
+      return;
+    }
+    if (!/^\d{4}$/.test(resetNewPin)) {
+      setPinError("New PIN must be exactly 4 digits.");
+      return;
+    }
+    if (resetNewPin !== resetConfirmPin) {
+      setPinError("New PIN and confirmation PIN do not match.");
+      return;
+    }
+    setOtpResetting(true);
+    try {
+      const res = await apiFetch<ProfilePinTokenResponse>("/owner/profile/pin/reset-with-otp", {
+        method: "POST",
+        skipAuthResetOn401: true,
+        body: JSON.stringify({
+          ...(otpChallengeId ? { challengeId: otpChallengeId } : {}),
+          otp: otpCode,
+          newPin: resetNewPin,
+          confirmPin: resetConfirmPin,
+        }),
+      });
+      setMemoryUnlockToken(res.unlockToken);
+      setOtpCode("");
+      setResetNewPin("");
+      setResetConfirmPin("");
+      setOtpDeliveryInfo("");
+      setPinMode("pin");
+      await refreshPinStatusAndMaybeProfile(res.unlockToken);
+    } catch (err) {
+      setPinError(err instanceof Error ? err.message : "OTP reset failed");
+    } finally {
+      setOtpResetting(false);
+    }
+  };
+
+  const handleLockProfileNow = async () => {
+    try {
+      await apiFetch<{ ok: boolean }>("/owner/profile/pin/lock", { method: "POST" });
+    } catch {
+      // Clear local state regardless
+    }
+    setMemoryUnlockToken(null);
+    setRestaurant(null);
+    setShowChangePin(false);
+    setPinMode("pin");
+    setPinError("");
+    setPinNotice("Profile locked. Enter your 4-digit PIN to view or edit settings.");
+    await refreshPinStatusAndMaybeProfile(null);
+  };
+
+  const handleChangePinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePinError("");
+    setChangePinSaved(false);
+    if (!/^\d{4}$/.test(changePinForm.currentPin) || !/^\d{4}$/.test(changePinForm.newPin)) {
+      setChangePinError("All PIN fields must be exactly 4 digits.");
+      return;
+    }
+    if (changePinForm.newPin !== changePinForm.confirmPin) {
+      setChangePinError("New PIN and confirmation PIN do not match.");
+      return;
+    }
+    if (changePinForm.currentPin === changePinForm.newPin) {
+      setChangePinError("New PIN must differ from your current PIN.");
+      return;
+    }
+    setChangePinSaving(true);
+    try {
+      const res = await apiFetch<ProfilePinTokenResponse>("/owner/profile/pin/change", {
+        method: "POST",
+        skipAuthResetOn401: true,
+        body: JSON.stringify(changePinForm),
+      });
+      setMemoryUnlockToken(res.unlockToken);
+      setChangePinForm({ currentPin: "", newPin: "", confirmPin: "" });
+      setChangePinSaved(true);
+      window.setTimeout(() => setChangePinSaved(false), 3500);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429 && err.code === "PIN_LOCKED") {
+        setMemoryUnlockToken(null);
+        setRestaurant(null);
+        setPinError(err.message);
+        await refreshPinStatusAndMaybeProfile(null);
+      } else {
+        setChangePinError(err instanceof Error ? err.message : "Failed to change PIN");
+      }
+    } finally {
+      setChangePinSaving(false);
     }
   };
 
@@ -484,15 +823,444 @@ export default function Profile() {
     );
   }
 
+  // Stage 2: Profile PIN Setup Gate (when PIN not configured yet)
+  if (!restaurant && pinStatus && !pinStatus.configured) {
+    return (
+      <AppShell>
+        <div className="p-4 md:p-6 lg:p-8 max-w-md mx-auto">
+          <div className="bg-card border border-border rounded-2xl p-6 space-y-5 shadow-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center shrink-0">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold">Set Up Profile 4-Digit PIN</h1>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Create a 4-digit security PIN to protect your restaurant profile and payout settings.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSetupPin} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label>4-Digit Profile PIN</Label>
+                <div className="relative">
+                  <Input
+                    type={showPinDigits ? "text" : "password"}
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={setupPin}
+                    onChange={(e) => setSetupPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                    placeholder="••••"
+                    className="pr-10 font-mono tracking-[0.35em] text-center text-lg"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPinDigits((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPinDigits ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Confirm 4-Digit PIN</Label>
+                <Input
+                  type={showPinDigits ? "text" : "password"}
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={setupConfirmPin}
+                  onChange={(e) => setSetupConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder="••••"
+                  className="font-mono tracking-[0.35em] text-center text-lg"
+                  required
+                />
+              </div>
+
+              {pinError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-xs">
+                  {pinError}
+                </div>
+              )}
+
+              <Button
+                type="submit"
+                className="w-full bg-orange-500 hover:bg-orange-600 text-white h-11"
+                disabled={pinSubmitting}
+              >
+                {pinSubmitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldCheck className="w-4 h-4 mr-2" />}
+                Set Profile PIN &amp; Continue
+              </Button>
+            </form>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
+
+  // Stage 2: Profile PIN Unlock & Forgot-PIN OTP Recovery Gate
+  if (!restaurant && pinStatus && pinStatus.configured) {
+    const lockedUntilMs = pinStatus.lockedUntil ? Date.parse(pinStatus.lockedUntil) : 0;
+    const lockRemainingSec = Math.max(0, Math.ceil((lockedUntilMs - nowMs) / 1000));
+    const isLockedOut = Boolean(pinStatus.locked && lockRemainingSec > 0);
+    const lockMins = Math.floor(lockRemainingSec / 60);
+    const lockSecs = lockRemainingSec % 60;
+    const cooldownSec = Math.max(0, Math.ceil((otpCooldownEndsAtMs - nowMs) / 1000));
+
+    return (
+      <AppShell>
+        <div className="p-4 md:p-6 lg:p-8 max-w-md mx-auto">
+          <div className="bg-card border border-border rounded-2xl p-6 space-y-5 shadow-xs">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center shrink-0">
+                  {pinMode === "pin" ? <Lock className="w-5 h-5" /> : <MessageSquareCode className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h1 className="text-lg font-bold">
+                    {pinMode === "pin" ? "Profile Protected by PIN" : "Recover Profile PIN"}
+                  </h1>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {pinMode === "pin"
+                      ? "Enter your 4-digit PIN to view or edit Restaurant Profile."
+                      : "Reset your Profile PIN with a 6-digit Bitebend Messaging OTP."}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {pinNotice && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 text-xs">
+                {pinNotice}
+              </div>
+            )}
+
+            {isLockedOut && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-bold text-red-800">
+                  <Clock className="w-4 h-4 shrink-0" />
+                  <span>
+                    PIN temporarily locked ({String(lockMins).padStart(2, "0")}:{String(lockSecs).padStart(2, "0")} remaining)
+                  </span>
+                </div>
+                <p className="text-xs text-red-700">
+                  Too many incorrect attempts. Wait for the cooldown or reset using Forgot PIN via Bitebend Messaging.
+                </p>
+              </div>
+            )}
+
+            {pinMode === "pin" ? (
+              <form onSubmit={handleVerifyPin} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label>4-Digit Profile PIN</Label>
+                  <div className="relative">
+                    <Input
+                      type={showPinDigits ? "text" : "password"}
+                      inputMode="numeric"
+                      maxLength={4}
+                      disabled={isLockedOut}
+                      value={pinInput}
+                      onChange={(e) => setPinInput(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                      placeholder="••••"
+                      className="pr-10 font-mono tracking-[0.35em] text-center text-lg"
+                      autoFocus
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPinDigits((v) => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showPinDigits ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {pinError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-xs">
+                    {pinError}
+                  </div>
+                )}
+
+                <Button
+                  type="submit"
+                  className="w-full bg-orange-500 hover:bg-orange-600 text-white h-11"
+                  disabled={pinSubmitting || isLockedOut}
+                >
+                  {pinSubmitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <LockOpen className="w-4 h-4 mr-2" />}
+                  Unlock Profile
+                </Button>
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPinError("");
+                      setPinMode("forgot");
+                    }}
+                    className="text-xs font-medium text-orange-600 hover:text-orange-700 underline"
+                  >
+                    Forgot Profile PIN? Recover via Bitebend Messaging OTP
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="space-y-4">
+                {!pinStatus.recoveryEligible ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2 text-xs text-amber-900">
+                    <div className="flex items-center gap-2 font-bold">
+                      <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Verified Owner Phone Required</span>
+                    </div>
+                    <p className="leading-relaxed">
+                      {pinStatus.recoveryIneligibleReason ||
+                        "OTP recovery requires a verified owner mobile number. Please contact Bitebend Support to rebind your recovery phone or reset your Profile PIN."}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-muted/50 border border-border rounded-xl p-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Recovery Messaging Phone:</span>
+                        <span className="font-mono font-bold">
+                          {otpRequestedPhone ?? pinStatus.maskedRecoveryPhone}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full h-9 text-xs border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                        disabled={otpSending || cooldownSec > 0}
+                        onClick={handleRequestForgotOtp}
+                      >
+                        {otpSending ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                        ) : (
+                          <Smartphone className="w-3.5 h-3.5 mr-1.5" />
+                        )}
+                        {cooldownSec > 0
+                          ? `Resend OTP in ${cooldownSec}s`
+                          : otpChallengeId
+                            ? "Resend 6-Digit OTP"
+                            : "Send 6-Digit OTP to Bitebend Messaging"}
+                      </Button>
+                    </div>
+
+                    {otpDeliveryInfo && (
+                      <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg px-3 py-2 text-xs leading-relaxed">
+                        {otpDeliveryInfo}
+                      </div>
+                    )}
+
+                    <form onSubmit={handleResetWithOtp} className="space-y-3">
+                      <div className="space-y-1.5">
+                        <Label>6-Digit Recovery OTP</Label>
+                        <Input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={6}
+                          value={otpCode}
+                          onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                          placeholder="000000"
+                          className="font-mono tracking-[0.35em] text-center text-base"
+                          required
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <Label>New 4-Digit PIN</Label>
+                          <Input
+                            type="password"
+                            inputMode="numeric"
+                            maxLength={4}
+                            value={resetNewPin}
+                            onChange={(e) => setResetNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                            placeholder="••••"
+                            className="font-mono tracking-[0.3em] text-center"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label>Confirm PIN</Label>
+                          <Input
+                            type="password"
+                            inputMode="numeric"
+                            maxLength={4}
+                            value={resetConfirmPin}
+                            onChange={(e) => setResetConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                            placeholder="••••"
+                            className="font-mono tracking-[0.3em] text-center"
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      {pinError && (
+                        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-xs">
+                          {pinError}
+                        </div>
+                      )}
+
+                      <Button
+                        type="submit"
+                        className="w-full bg-orange-500 hover:bg-orange-600 text-white h-11"
+                        disabled={otpResetting}
+                      >
+                        {otpResetting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldCheck className="w-4 h-4 mr-2" />}
+                        Verify OTP &amp; Set New PIN
+                      </Button>
+                    </form>
+                  </>
+                )}
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPinError("");
+                      setPinMode("pin");
+                    }}
+                    className="text-xs font-medium text-muted-foreground hover:text-foreground underline"
+                  >
+                    Back to PIN Unlock
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell>
       <div className="p-4 md:p-6 lg:p-8 max-w-2xl mx-auto">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold">Restaurant Profile</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Update your restaurant information and payment settings
-          </p>
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">Restaurant Profile</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Update your restaurant information and payment settings
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => {
+                setShowChangePin((v) => !v);
+                setChangePinError("");
+              }}
+            >
+              <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+              Change PIN
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-orange-300 text-orange-700 hover:bg-orange-50"
+              onClick={() => void handleLockProfileNow()}
+            >
+              <Lock className="w-3.5 h-3.5 mr-1.5" />
+              Lock Profile
+            </Button>
+          </div>
         </div>
+
+        {showChangePin && (
+          <form
+            onSubmit={handleChangePinSubmit}
+            className="mb-6 bg-card border border-orange-200 rounded-xl p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-sm flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-orange-500" />
+                  Change 4-Digit Profile PIN
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Changing your PIN immediately revokes any active unlock sessions across other devices.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <Label>Current PIN</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={changePinForm.currentPin}
+                  onChange={(e) =>
+                    setChangePinForm((f) => ({ ...f, currentPin: e.target.value.replace(/\D/g, "").slice(0, 4) }))
+                  }
+                  placeholder="••••"
+                  className="font-mono tracking-[0.3em] text-center"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>New PIN</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={changePinForm.newPin}
+                  onChange={(e) =>
+                    setChangePinForm((f) => ({ ...f, newPin: e.target.value.replace(/\D/g, "").slice(0, 4) }))
+                  }
+                  placeholder="••••"
+                  className="font-mono tracking-[0.3em] text-center"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Confirm New PIN</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={changePinForm.confirmPin}
+                  onChange={(e) =>
+                    setChangePinForm((f) => ({ ...f, confirmPin: e.target.value.replace(/\D/g, "").slice(0, 4) }))
+                  }
+                  placeholder="••••"
+                  className="font-mono tracking-[0.3em] text-center"
+                  required
+                />
+              </div>
+            </div>
+            {changePinError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-xs">
+                {changePinError}
+              </div>
+            )}
+            {changePinSaved && (
+              <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg px-3 py-2 text-xs flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" /> Profile PIN updated successfully.
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowChangePin(false)}>
+                Close
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                className="bg-orange-500 hover:bg-orange-600 text-white"
+                disabled={changePinSaving}
+              >
+                {changePinSaving && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />}
+                Update Profile PIN
+              </Button>
+            </div>
+          </form>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Basic Info */}

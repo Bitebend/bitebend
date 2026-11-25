@@ -10,7 +10,8 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: false,
+    hookTimeout: 30_000,
     include: ["src/**/*.test.ts"],
-    exclude: ["**/dist/**", "**/node_modules/**"],
+    exclude: ["src/**/*.pg.test.ts", "**/dist/**", "**/node_modules/**"],
   },
 });

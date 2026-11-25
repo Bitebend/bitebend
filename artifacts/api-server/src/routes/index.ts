@@ -21,6 +21,7 @@ import adminHardwareRouter from "./adminHardware";
 import restaurantsRouter from "./restaurants";
 import staffRouter from "./staff";
 import messagingHandoffRouter from "./messagingHandoff";
+import ownerProfilePinRouter from "./ownerProfilePin";
 
 const router: IRouter = Router();
 
@@ -28,6 +29,7 @@ router.use(healthRouter);
 router.use(authRouter);
 router.use(adminAuthRouter);
 router.use(menuRouter);
+router.use(ownerProfilePinRouter);
 router.use(ownerRouter);
 router.use(adminRouter);
 router.use(sensitiveAuthRouter);

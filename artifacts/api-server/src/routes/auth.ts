@@ -19,6 +19,7 @@ import { generateToken } from "../lib/token";
 import { resolveUserFromRequest } from "../middlewares/auth";
 import { recordPartnerCommission } from "../lib/commission";
 import { createHardwareOrder } from "../lib/hardware";
+import { normalizePhone } from "../lib/profilePinCrypto";
 
 const router = Router();
 
@@ -280,6 +281,10 @@ const register: RequestHandler = async (req, res) => {
     notes: (req.body as any).standNotes || null,
   });
 
+  const trimmedRegPhone = restaurantPhone.trim();
+  const normalizedRegPhone = normalizePhone(trimmedRegPhone);
+  const capturedAt = new Date();
+
   const [user] = await db
     .insert(users)
     .values({
@@ -288,6 +293,11 @@ const register: RequestHandler = async (req, res) => {
       passwordHash,
       role: "owner",
       restaurantId: restaurant.id,
+      registrationPhone: trimmedRegPhone,
+      registrationPhoneNorm: normalizedRegPhone,
+      registrationPhoneSource: "registration",
+      registrationPhoneVerified: Boolean(normalizedRegPhone),
+      registrationPhoneCapturedAt: capturedAt,
     })
     .returning();
 

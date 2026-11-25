@@ -148,6 +148,7 @@ router.get("/conversations", requireChatAuth, async (req: Request, res: Response
               senderAccountId: last.senderAccountId,
               senderMatrixUserId: toMatrixUserId(last.senderAccountId),
               serverSeq: last.serverSeq,
+              eventType: last.eventType,
               keyEpoch: last.keyEpoch,
               payloadJson: last.payloadJson,
               createdAt: last.createdAt.toISOString(),
@@ -183,6 +184,10 @@ router.post("/conversations", requireChatAuth, async (req: Request, res: Respons
 
     if (!target) {
       res.status(404).json({ error: `User @${targetUsername} not found` });
+      return;
+    }
+    if (target.accountType === "system_security") {
+      res.status(403).json({ error: "Cannot start a conversation with Bitebend Security", code: "SYSTEM_ACCOUNT_FORBIDDEN" });
       return;
     }
     if (target.id === chatAuth.accountId) {
@@ -252,7 +257,12 @@ router.post("/conversations", requireChatAuth, async (req: Request, res: Respons
     ? await chatDb
         .select({ id: messagingAccounts.id })
         .from(messagingAccounts)
-        .where(inArray(messagingAccounts.usernameLower, cleanUsernames))
+        .where(
+          and(
+            inArray(messagingAccounts.usernameLower, cleanUsernames),
+            eq(messagingAccounts.accountType, "user"),
+          ),
+        )
     : [];
 
   const conv = await chatDb.transaction(async (tx) => {
@@ -317,13 +327,17 @@ router.post("/conversations/:id/members", requireChatAuth, async (req: Request, 
 
   const targetLower = parsed.data.username.replace(/^@/, "").toLowerCase();
   const [target] = await chatDb
-    .select({ id: messagingAccounts.id })
+    .select({ id: messagingAccounts.id, accountType: messagingAccounts.accountType })
     .from(messagingAccounts)
     .where(eq(messagingAccounts.usernameLower, targetLower))
     .limit(1);
 
   if (!target) {
     res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (target.accountType === "system_security") {
+    res.status(403).json({ error: "System security identity cannot be added to conversations", code: "SYSTEM_ACCOUNT_FORBIDDEN" });
     return;
   }
 
@@ -357,6 +371,16 @@ router.delete("/conversations/:id/members/:accountId", requireChatAuth, async (r
   const targetAccountId = String(req.params["accountId"] ?? "");
   if (!uuidRe.test(conversationId) || !uuidRe.test(targetAccountId)) {
     res.status(400).json({ error: "Invalid identifier" });
+    return;
+  }
+
+  const [convCheck] = await chatDb
+    .select({ kind: messagingConversations.kind })
+    .from(messagingConversations)
+    .where(eq(messagingConversations.id, conversationId))
+    .limit(1);
+  if (!convCheck || convCheck.kind === "system_readonly") {
+    res.status(403).json({ error: "Cannot modify members of a read-only system conversation", code: "SYSTEM_CONVERSATION_READONLY" });
     return;
   }
 
@@ -471,6 +495,20 @@ router.post("/conversations/:id/messages", requireChatAuth, async (req: Request,
   const membership = await requireMembership(conversationId, chatAuth.accountId);
   if (!membership) {
     res.status(403).json({ error: "Not a member of this conversation" });
+    return;
+  }
+
+  const [convMeta] = await chatDb
+    .select({ kind: messagingConversations.kind })
+    .from(messagingConversations)
+    .where(eq(messagingConversations.id, conversationId))
+    .limit(1);
+
+  if (!convMeta || convMeta.kind === "system_readonly") {
+    res.status(403).json({
+      error: "This Bitebend Security channel is read-only",
+      code: "SYSTEM_CONVERSATION_READONLY",
+    });
     return;
   }
 

@@ -39,6 +39,10 @@ const REQUIRED_TABLES = [
   "restaurant_staff",
   "session_activity_logs",
   "order_activity_logs",
+  // 0041_profile_pin_and_otp
+  "restaurant_profile_pins",
+  "profile_pin_otp_challenges",
+  "owner_security_audit_logs",
 ] as const;
 
 const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> = [
@@ -86,11 +90,20 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string; note?: string }> 
   { table: "order_activity_logs",        column: "action",                  note: "added in migration 0038"       },
   // 0039_staff_pin_connection
   { table: "restaurant_staff",           column: "connection_pin_digest",   note: "added in migration 0039"       },
+  // 0041_profile_pin_and_otp
+  { table: "users",                       column: "registration_phone",        note: "added in migration 0041"     },
+  { table: "users",                       column: "registration_phone_norm",   note: "added in migration 0041"     },
+  { table: "users",                       column: "registration_phone_source", note: "added in migration 0041"     },
+  { table: "users",                       column: "registration_phone_verified", note: "added in migration 0041"   },
+  { table: "restaurant_profile_pins",     column: "pin_version",               note: "added in migration 0041"     },
+  { table: "profile_pin_otp_challenges",  column: "delivery_status",           note: "added in migration 0041"     },
+  { table: "owner_security_audit_logs",   column: "event_type",                note: "added in migration 0041"     },
 ];
 
 const REQUIRED_INDEXES: Array<{ indexName: string; tableName: string }> = [
-  { indexName: "IDX_sessions_expire",       tableName: "sessions"    },
-  { indexName: "bill_links_short_id_idx",   tableName: "bill_links"  },
+  { indexName: "IDX_sessions_expire",                       tableName: "sessions"                   },
+  { indexName: "bill_links_short_id_idx",                   tableName: "bill_links"                 },
+  { indexName: "uq_otp_challenges_one_active_per_owner_rest", tableName: "profile_pin_otp_challenges" },
 ];
 
 async function main() {

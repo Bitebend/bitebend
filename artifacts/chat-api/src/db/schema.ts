@@ -6,6 +6,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   jsonb,
   timestamp,
   primaryKey,
@@ -30,6 +31,7 @@ export const messagingAccounts = pgTable(
     displayName: text("display_name").notNull(),
     loginPhoneHmac: text("login_phone_hmac"),
     identityStatus: text("identity_status").notNull().default("active"),
+    accountType: text("account_type").notNull().default("user"), // user | system_security
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
@@ -37,6 +39,10 @@ export const messagingAccounts = pgTable(
     uniqueIndex("uq_messaging_accounts_login_phone_hmac")
       .on(t.loginPhoneHmac)
       .where(sql`${t.loginPhoneHmac} IS NOT NULL`),
+    check(
+      "chk_messaging_accounts_account_type",
+      sql`${t.accountType} IN ('user', 'system_security')`,
+    ),
   ],
 );
 
@@ -216,7 +222,7 @@ export const messagingConversations = pgTable(
   "messaging_conversations",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    kind: text("kind").notNull(), // direct | group
+    kind: text("kind").notNull(), // direct | group | system_readonly
     title: text("title"),
     directPairKey: text("direct_pair_key"),
     keyEpoch: integer("key_epoch").notNull().default(1),
@@ -265,6 +271,9 @@ export const messagingMessages = pgTable(
   },
   (t) => [
     uniqueIndex("uq_messages_idempotency").on(t.conversationId, t.senderDeviceId, t.clientMsgId),
+    uniqueIndex("uq_messages_system_security_otp_challenge")
+      .on(t.clientMsgId)
+      .where(sql`${t.eventType} = 'bb.system.security_otp'`),
     uniqueIndex("uq_messages_server_seq").on(t.conversationId, t.serverSeq),
     index("idx_messages_conv_seq").on(t.conversationId, t.serverSeq),
   ],
@@ -334,3 +343,43 @@ export const messagingAuditEvents = pgTable(
   },
   (t) => [index("idx_audit_events_type").on(t.eventType, t.createdAt)],
 );
+
+export const chatInternalRequestNonces = pgTable(
+  "chat_internal_request_nonces",
+  {
+    nonceHash: text("nonce_hash").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_chat_internal_nonces_expires_at").on(t.expiresAt)],
+);
+
+export const messagingSecurityOtpDeliveries = pgTable(
+  "messaging_security_otp_deliveries",
+  {
+    challengeId: uuid("challenge_id").primaryKey(),
+    status: text("status").notNull().default("pending"), // pending | delivered | failed | cancelled
+    recipientAccountId: uuid("recipient_account_id").notNull(),
+    conversationId: uuid("conversation_id"),
+    messageId: uuid("message_id"),
+    serverSeq: bigint("server_seq", { mode: "number" }),
+    signingKeyId: text("signing_key_id"),
+    failureCode: text("failure_code"),
+    deliveryDeadlineAt: timestamp("delivery_deadline_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    check(
+      "chk_sec_otp_delivery_status",
+      sql`${t.status} IN ('pending', 'delivered', 'failed', 'cancelled')`,
+    ),
+    index("idx_sec_otp_deliveries_recipient").on(t.recipientAccountId),
+    index("idx_sec_otp_deliveries_status_expires").on(t.status, t.expiresAt),
+  ],
+);
+

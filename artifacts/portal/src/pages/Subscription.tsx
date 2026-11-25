@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { apiFetch } from "@/lib/api";
-import type { SubscriptionPlan, SubscriptionTransaction, Restaurant, Notification } from "@/lib/types";
+import type { SubscriptionPlan, SubscriptionTransaction, RestaurantSummary, Notification } from "@/lib/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,7 +41,7 @@ interface UpiModalState {
 
 export default function Subscription() {
   const { user } = useAuth();
-  const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
+  const [restaurant, setRestaurant] = useState<RestaurantSummary | null>(null);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [transactions, setTransactions] = useState<SubscriptionTransaction[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -63,7 +63,7 @@ export default function Subscription() {
   const fetchData = useCallback(async () => {
     try {
       const [rest, plns, txns, notifs, config] = await Promise.all([
-        apiFetch<Restaurant>("/owner/restaurant"),
+        apiFetch<RestaurantSummary>("/owner/restaurant/summary"),
         apiFetch<SubscriptionPlan[]>("/subscription/plans"),
         apiFetch<SubscriptionTransaction[]>("/subscription/transactions"),
         apiFetch<Notification[]>("/subscription/notifications"),

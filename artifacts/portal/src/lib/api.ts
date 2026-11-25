@@ -77,6 +77,8 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    public readonly code?: string,
+    public readonly data?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -94,13 +96,13 @@ const DEFAULT_TIMEOUT_MS = 6_000;
 
 export async function apiFetch<T>(
   path: string,
-  init?: RequestInit & { timeoutMs?: number },
+  init?: RequestInit & { timeoutMs?: number; skipAuthResetOn401?: boolean },
 ): Promise<T> {
   const timeoutMs = init?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const { timeoutMs: _t, ...fetchInit } = init ?? {};
+  const { timeoutMs: _t, skipAuthResetOn401, ...fetchInit } = init ?? {};
 
   const token = getAuthToken();
   const authHeaders: Record<string, string> = token
@@ -111,13 +113,13 @@ export async function apiFetch<T>(
   try {
     res = await fetch(`${API_BASE}${path}`, {
       credentials: "include",
+      ...fetchInit,
       headers: {
         "Content-Type": "application/json",
         ...authHeaders,
         ...fetchInit.headers,
       },
       signal: controller.signal,
-      ...fetchInit,
     });
   } catch (err) {
     if ((err as Error).name === "AbortError") {
@@ -131,9 +133,20 @@ export async function apiFetch<T>(
   if (!res.ok) {
     const contentType = res.headers.get("content-type") ?? "";
     let message = "Request failed";
+    let code: string | undefined;
+    let bodyData: Record<string, unknown> | undefined;
     if (contentType.includes("application/json")) {
-      const body = await res.json().catch(() => ({ error: "Request failed" }));
-      message = (body as { error?: string }).error ?? "Request failed";
+      const body = (await res.json().catch(() => ({ error: "Request failed" }))) as Record<
+        string,
+        unknown
+      >;
+      bodyData = body;
+      if (typeof body["error"] === "string") {
+        message = body["error"];
+      }
+      if (typeof body["code"] === "string") {
+        code = body["code"];
+      }
     } else {
       const text = await res.text().catch(() => "");
       if (text.includes("<!DOCTYPE") || text.includes("<html")) {
@@ -142,13 +155,13 @@ export async function apiFetch<T>(
         message = text.slice(0, 150);
       }
     }
-    if (res.status === 401) {
+    if (res.status === 401 && !skipAuthResetOn401) {
       setAuthToken(null);
       if (onUnauthorized) {
         onUnauthorized();
       }
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, code, bodyData);
   }
   if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;

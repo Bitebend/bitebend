@@ -48,6 +48,7 @@
         "multer": "^2.1.1",
         "nodemailer": "^8.0.7",
         "openai": "^6.38.0",
+        "pg": "^8.20.0",
         "pino": "^9",
         "pino-http": "^10",
         "qrcode": "^1.5.4",
@@ -65,6 +66,7 @@
         "@types/http-proxy-middleware": "^1.0.0",
         "@types/node": "^25.3.3",
         "@types/nodemailer": "^8.0.0",
+        "@types/pg": "^8.18.0",
         "@types/qrcode": "^1.5.6",
         "@types/sharp": "^0.32.0",
         "esbuild": "^0.27.3",
@@ -80,6 +82,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@matrix-org/matrix-sdk-crypto-wasm": "^19.0.1",
+        "@noble/ed25519": "^3.2.0",
         "clsx": "^2.1.1",
         "jsqr": "^1.4.0",
         "lucide-react": "^0.545.0",

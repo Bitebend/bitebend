@@ -5,7 +5,7 @@
   "private": true,
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "dev": "node scripts/ensure-frontend-dist.mjs && npm --workspace=@workspace/api-server run start",
+    "dev": "node scripts/ensure-frontend-dist.mjs --background && npm --workspace=@workspace/api-server run dev",
     "preinstall": "rm -f package-lock.json yarn.lock",
     "build": "npm --workspace=@workspace/home run build && npm --workspace=@workspace/menu run build && npm --workspace=@workspace/portal run build && npm --workspace=@workspace/api-server run build && npm --workspace=@workspace/chat run build && npm --workspace=@workspace/chat-api run build",
     "build:home": "npm --workspace=@workspace/home run build",

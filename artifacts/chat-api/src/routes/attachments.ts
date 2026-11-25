@@ -1,6 +1,6 @@
 import express, { Router, type Request, type Response } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { chatDb, messagingAttachments, messagingConversationMembers } from "../db";
+import { chatDb, messagingAttachments, messagingConversationMembers, messagingConversations } from "../db";
 import { sha256Hex } from "../lib/crypto";
 import { type AuthedChatRequest, requireChatAuth } from "../middlewares/chatAuth";
 
@@ -58,6 +58,19 @@ router.post(
 
     if (!membership) {
       res.status(403).json({ error: "Not a member of this conversation" });
+      return;
+    }
+
+    const [convMeta] = await chatDb
+      .select({ kind: messagingConversations.kind })
+      .from(messagingConversations)
+      .where(eq(messagingConversations.id, conversationId))
+      .limit(1);
+    if (!convMeta || convMeta.kind === "system_readonly") {
+      res.status(403).json({
+        error: "Attachments cannot be uploaded to a read-only system conversation",
+        code: "SYSTEM_CONVERSATION_READONLY",
+      });
       return;
     }
 

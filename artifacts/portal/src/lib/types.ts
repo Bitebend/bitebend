@@ -149,8 +149,6 @@ export interface Restaurant {
   qrExtractedUpiId: string | null;
   paymentQrEnabled: boolean;
   whatsappNumber: string | null;
-  /** @deprecated — restaurant Razorpay removed. Column retained for historical data only. */
-  razorpayKeyId?: string | null;
   taxPercent: number;
   seatingLabel: string | null;
   approvalStatus: "pending" | "approved" | "rejected";
@@ -165,6 +163,101 @@ export interface Restaurant {
   partnerName?: string | null;
   partnerCode?: string | null;
   createdAt: string;
+}
+
+export interface RestaurantSummary {
+  id: number;
+  name: string;
+  slug: string;
+  seatingLabel: string | null;
+  customerLimit: number;
+  customersUsed: number;
+  subscriptionStatus: "active" | "exhausted" | "suspended" | "expired";
+  subscriptionExpiresAt: string | null;
+  subscriptionStartedAt: string | null;
+  planId: number | null;
+  approvalStatus: "pending" | "approved" | "rejected";
+  isActive: boolean;
+}
+
+export interface RestaurantProfile {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  cuisineType: string;
+  logoUrl: string | null;
+  address: string | null;
+  locality: string | null;
+  city: string;
+  state: string | null;
+  district: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  phone: string;
+  email: string;
+  upiId: string | null;
+  upiName: string | null;
+  personalUpiEnabled: boolean;
+  upiVerified: boolean;
+  verifiedAt: string | null;
+  qrImageData: string | null;
+  qrDecodedPayload: string | null;
+  qrMerchantName: string | null;
+  qrExtractedUpiId: string | null;
+  paymentQrEnabled: boolean;
+  whatsappNumber: string | null;
+  taxPercent: number;
+}
+
+export interface ProfilePinActiveChallenge {
+  challengeId: string;
+  deliveryStatus: string;
+  failureCode: string | null;
+  remainingAttempts: number;
+  expiresAt: string;
+  cooldownEndsAt: string;
+}
+
+export interface ProfilePinStatus {
+  configured: boolean;
+  locked: boolean;
+  lockedUntil: string | null;
+  lockoutLevel: number;
+  failedAttempts: number;
+  unlocked: boolean;
+  unlockExpiresAt: string | null;
+  recoveryEligible: boolean;
+  recoveryIneligibleReason: string | null;
+  maskedRecoveryPhone: string | null;
+  activeChallenge: ProfilePinActiveChallenge | null;
+}
+
+export interface ProfilePinTokenResponse {
+  ok: boolean;
+  pinVersion: number;
+  unlockToken: string;
+  expiresAt: string;
+}
+
+export interface ProfilePinForgotOtpResponse {
+  ok: boolean;
+  challengeId: string;
+  deliveryStatus: string;
+  maskedPhone: string;
+  expiresAt: string;
+  cooldownSeconds: number;
+  failureCode?: string;
+}
+
+export interface AdminProfilePinResetResult {
+  ok: boolean;
+  hadPin: boolean;
+}
+
+export interface AdminOwnerPhoneRebindResult {
+  ok: boolean;
+  maskedPhone: string;
 }
 
 export interface MenuCategory {

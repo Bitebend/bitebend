@@ -101,7 +101,7 @@ const createPlanOrder: RequestHandler = async (req, res) => {
   }
 
   const [restaurant] = await db
-    .select()
+    .select({ id: restaurants.id })
     .from(restaurants)
     .where(eq(restaurants.id, user.restaurantId!))
     .limit(1);
@@ -172,6 +172,18 @@ const createPlanOrder: RequestHandler = async (req, res) => {
 
 // ── Owner: verify payment and activate plan ────────────────────────────────
 
+function sanitizeSubscriptionRestaurant<T extends Record<string, unknown>>(
+  r: T,
+): Omit<T, "razorpayKeyId" | "razorpayKeySecret" | "razorpayWebhookSecret"> {
+  const {
+    razorpayKeyId: _rkId,
+    razorpayKeySecret: _rkSecret,
+    razorpayWebhookSecret: _rwSecret,
+    ...safe
+  } = r;
+  return safe;
+}
+
 const verifyPayment: RequestHandler = async (req, res) => {
   const user = req.user!;
   const { transactionId, planId, razorpayPaymentId, razorpayOrderId, razorpaySignature, utrRef } =
@@ -229,7 +241,7 @@ const verifyPayment: RequestHandler = async (req, res) => {
         .from(restaurants)
         .where(eq(restaurants.id, user.restaurantId!))
         .limit(1);
-      res.json({ pending: false, restaurant: already });
+      res.json({ pending: false, restaurant: already ? sanitizeSubscriptionRestaurant(already) : null });
       return;
     }
 
@@ -268,7 +280,7 @@ const verifyPayment: RequestHandler = async (req, res) => {
         .from(restaurants)
         .where(eq(restaurants.id, user.restaurantId!))
         .limit(1);
-      res.json({ pending: false, restaurant: already });
+      res.json({ pending: false, restaurant: already ? sanitizeSubscriptionRestaurant(already) : null });
       return;
     }
 
@@ -305,7 +317,7 @@ const verifyPayment: RequestHandler = async (req, res) => {
       .where(eq(restaurants.id, user.restaurantId!))
       .limit(1);
 
-    res.json({ pending: false, restaurant: updated });
+    res.json({ pending: false, restaurant: updated ? sanitizeSubscriptionRestaurant(updated) : null });
     return;
   }
 

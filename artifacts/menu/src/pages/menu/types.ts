@@ -33,8 +33,6 @@ export interface RestaurantData {
   extractedUpiId: string | null;
   extractedMerchantName: string | null;
   seatingLabel: string | null;
-  /** @deprecated — restaurant Razorpay removed. Only present when VITE_ENABLE_CUSTOMER_RAZORPAY=true. */
-  razorpayKeyId?: string | null;
 }
 
 export interface TableData {

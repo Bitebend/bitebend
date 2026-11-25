@@ -3,6 +3,7 @@ import { lte, and, eq } from "drizzle-orm";
 import { createChatApp } from "./app";
 import {
   chatDb,
+  chatInternalRequestNonces,
   chatPool,
   ensureChatDbReady,
   messagingDeviceLinkTokens,
@@ -11,6 +12,8 @@ import {
 } from "./db";
 import { attachChatWebSocketServer } from "./ws";
 import { logger } from "./lib/logger";
+import { validateChatSecurityStartupConfig } from "./lib/securityConfig";
+import { ensureSystemSecurityIdentity } from "./lib/securityOtpSigner";
 
 const port = Number(
   (process.env["RAILWAY_ENVIRONMENT"] ? process.env["PORT"] : undefined) ??
@@ -39,13 +42,19 @@ async function purgeExpiredChatRecords(): Promise<void> {
     await chatDb
       .delete(messagingLoginChallenges)
       .where(lte(messagingLoginChallenges.expiresAt, dayAgo));
+
+    await chatDb
+      .delete(chatInternalRequestNonces)
+      .where(lte(chatInternalRequestNonces.expiresAt, now));
   } catch (err) {
     logger.warn({ err: (err as Error).message }, "Expired chat token cleanup skipped");
   }
 }
 
 async function start(): Promise<void> {
+  validateChatSecurityStartupConfig();
   await ensureChatDbReady();
+  await ensureSystemSecurityIdentity();
 
   const app = createChatApp();
   const server = http.createServer(app);

@@ -116,10 +116,12 @@ const getPublicMenu: RequestHandler = async (req, res) => {
     items: items.filter((item) => item.categoryId === cat.id),
   }));
 
-  // Never expose secret key, raw QR image, or raw QR payload to the customer client.
+  // Never expose deprecated Razorpay credentials, raw QR image, or raw QR payload to the customer client.
   // extractedUpiId is the UPI address verified from the merchant QR at setup — safe to expose.
   const {
+    razorpayKeyId: _rzpKeyId,
     razorpayKeySecret: _secret,
+    razorpayWebhookSecret: _rzpWebhookSecret,
     qrImageData: _qrImg,
     qrDecodedPayload: _qrPayload,
     qrExtractedUpiId: _rawUpi,

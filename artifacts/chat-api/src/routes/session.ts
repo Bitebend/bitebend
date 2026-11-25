@@ -597,6 +597,15 @@ router.get("/username/check", async (req: Request, res: Response) => {
     res.json({ available: false, valid: false, error: v.error });
     return;
   }
+  if (v.lower === "bitebend.security_otp" || v.lower.startsWith("bitebend.")) {
+    res.json({
+      available: false,
+      valid: true,
+      normalized: v.username,
+      error: "Username is reserved",
+    });
+    return;
+  }
   const [existing] = await chatDb
     .select({ id: messagingAccounts.id })
     .from(messagingAccounts)
@@ -792,9 +801,15 @@ router.post("/login/challenge", authLimiter, async (req: Request, res: Response)
     .select({
       id: messagingAccounts.id,
       identityStatus: messagingAccounts.identityStatus,
+      accountType: messagingAccounts.accountType,
     })
     .from(messagingAccounts)
-    .where(eq(messagingAccounts.loginPhoneHmac, phoneHmac))
+    .where(
+      and(
+        eq(messagingAccounts.loginPhoneHmac, phoneHmac),
+        eq(messagingAccounts.accountType, "user"),
+      ),
+    )
     .limit(1);
 
   if (!account || account.identityStatus !== "active") {
@@ -1044,7 +1059,13 @@ router.get("/users/lookup", requireChatAuth, async (req: Request, res: Response)
         displayName: messagingAccounts.displayName,
       })
       .from(messagingAccounts)
-      .where(and(ilike(messagingAccounts.usernameLower, `${escaped}%`), ne(messagingAccounts.id, chatAuth.accountId)))
+      .where(
+        and(
+          ilike(messagingAccounts.usernameLower, `${escaped}%`),
+          ne(messagingAccounts.id, chatAuth.accountId),
+          eq(messagingAccounts.accountType, "user"),
+        ),
+      )
       .limit(10);
 
     res.json({
@@ -1068,7 +1089,12 @@ router.get("/users/lookup", requireChatAuth, async (req: Request, res: Response)
       displayName: messagingAccounts.displayName,
     })
     .from(messagingAccounts)
-    .where(eq(messagingAccounts.usernameLower, raw.toLowerCase()))
+    .where(
+      and(
+        eq(messagingAccounts.usernameLower, raw.toLowerCase()),
+        eq(messagingAccounts.accountType, "user"),
+      ),
+    )
     .limit(1);
 
   if (!found) {

@@ -41,6 +41,8 @@ const REQUIRED_TABLES = [
   "messaging_attachments",
   "messaging_audit_events",
   "messaging_login_challenges",
+  "chat_internal_request_nonces",
+  "messaging_security_otp_deliveries",
 ];
 
 describe("Phase 1 DB Migrations & Railway/WS Hosting", () => {
@@ -50,7 +52,7 @@ describe("Phase 1 DB Migrations & Railway/WS Hosting", () => {
   });
 
   it(
-    "locates non-empty SQL migrations directory and creates all 17 tables idempotently on fresh DB",
+    "locates non-empty SQL migrations directory and creates all 19 tables idempotently on fresh DB",
     async () => {
       const migDir = findMigrationsDir();
       expect(migDir).not.toBeNull();
@@ -58,9 +60,10 @@ describe("Phase 1 DB Migrations & Railway/WS Hosting", () => {
         .readdirSync(migDir!)
         .filter((f) => f.endsWith(".sql"))
         .sort();
-      expect(sqlFiles.length).toBeGreaterThanOrEqual(2);
+      expect(sqlFiles.length).toBeGreaterThanOrEqual(3);
       expect(sqlFiles).toContain("0000_init_messaging.sql");
       expect(sqlFiles).toContain("0001_mobile_login_recovery.sql");
+      expect(sqlFiles).toContain("0002_system_security_otp.sql");
 
       // Verify transactional SQL execution on a brand new isolated PGlite directory
       const freshPg = new PGlite(path.join(tempDir, "fresh-db"));

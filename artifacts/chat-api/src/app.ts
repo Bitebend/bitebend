@@ -12,6 +12,8 @@ import keysRouter from "./routes/keys";
 import devicesRouter from "./routes/devices";
 import conversationsRouter from "./routes/conversations";
 import attachmentsRouter from "./routes/attachments";
+import internalSecurityRouter from "./routes/internalSecurity";
+import type { RawBodyRequest } from "./middlewares/internalAuth";
 
 export function createChatApp(): express.Express {
   const app = express();
@@ -40,10 +42,18 @@ export function createChatApp(): express.Express {
   // Keep raw attachment route ahead of general JSON parser or isolate JSON to 2 MB
   app.use("/api/chat/attachments", attachmentsRouter);
 
-  app.use(express.json({ limit: "2mb" }));
+  app.use(
+    express.json({
+      limit: "2mb",
+      verify: (req, _res, buf) => {
+        (req as RawBodyRequest).rawBody = buf.toString("utf8");
+      },
+    }),
+  );
 
   // Mount Messaging API endpoints cleanly
   app.use("/api", healthRouter);
+  app.use("/api/internal/security", internalSecurityRouter);
   app.use("/api/chat", sessionRouter);
   app.use("/api/chat", keysRouter);
   app.use("/api/chat", devicesRouter);

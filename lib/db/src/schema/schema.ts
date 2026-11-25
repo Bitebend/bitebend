@@ -1,4 +1,5 @@
 import {
+  bigserial,
   boolean,
   check,
   doublePrecision,
@@ -11,6 +12,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -54,18 +56,37 @@ export const subscriptionPlans = pgTable("subscription_plans", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
-  name: text("name").notNull(),
-  role: text("role", { enum: ["super_admin", "owner", "partner"] })
-    .notNull()
-    .default("owner"),
-  restaurantId: integer("restaurant_id"),
-  tempPassword: text("temp_password"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: serial("id").primaryKey(),
+    email: text("email").notNull().unique(),
+    passwordHash: text("password_hash").notNull(),
+    name: text("name").notNull(),
+    role: text("role", { enum: ["super_admin", "owner", "partner"] })
+      .notNull()
+      .default("owner"),
+    restaurantId: integer("restaurant_id"),
+    tempPassword: text("temp_password"),
+    registrationPhone: text("registration_phone"),
+    registrationPhoneNorm: text("registration_phone_norm"),
+    registrationPhoneSource: text("registration_phone_source", {
+      enum: ["registration", "legacy_restaurant_phone", "admin_rebind"],
+    }),
+    registrationPhoneVerified: boolean("registration_phone_verified").notNull().default(false),
+    registrationPhoneCapturedAt: timestamp("registration_phone_captured_at", {
+      withTimezone: true,
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    check(
+      "chk_users_registration_phone_source",
+      sql`${t.registrationPhoneSource} IS NULL OR ${t.registrationPhoneSource} IN ('registration', 'legacy_restaurant_phone', 'admin_rebind')`,
+    ),
+    index("idx_users_registration_phone_norm").on(t.registrationPhoneNorm),
+  ],
+);
 
 export const restaurants = pgTable("restaurants", {
   id: serial("id").primaryKey(),
@@ -857,5 +878,121 @@ export const internalRequestNonces = pgTable(
   ],
 );
 
+// ── Profile 4-Digit PIN & Messaging OTP Recovery (migration 0041) ─────────────
+export const restaurantProfilePins = pgTable(
+  "restaurant_profile_pins",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .unique()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    ownerUserId: integer("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    pinHash: text("pin_hash"),
+    pepperVersion: integer("pepper_version").notNull().default(1),
+    pinVersion: integer("pin_version").notNull().default(1),
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    lockoutLevel: integer("lockout_level").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lastFailedAt: timestamp("last_failed_at", { withTimezone: true }),
+    pinSetAt: timestamp("pin_set_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_restaurant_profile_pins_owner").on(t.ownerUserId),
+    check(
+      "chk_restaurant_profile_pins_tombstone_consistency",
+      sql`(${t.pinHash} IS NULL AND ${t.pinSetAt} IS NULL AND ${t.failedAttempts} = 0 AND ${t.lockoutLevel} = 0 AND ${t.lockedUntil} IS NULL AND ${t.lastFailedAt} IS NULL) OR (${t.pinHash} IS NOT NULL AND ${t.pinSetAt} IS NOT NULL AND length(btrim(${t.pinHash})) > 0)`,
+    ),
+    check(
+      "chk_restaurant_profile_pins_versions_positive",
+      sql`${t.pinVersion} >= 1 AND ${t.pepperVersion} >= 1`,
+    ),
+    check(
+      "chk_restaurant_profile_pins_counters_non_negative",
+      sql`${t.failedAttempts} >= 0 AND ${t.lockoutLevel} >= 0`,
+    ),
+  ],
+);
 
+export const profilePinOtpChallenges = pgTable(
+  "profile_pin_otp_challenges",
+  {
+    id: uuid("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    ownerUserId: integer("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    otpHmac: text("otp_hmac").notNull(),
+    otpPepperVersion: integer("otp_pepper_version").notNull().default(1),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    deliveryStatus: text("delivery_status", {
+      enum: ["pending", "uncertain", "delivered", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("pending"),
+    failureCode: text("failure_code"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    chatCommittedAt: timestamp("chat_committed_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason"),
+    cancelSyncStatus: text("cancel_sync_status", {
+      enum: [
+        "not_required",
+        "pending",
+        "confirmed_cancelled",
+        "confirmed_failed",
+        "confirmed_already_delivered",
+      ],
+    })
+      .notNull()
+      .default("not_required"),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    check(
+      "chk_otp_challenges_delivery_status",
+      sql`${t.deliveryStatus} IN ('pending', 'uncertain', 'delivered', 'failed', 'cancelled')`,
+    ),
+    check(
+      "chk_otp_challenges_cancel_sync_status",
+      sql`${t.cancelSyncStatus} IN ('not_required', 'pending', 'confirmed_cancelled', 'confirmed_failed', 'confirmed_already_delivered')`,
+    ),
+    index("idx_otp_challenges_owner_rest_created").on(t.ownerUserId, t.restaurantId, t.createdAt),
+    index("idx_otp_challenges_expires_at").on(t.expiresAt),
+    index("idx_otp_challenges_cancel_sync").on(t.cancelSyncStatus),
+    uniqueIndex("uq_otp_challenges_one_active_per_owner_rest")
+      .on(t.ownerUserId, t.restaurantId)
+      .where(sql`${t.invalidatedAt} IS NULL AND ${t.consumedAt} IS NULL`),
+  ],
+);
 
+export const ownerSecurityAuditLogs = pgTable(
+  "owner_security_audit_logs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    restaurantIdSnapshot: integer("restaurant_id_snapshot"),
+    ownerUserIdSnapshot: integer("owner_user_id_snapshot"),
+    actorUserIdSnapshot: integer("actor_user_id_snapshot"),
+    actorRole: text("actor_role").notNull(),
+    eventType: text("event_type").notNull(),
+    challengeId: uuid("challenge_id"),
+    metaJson: jsonb("meta_json").$type<Record<string, unknown>>().notNull().default({}),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_owner_sec_audit_rest_created").on(t.restaurantIdSnapshot, t.createdAt),
+    index("idx_owner_sec_audit_owner_created").on(t.ownerUserIdSnapshot, t.createdAt),
+    index("idx_owner_sec_audit_event_created").on(t.eventType, t.createdAt),
+  ],
+);

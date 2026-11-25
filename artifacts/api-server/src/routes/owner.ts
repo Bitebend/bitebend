@@ -19,6 +19,7 @@ import {
 } from "@workspace/db";
 import { eq, and, gte, lte, sql, desc, inArray, ne, gt, isNull, or } from "drizzle-orm";
 import { requireOwner } from "../middlewares/auth";
+import { requireProfilePinUnlock } from "../middlewares/requireProfilePinUnlock";
 import { logger } from "../lib/logger";
 import QRCode from "qrcode";
 import bcrypt from "bcryptjs";
@@ -160,22 +161,110 @@ async function getRestaurantSlug(restaurantId: number): Promise<string> {
 
 // ─── Restaurant ───────────────────────────────────────────────────────────────
 
-const getRestaurant: RequestHandler = async (req, res) => {
+const OWNER_PROFILE_COLUMNS = {
+  id: restaurants.id,
+  name: restaurants.name,
+  slug: restaurants.slug,
+  description: restaurants.description,
+  cuisineType: restaurants.cuisineType,
+  logoUrl: restaurants.logoUrl,
+  address: restaurants.address,
+  locality: restaurants.locality,
+  city: restaurants.city,
+  state: restaurants.state,
+  district: restaurants.district,
+  latitude: restaurants.latitude,
+  longitude: restaurants.longitude,
+  phone: restaurants.phone,
+  email: restaurants.email,
+  upiId: restaurants.upiId,
+  upiName: restaurants.upiName,
+  personalUpiEnabled: restaurants.personalUpiEnabled,
+  upiVerified: restaurants.upiVerified,
+  verifiedAt: restaurants.verifiedAt,
+  qrImageData: restaurants.qrImageData,
+  qrDecodedPayload: restaurants.qrDecodedPayload,
+  qrMerchantName: restaurants.qrMerchantName,
+  qrExtractedUpiId: restaurants.qrExtractedUpiId,
+  paymentQrEnabled: restaurants.paymentQrEnabled,
+  whatsappNumber: restaurants.whatsappNumber,
+  taxPercent: restaurants.taxPercent,
+};
+
+const getRestaurantSummary: RequestHandler = async (req, res) => {
   const user = req.user!;
   if (!user.restaurantId) {
     res.status(404).json({ error: "No restaurant found for this account" });
     return;
   }
-  const [restaurant] = await db
-    .select()
+  const [summary] = await db
+    .select({
+      id: restaurants.id,
+      name: restaurants.name,
+      slug: restaurants.slug,
+      seatingLabel: restaurants.seatingLabel,
+      customerLimit: restaurants.customerLimit,
+      customersUsed: restaurants.customersUsed,
+      subscriptionStatus: restaurants.subscriptionStatus,
+      subscriptionExpiresAt: restaurants.subscriptionExpiresAt,
+      subscriptionStartedAt: restaurants.subscriptionStartedAt,
+      planId: restaurants.planId,
+      approvalStatus: restaurants.approvalStatus,
+      isActive: restaurants.isActive,
+    })
     .from(restaurants)
     .where(eq(restaurants.id, user.restaurantId))
     .limit(1);
-  if (!restaurant) {
+  if (!summary) {
     res.status(404).json({ error: "Restaurant not found" });
     return;
   }
-  res.json(restaurant);
+  res.json(summary);
+};
+
+const updateSeatingMode: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(404).json({ error: "No restaurant found for this account" });
+    return;
+  }
+
+  const { seatingLabel } = req.body as { seatingLabel?: unknown };
+  if (seatingLabel !== "Table" && seatingLabel !== null) {
+    res.status(400).json({ error: 'seatingLabel must be "Table" or null' });
+    return;
+  }
+
+  const [updated] = await db
+    .update(restaurants)
+    .set({ seatingLabel })
+    .where(eq(restaurants.id, user.restaurantId))
+    .returning({ seatingLabel: restaurants.seatingLabel });
+
+  if (!updated) {
+    res.status(404).json({ error: "Restaurant not found" });
+    return;
+  }
+
+  res.json({ seatingLabel: updated.seatingLabel });
+};
+
+const getOwnerProfile: RequestHandler = async (req, res) => {
+  const user = req.user!;
+  if (!user.restaurantId) {
+    res.status(404).json({ error: "No restaurant found for this account" });
+    return;
+  }
+  const [profile] = await db
+    .select(OWNER_PROFILE_COLUMNS)
+    .from(restaurants)
+    .where(eq(restaurants.id, user.restaurantId))
+    .limit(1);
+  if (!profile) {
+    res.status(404).json({ error: "Restaurant not found" });
+    return;
+  }
+  res.json(profile);
 };
 
 // ── Coordinate validation helper ──────────────────────────────────────────
@@ -193,7 +282,7 @@ function parseCoordinate(value: unknown, min: number, max: number): { valid: boo
   return { valid: true, value: num };
 }
 
-const updateRestaurant: RequestHandler = async (req, res) => {
+const updateOwnerProfile: RequestHandler = async (req, res) => {
   const user = req.user!;
   if (!user.restaurantId) {
     res.status(404).json({ error: "No restaurant found for this account" });
@@ -203,7 +292,7 @@ const updateRestaurant: RequestHandler = async (req, res) => {
   const {
     name, description, cuisineType, logoUrl, address, locality, city, phone, email,
     latitude, longitude,
-    upiId, upiName, personalUpiEnabled, whatsappNumber, taxPercent, seatingLabel,
+    upiId, upiName, personalUpiEnabled, whatsappNumber, taxPercent,
     upiVerified, verifiedAt,
     qrImageData, qrDecodedPayload, qrMerchantName, qrExtractedUpiId, paymentQrEnabled,
   } = req.body as Record<string, unknown>;
@@ -214,7 +303,7 @@ const updateRestaurant: RequestHandler = async (req, res) => {
       "[QR IMAGE LENGTH]": typeof qrImageData === "string" ? qrImageData.length : null,
       "[PAYMENT QR ENABLED]": paymentQrEnabled ?? null,
     },
-    "updateRestaurant called",
+    "updateOwnerProfile called",
   );
 
   const updates: Record<string, unknown> = {};
@@ -273,24 +362,30 @@ const updateRestaurant: RequestHandler = async (req, res) => {
   }
   if (whatsappNumber !== undefined) updates.whatsappNumber = whatsappNumber;
   if (taxPercent !== undefined) updates.taxPercent = taxPercent;
-  if (seatingLabel !== undefined) updates.seatingLabel = seatingLabel;
   try {
     const [updated] = await db
       .update(restaurants)
       .set(updates)
       .where(eq(restaurants.id, user.restaurantId))
-      .returning();
+      .returning(OWNER_PROFILE_COLUMNS);
     if (!updated) {
       res.status(404).json({ error: "Restaurant not found" });
       return;
     }
-    req.log.info({ "[DB UPDATE SUCCESS]": true, restaurantId: updated.id }, "restaurant saved");
+    req.log.info({ "[DB UPDATE SUCCESS]": true, restaurantId: updated.id }, "restaurant profile saved");
     res.json(updated);
   } catch (err) {
-    req.log.error(err, "updateRestaurant failed");
+    req.log.error(err, "updateOwnerProfile failed");
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: `Failed to save restaurant: ${message}` });
   }
+};
+
+const retiredRestaurantEndpoint: RequestHandler = (_req, res) => {
+  res.status(410).json({
+    error:
+      "This endpoint has been retired. Use GET /api/owner/restaurant/summary, PATCH /api/owner/tables/seating-mode, or GET/PUT /api/owner/profile instead.",
+  });
 };
 
 // ─── Categories ───────────────────────────────────────────────────────────────
@@ -2366,7 +2461,17 @@ const getStats: RequestHandler = async (req, res) => {
         .from(menuItems).where(eq(menuItems.restaurantId, user.restaurantId)),
       db.select({ count: sql<number>`count(*)::int` })
         .from(restaurantTables).where(eq(restaurantTables.restaurantId, user.restaurantId)),
-      db.select().from(restaurants).where(eq(restaurants.id, user.restaurantId)).limit(1),
+      db.select({
+        name: restaurants.name,
+        subscriptionStatus: restaurants.subscriptionStatus,
+        subscriptionExpiresAt: restaurants.subscriptionExpiresAt,
+        subscriptionStartedAt: restaurants.subscriptionStartedAt,
+        customerLimit: restaurants.customerLimit,
+        customersUsed: restaurants.customersUsed,
+        planId: restaurants.planId,
+        upiVerified: restaurants.upiVerified,
+        verifiedAt: restaurants.verifiedAt,
+      }).from(restaurants).where(eq(restaurants.id, user.restaurantId)).limit(1),
       db.select().from(subscriptionTransactions)
         .where(and(eq(subscriptionTransactions.restaurantId, user.restaurantId), eq(subscriptionTransactions.status, "pending"))),
     ]);
@@ -3033,8 +3138,12 @@ const resendHistoryBill: RequestHandler = async (req, res) => {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.get("/owner/restaurant", requireOwner, getRestaurant);
-router.put("/owner/restaurant", requireOwner, updateRestaurant);
+router.get("/owner/restaurant/summary", requireOwner, getRestaurantSummary);
+router.patch("/owner/tables/seating-mode", requireOwner, updateSeatingMode);
+router.get("/owner/profile", requireOwner, requireProfilePinUnlock, getOwnerProfile);
+router.put("/owner/profile", requireOwner, requireProfilePinUnlock, updateOwnerProfile);
+router.get("/owner/restaurant", requireOwner, retiredRestaurantEndpoint);
+router.put("/owner/restaurant", requireOwner, retiredRestaurantEndpoint);
 router.put("/owner/account", requireOwner, updateAccount);
 
 router.get("/owner/categories", requireOwner, listCategories);

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
-import type { Restaurant, RestaurantTable } from "@/lib/types";
+import type { RestaurantSummary, RestaurantTable } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -652,7 +652,7 @@ function SeatingSettings({
   restaurant,
   onSaved,
 }: {
-  restaurant: Restaurant;
+  restaurant: RestaurantSummary;
   onSaved: (label: string | null) => void;
 }) {
   const [dineInEnabled, setDineInEnabled] = useState(
@@ -664,11 +664,11 @@ function SeatingSettings({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await apiFetch("/owner/restaurant", {
-        method: "PUT",
+      const updated = await apiFetch<{ seatingLabel: string | null }>("/owner/tables/seating-mode", {
+        method: "PATCH",
         body: JSON.stringify({ seatingLabel: dineInEnabled ? "Table" : null }),
       });
-      onSaved(dineInEnabled ? "Table" : null);
+      onSaved(updated.seatingLabel);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } finally {
@@ -795,7 +795,7 @@ function SeatingSettings({
 ───────────────────────────────────────────────────────────────────────────── */
 export default function TablesManagement() {
   const { user } = useAuth();
-  const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
+  const [restaurant, setRestaurant] = useState<RestaurantSummary | null>(null);
   const [tables, setTables] = useState<RestaurantTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -808,7 +808,7 @@ export default function TablesManagement() {
   const fetchData = useCallback(async () => {
     try {
       const [rest, tabs] = await Promise.all([
-        apiFetch<Restaurant>("/owner/restaurant"),
+        apiFetch<RestaurantSummary>("/owner/restaurant/summary"),
         apiFetch<RestaurantTable[]>("/owner/tables"),
       ]);
       setRestaurant(rest);

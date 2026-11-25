@@ -23,17 +23,41 @@ import {
   partnerAuditLogs,
   partnerCommissions,
   restaurantHardwareOrders,
+  restaurantProfilePins,
+  profilePinOtpChallenges,
 } from "@workspace/db";
 import { eq, sql, inArray, gte, lt, and, isNotNull, isNull, desc } from "drizzle-orm";
-import { requireAdmin } from "../middlewares/auth";
+import { requireAdmin, requireSensitiveAuth } from "../middlewares/auth";
 import { invalidatePlansCache } from "./subscriptions";
 import type { RequestHandler } from "express";
 import multer from "multer";
 import { recordPartnerCommission } from "../lib/commission";
+import { cancelChatChallenge } from "../lib/chatSecurityClient";
+import { recordOwnerSecurityAudit } from "../lib/profilePinAudit";
+import { maskPhone, normalizePhone } from "../lib/profilePinCrypto";
+import {
+  invalidateActiveOtpChallengesOrdered,
+  lockRestaurantAnchor,
+  respondSecurityContention,
+  runSecurityTestHook,
+  withBoundedSecurityTx,
+} from "../lib/securityTx";
 
 const router = Router();
 
 // ── Restaurants ────────────────────────────────────────────────────────────
+
+function sanitizeAdminRestaurant<T extends Record<string, unknown>>(
+  r: T,
+): Omit<T, "razorpayKeyId" | "razorpayKeySecret" | "razorpayWebhookSecret"> {
+  const {
+    razorpayKeyId: _rkId,
+    razorpayKeySecret: _rkSecret,
+    razorpayWebhookSecret: _rwSecret,
+    ...safe
+  } = r;
+  return safe;
+}
 
 const listRestaurants: RequestHandler = async (_req, res) => {
   const allRestaurants = await db.select().from(restaurants).orderBy(restaurants.createdAt);
@@ -89,7 +113,7 @@ const listRestaurants: RequestHandler = async (_req, res) => {
   const result = allRestaurants.map((r) => {
     const hw = hwMap.get(r.id);
     return {
-      ...r,
+      ...sanitizeAdminRestaurant(r),
       ownerName: r.ownerId ? ownerMap.get(r.ownerId)?.name ?? null : null,
       ownerEmail: r.ownerId ? ownerMap.get(r.ownerId)?.email ?? null : null,
       ownerTempPassword: r.ownerId ? ownerMap.get(r.ownerId)?.tempPassword ?? null : null,
@@ -163,7 +187,7 @@ const assignRestaurantPartner: RequestHandler = async (req, res) => {
     },
   });
 
-  res.json(updated);
+  res.json(sanitizeAdminRestaurant(updated));
 };
 
 const toggleRestaurant: RequestHandler = async (req, res) => {
@@ -175,7 +199,7 @@ const toggleRestaurant: RequestHandler = async (req, res) => {
     .set({ isActive: !restaurant.isActive })
     .where(eq(restaurants.id, restaurantId))
     .returning();
-  res.json(updated);
+  res.json(sanitizeAdminRestaurant(updated));
 };
 
 const suspendRestaurant: RequestHandler = async (req, res) => {
@@ -193,7 +217,7 @@ const suspendRestaurant: RequestHandler = async (req, res) => {
     message: reason ?? "Your account has been suspended by the admin. Please contact support.",
     type: "error",
   });
-  res.json(updated);
+  res.json(sanitizeAdminRestaurant(updated));
 };
 
 const activateRestaurant: RequestHandler = async (req, res) => {
@@ -230,7 +254,7 @@ const activateRestaurant: RequestHandler = async (req, res) => {
     message: "Your account has been activated. You can now accept orders.",
     type: "success",
   });
-  res.json(updated);
+  res.json(sanitizeAdminRestaurant(updated));
 };
 
 const deleteRestaurant: RequestHandler = async (req, res) => {
@@ -341,7 +365,7 @@ const updateRestaurantAdmin: RequestHandler = async (req, res) => {
 
   if (Object.keys(updates).length === 0) {
     const [current] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
-    res.json(current);
+    res.json(current ? sanitizeAdminRestaurant(current) : current);
     return;
   }
 
@@ -351,7 +375,7 @@ const updateRestaurantAdmin: RequestHandler = async (req, res) => {
     .where(eq(restaurants.id, restaurantId))
     .returning();
 
-  res.json(updated);
+  res.json(updated ? sanitizeAdminRestaurant(updated) : updated);
 };
 
 // ── Subscription Plans (admin CRUD) ────────────────────────────────────────
@@ -1263,4 +1287,220 @@ router.post("/admin/resources/:id/approve", requireAdmin, approveAdminResource);
 router.post("/admin/resources/:id/reject", requireAdmin, rejectAdminResource);
 router.post("/admin/resources/:id/feature", requireAdmin, featureAdminResource);
 
+// ── Profile PIN Admin Recovery (Stage 2) ──────────────────────────────────────
+
+const resetRestaurantProfilePin: RequestHandler = async (req, res) => {
+  const restaurantId = Number(req.params.id);
+  if (!Number.isInteger(restaurantId) || restaurantId <= 0) {
+    res.status(400).json({ error: "Invalid restaurant ID" });
+    return;
+  }
+
+  type AdminResetOutcome =
+    | { kind: "not_found" }
+    | {
+        kind: "ok";
+        hadPin: boolean;
+        ownerUserId: number | null;
+        toCancelIds: string[];
+      };
+
+  let outcome: AdminResetOutcome;
+  try {
+    outcome = await withBoundedSecurityTx(async (tx): Promise<AdminResetOutcome> => {
+      // Canonical lock order: (0) restaurants -> (2) restaurant_profile_pins -> (3) profile_pin_otp_challenges
+      // Holding (0) guarantees serialization even when no PIN row currently exists (F-06).
+      const anchor = await lockRestaurantAnchor(tx, restaurantId);
+      if (!anchor) {
+        return { kind: "not_found" };
+      }
+
+      await runSecurityTestHook("onAdminResetAnchorAcquired", {
+        restaurantId,
+        readBackendPid: async () => {
+          const r = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid()::int AS pid`);
+          return Number(r.rows[0]?.pid ?? 0);
+        },
+      });
+
+      const [lockedPin] = await tx
+        .select({
+          id: restaurantProfilePins.id,
+          ownerUserId: restaurantProfilePins.ownerUserId,
+          pinHash: restaurantProfilePins.pinHash,
+          pinVersion: restaurantProfilePins.pinVersion,
+        })
+        .from(restaurantProfilePins)
+        .where(eq(restaurantProfilePins.restaurantId, restaurantId))
+        .for("update");
+
+      let hadPin = false;
+      if (lockedPin) {
+        hadPin = lockedPin.pinHash !== null;
+        await tx
+          .update(restaurantProfilePins)
+          .set({
+            pinHash: null,
+            pinSetAt: null,
+            pinVersion: lockedPin.pinVersion + 1,
+            failedAttempts: 0,
+            lockoutLevel: 0,
+            lockedUntil: null,
+            lastFailedAt: null,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(eq(restaurantProfilePins.id, lockedPin.id));
+      } else if (anchor.ownerId !== null) {
+        // F-11: Create clean tombstone when row is missing and an owner exists (orphaned restaurants skipped cleanly)
+        await tx
+          .insert(restaurantProfilePins)
+          .values({
+            restaurantId,
+            ownerUserId: anchor.ownerId,
+            pinHash: null,
+            pepperVersion: 1,
+            pinVersion: 1,
+            failedAttempts: 0,
+            lockoutLevel: 0,
+            lockedUntil: null,
+            lastFailedAt: null,
+            pinSetAt: null,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .onConflictDoNothing({ target: restaurantProfilePins.restaurantId });
+      }
+
+      const toCancelIds = await invalidateActiveOtpChallengesOrdered(tx, {
+        restaurantId,
+        reason: "admin_pin_reset",
+      });
+
+      return {
+        kind: "ok",
+        hadPin,
+        ownerUserId: lockedPin?.ownerUserId ?? anchor.ownerId ?? null,
+        toCancelIds,
+      };
+    });
+  } catch (err) {
+    if (respondSecurityContention(res, err)) return;
+    throw err;
+  }
+
+  if (outcome.kind === "not_found") {
+    res.status(404).json({ error: "Restaurant not found" });
+    return;
+  }
+
+  for (const cid of outcome.toCancelIds) {
+    void cancelChatChallenge(cid);
+  }
+
+  await recordOwnerSecurityAudit({
+    restaurantId,
+    ownerUserId: outcome.ownerUserId,
+    actorUserId: req.user!.id,
+    actorRole: "super_admin",
+    eventType: "admin_profile_pin_reset",
+    meta: { hadPin: outcome.hadPin, invalidatedChallengesCount: outcome.toCancelIds.length },
+    req,
+  });
+
+  res.json({ ok: true, hadPin: outcome.hadPin });
+};
+
+const rebindOwnerRecoveryPhone: RequestHandler = async (req, res) => {
+  const restaurantId = Number(req.params.id);
+  if (!Number.isInteger(restaurantId) || restaurantId <= 0) {
+    res.status(400).json({ error: "Invalid restaurant ID" });
+    return;
+  }
+
+  const rawPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
+  const normalizedPhone = normalizePhone(rawPhone);
+  if (!normalizedPhone) {
+    res.status(400).json({ error: "Valid owner mobile number is required" });
+    return;
+  }
+
+  type RebindOutcome =
+    | { kind: "not_found" }
+    | { kind: "ok"; ownerId: number; toCancelIds: string[] };
+
+  let outcome: RebindOutcome;
+  try {
+    outcome = await withBoundedSecurityTx(async (tx): Promise<RebindOutcome> => {
+      // Canonical lock order: (0) restaurants -> (1) users -> (3) profile_pin_otp_challenges
+      const anchor = await lockRestaurantAnchor(tx, restaurantId);
+      if (!anchor || !anchor.ownerId) {
+        return { kind: "not_found" };
+      }
+
+      const ownerId = anchor.ownerId;
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, ownerId))
+        .for("update");
+
+      await tx
+        .update(users)
+        .set({
+          registrationPhone: rawPhone,
+          registrationPhoneNorm: normalizedPhone,
+          registrationPhoneSource: "admin_rebind",
+          registrationPhoneVerified: true,
+          registrationPhoneCapturedAt: sql`clock_timestamp()`,
+        })
+        .where(eq(users.id, ownerId));
+
+      const toCancelIds = await invalidateActiveOtpChallengesOrdered(tx, {
+        restaurantId,
+        ownerUserId: ownerId,
+        reason: "admin_phone_rebind",
+      });
+
+      return { kind: "ok", ownerId, toCancelIds };
+    });
+  } catch (err) {
+    if (respondSecurityContention(res, err)) return;
+    throw err;
+  }
+
+  if (outcome.kind === "not_found") {
+    res.status(404).json({ error: "Restaurant or owner not found" });
+    return;
+  }
+
+  for (const cid of outcome.toCancelIds) {
+    void cancelChatChallenge(cid);
+  }
+
+  await recordOwnerSecurityAudit({
+    restaurantId,
+    ownerUserId: outcome.ownerId,
+    actorUserId: req.user!.id,
+    actorRole: "super_admin",
+    eventType: "admin_owner_phone_rebind",
+    meta: { maskedPhone: maskPhone(normalizedPhone) },
+    req,
+  });
+
+  res.json({ ok: true, maskedPhone: maskPhone(normalizedPhone) });
+};
+
+router.post(
+  "/admin/restaurants/:id/profile-pin/reset",
+  requireAdmin,
+  requireSensitiveAuth,
+  resetRestaurantProfilePin,
+);
+router.post(
+  "/admin/restaurants/:id/owner-phone/rebind",
+  requireAdmin,
+  requireSensitiveAuth,
+  rebindOwnerRecoveryPhone,
+);
+
 export default router;
+

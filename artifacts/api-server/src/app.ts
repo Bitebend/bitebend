@@ -7,6 +7,7 @@ import { pool } from "@workspace/db";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import { waitForStartupReady } from "./lib/startupGate";
 
 const PgSession = connectPgSimple(session);
 
@@ -82,6 +83,19 @@ app.use(
   }),
 );
 
+// Ensure DB migrations/seed finish before handling API traffic (except liveness probe)
+app.use("/api", async (req, _res, next) => {
+  if (req.path === "/healthz") {
+    return next();
+  }
+  try {
+    await waitForStartupReady();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
 // API routes
 app.use("/api", router);
 
@@ -131,6 +145,13 @@ function getPortalDistPath(): string {
   return p;
 }
 
+function sendFrontendBuildingPage(res: express.Response, appLabel: string): void {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.status(200).type("html").send(
+    `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="2"><title>BiteBend — Starting</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0f172a;color:#f8fafc}main{text-align:center;padding:2rem}</style></head><body><main><h1>Starting ${appLabel}</h1><p>Preparing frontend bundle, refreshing automatically…</p></main></body></html>`,
+  );
+}
+
 // Static assets
 app.use("/home", express.static(path.join(WORKSPACE_ROOT, "artifacts/home/dist"), { redirect: false }));
 app.use("/menu", express.static(path.join(WORKSPACE_ROOT, "artifacts/menu/dist/public"), { redirect: false }));
@@ -144,7 +165,7 @@ app.get(/^\/home(\/.*)?$/, (_req, res) => {
   if (fs.existsSync(indexHtml)) {
     return res.sendFile(indexHtml);
   }
-  res.status(503).send("Home application is building. Please refresh in a moment.");
+  sendFrontendBuildingPage(res, "Home application");
 });
 
 // Menu SPA catch-all
@@ -154,7 +175,7 @@ app.get(/^\/menu(\/.*)?$/, (_req, res) => {
   if (fs.existsSync(indexHtml)) {
     return res.sendFile(indexHtml);
   }
-  res.status(503).send("Menu application is building. Please refresh in a moment.");
+  sendFrontendBuildingPage(res, "Menu application");
 });
 
 // Portal / Root SPA catch-all (handles all non-api, non-whatsapp-bridge routes)
@@ -184,7 +205,7 @@ app.get(/^\/(?!api|whatsapp-bridge).*/, (req, res) => {
   if (fs.existsSync(indexHtml)) {
     return res.sendFile(indexHtml);
   }
-  res.status(503).send("Portal application is building. Please refresh in a moment.");
+  sendFrontendBuildingPage(res, "BiteBend Portal");
 });
 
 app.get("/robots.txt", (_req, res) => {

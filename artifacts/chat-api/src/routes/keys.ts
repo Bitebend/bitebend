@@ -10,6 +10,7 @@ import {
   messagingToDeviceEvents,
 } from "../db";
 import { fromMatrixUserId, toMatrixUserId, verifyDeviceEndorsementEnvelope } from "../lib/crypto";
+import { SYSTEM_SECURITY_ACCOUNT_ID } from "../lib/securityConfig";
 import { type AuthedChatRequest, requireChatAuth } from "../middlewares/chatAuth";
 import { notifyDevice } from "../ws";
 
@@ -177,7 +178,10 @@ router.post("/keys/query", requireChatAuth, async (req: Request, res: Response) 
   const requestedUsers = Object.keys(parsed.data.device_keys);
   const accountIds = requestedUsers
     .map((uid) => ({ uid, accountId: fromMatrixUserId(uid) }))
-    .filter((x): x is { uid: string; accountId: string } => x.accountId !== null);
+    .filter(
+      (x): x is { uid: string; accountId: string } =>
+        x.accountId !== null && x.accountId !== SYSTEM_SECURITY_ACCOUNT_ID,
+    );
 
   if (accountIds.length > 0) {
     const allRows = await chatDb
@@ -304,7 +308,7 @@ router.post("/keys/claim", requireChatAuth, async (req: Request, res: Response) 
 
   for (const [matrixUserId, deviceAlgoMap] of Object.entries(parsed.data.one_time_keys)) {
     const accountId = fromMatrixUserId(matrixUserId);
-    if (!accountId) continue;
+    if (!accountId || accountId === SYSTEM_SECURITY_ACCOUNT_ID) continue;
 
     for (const [matrixDeviceId, algorithm] of Object.entries(deviceAlgoMap)) {
       const [dev] = await chatDb
@@ -407,7 +411,7 @@ router.post("/sendToDevice/:eventType/:txnId", requireChatAuth, async (req: Requ
 
   for (const [matrixUserId, devicesMap] of Object.entries(parsed.data.messages)) {
     const accountId = fromMatrixUserId(matrixUserId);
-    if (!accountId) continue;
+    if (!accountId || accountId === SYSTEM_SECURITY_ACCOUNT_ID) continue;
 
     for (const [targetMatrixDeviceId, contentJson] of Object.entries(devicesMap)) {
       const [targetDev] = await chatDb

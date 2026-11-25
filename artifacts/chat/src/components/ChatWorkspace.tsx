@@ -15,12 +15,20 @@ import {
   UserPlus,
   UserMinus,
   ShieldAlert,
+  ShieldCheck,
+  Clock,
   X,
   Copy,
   Check,
   Trash2,
 } from "lucide-react";
 import { ChatCryptoSession, type DecryptedMessageContent } from "../crypto/e2eeClient";
+import {
+  getOtpDisplayState,
+  SYSTEM_SECURITY_EVENT_TYPE,
+  verifySecurityOtpMessage,
+  type SecurityOtpVerificationResult,
+} from "../crypto/securityOtpVerifier";
 import {
   encryptAttachmentBytes,
   MAX_ATTACHMENT_BYTES,
@@ -78,6 +86,9 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
   const [groupMembersInput, setGroupMembersInput] = useState("");
   const [showGroupPanel, setShowGroupPanel] = useState(false);
   const [addMemberInput, setAddMemberInput] = useState("");
+  const [otpVerifications, setOtpVerifications] = useState<Record<string, SecurityOtpVerificationResult>>({});
+  const [copiedOtpId, setCopiedOtpId] = useState<string | null>(null);
+  const [otpNowMs, setOtpNowMs] = useState<number>(() => Date.now());
 
   const activeConvIdRef = useRef<string | null>(null);
   activeConvIdRef.current = activeConvId;
@@ -90,7 +101,20 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
     [conversations, activeConvId],
   );
 
+  const highestValidOtpSeq = useMemo(() => {
+    let highest = 0;
+    for (const row of timeline) {
+      if (row.server.eventType !== SYSTEM_SECURITY_EVENT_TYPE) continue;
+      const v = otpVerifications[row.server.id];
+      if (v?.valid && row.server.serverSeq > highest) {
+        highest = row.server.serverSeq;
+      }
+    }
+    return highest;
+  }, [timeline, otpVerifications]);
+
   const formatConversationTitle = (conv: ConversationItem): string => {
+    if (conv.kind === "system_readonly") return "Bitebend Security";
     if (conv.kind === "group") return conv.title || "Group Chat";
     const peer = conv.members.find((m) => m.accountId !== account.id) ?? conv.members[0];
     return peer ? `${peer.displayName} (@${peer.username})` : "Direct Chat";
@@ -102,18 +126,28 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
       const { conversations: list } = await chatApi.conversations();
       setConversations(list);
 
-      // Update keyEpochs & decrypt last preview messages
+      // Update keyEpochs & decrypt last preview messages (skipping system_readonly)
       const previews: Record<string, string> = {};
       for (const conv of list) {
+        if (conv.kind === "system_readonly") {
+          previews[conv.id] = conv.lastMessage
+            ? "Security verification code"
+            : "Official Bitebend security alerts";
+          continue;
+        }
         await cryptoSession.ensureRoomKeyEpoch(conv.id, conv.keyEpoch);
         if (conv.lastMessage) {
-          const dec = await cryptoSession.decryptRoomEvent(conv.id, conv.lastMessage);
-          if (dec.decrypted) {
-            previews[conv.id] = dec.attachment
-              ? `Encrypted file: ${dec.attachment.plaintextName}`
-              : dec.body || "Encrypted message";
+          if (conv.lastMessage.eventType === SYSTEM_SECURITY_EVENT_TYPE) {
+            previews[conv.id] = "Security verification code";
           } else {
-            previews[conv.id] = "Encrypted message (awaiting keys)";
+            const dec = await cryptoSession.decryptRoomEvent(conv.id, conv.lastMessage);
+            if (dec.decrypted) {
+              previews[conv.id] = dec.attachment
+                ? `Encrypted file: ${dec.attachment.plaintextName}`
+                : dec.body || "Encrypted message";
+            } else {
+              previews[conv.id] = "Encrypted message (awaiting keys)";
+            }
           }
         }
       }
@@ -138,8 +172,19 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
         let maxSeq = afterSeq;
         for (const m of messages) {
           maxSeq = Math.max(maxSeq, m.serverSeq);
-          const content = await cryptoSession.decryptRoomEvent(convId, m);
-          decoded.push({ server: m, content });
+          if (m.eventType === SYSTEM_SECURITY_EVENT_TYPE) {
+            decoded.push({
+              server: m,
+              content: {
+                decrypted: true,
+                msgtype: SYSTEM_SECURITY_EVENT_TYPE,
+                body: "",
+              },
+            });
+          } else {
+            const content = await cryptoSession.decryptRoomEvent(convId, m);
+            decoded.push({ server: m, content });
+          }
         }
         maxSeqByConvRef.current.set(convId, maxSeq);
 
@@ -187,6 +232,42 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [timeline.length]);
+
+  // Verify Ed25519 signatures on system security OTP events asynchronously
+  useEffect(() => {
+    let cancelled = false;
+    const unverified = timeline.filter(
+      (row) => row.server.eventType === SYSTEM_SECURITY_EVENT_TYPE && !otpVerifications[row.server.id],
+    );
+    if (unverified.length === 0) return;
+
+    void (async () => {
+      const nextEntries: Record<string, SecurityOtpVerificationResult> = {};
+      for (const row of unverified) {
+        nextEntries[row.server.id] = await verifySecurityOtpMessage({
+          serverMessage: row.server,
+          accountId: account.id,
+        });
+      }
+      if (!cancelled) {
+        setOtpVerifications((prev) => ({ ...prev, ...nextEntries }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [timeline, account.id, otpVerifications]);
+
+  // Live 1s countdown clock while viewing Bitebend Security OTP thread
+  useEffect(() => {
+    if (activeConversation?.kind !== "system_readonly") return;
+    setOtpNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setOtpNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [activeConversation?.kind]);
 
   // WebSocket real-time sync_hint listener with exponential backoff, delta catch-up & HTTP fallback polling
   useEffect(() => {
@@ -319,7 +400,7 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
     payloadObj: Record<string, unknown>,
     attachmentIds: string[] = [],
   ) => {
-    if (!activeConversation) return;
+    if (!activeConversation || activeConversation.kind === "system_readonly") return;
     setSending(true);
     setErrorBanner(null);
     try {
@@ -358,7 +439,7 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
   const handleSendText = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = messageText.trim();
-    if (!trimmed || sending || !activeConversation) return;
+    if (!trimmed || sending || !activeConversation || activeConversation.kind === "system_readonly") return;
     setMessageText("");
     await sendEncryptedPayload({
       msgtype: "m.text",
@@ -369,7 +450,7 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file || !activeConversation) return;
+    if (!file || !activeConversation || activeConversation.kind === "system_readonly") return;
 
     if (file.size > MAX_ATTACHMENT_BYTES + 2 * 1024 * 1024) {
       setErrorBanner("Selected file exceeds the 15 MB encrypted attachment cap.");
@@ -602,8 +683,16 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
                       isSelected ? "bg-[#ecfdf5]" : "hover:bg-[#faf9f6]"
                     }`}
                   >
-                    <div className="w-10 h-10 rounded-full bg-[#ecfdf5] border border-[#a7f3d0] text-[#047857] font-extrabold text-sm flex items-center justify-center shrink-0">
-                      {conv.kind === "group" ? (
+                    <div
+                      className={`w-10 h-10 rounded-full font-extrabold text-sm flex items-center justify-center shrink-0 border ${
+                        conv.kind === "system_readonly"
+                          ? "bg-[#fff7ed] border-[#fed7aa] text-[#c2410c]"
+                          : "bg-[#ecfdf5] border-[#a7f3d0] text-[#047857]"
+                      }`}
+                    >
+                      {conv.kind === "system_readonly" ? (
+                        <ShieldCheck className="w-5 h-5" />
+                      ) : conv.kind === "group" ? (
                         <Users className="w-4 h-4" />
                       ) : (
                         title.slice(0, 2).toUpperCase()
@@ -611,7 +700,14 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-bold text-[#1a0a00] truncate">{title}</span>
+                        <span className="text-sm font-bold text-[#1a0a00] truncate flex items-center gap-1.5">
+                          <span className="truncate">{title}</span>
+                          {conv.kind === "system_readonly" && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#ffedd5] text-[#9a3412] shrink-0">
+                              Official
+                            </span>
+                          )}
+                        </span>
                         {conv.unreadCount > 0 && (
                           <span className="min-w-5 h-5 px-1.5 rounded-full bg-[#059669] text-white text-[10px] font-extrabold flex items-center justify-center shrink-0">
                             {conv.unreadCount}
@@ -619,7 +715,7 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
                         )}
                       </div>
                       <div className="text-xs text-[#6b7280] truncate mt-0.5">
-                        {lastPreviewMap[conv.id] || (conv.kind === "group" ? `${conv.members.length} members` : "Encrypted chat ready")}
+                        {lastPreviewMap[conv.id] || (conv.kind === "system_readonly" ? "Official Bitebend security alerts" : conv.kind === "group" ? `${conv.members.length} members` : "Encrypted chat ready")}
                       </div>
                     </div>
                   </button>
@@ -655,13 +751,25 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
                     <ArrowLeft className="w-4 h-4" />
                   </button>
                   <div className="min-w-0">
-                    <div className="text-sm font-extrabold text-[#1a0a00] truncate">
-                      {formatConversationTitle(activeConversation)}
+                    <div className="text-sm font-extrabold text-[#1a0a00] truncate flex items-center gap-2">
+                      <span className="truncate">{formatConversationTitle(activeConversation)}</span>
+                      {activeConversation.kind === "system_readonly" && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#ffedd5] text-[#9a3412] shrink-0">
+                          Read-only
+                        </span>
+                      )}
                     </div>
-                    <div className="text-[11px] text-[#059669] flex items-center gap-1">
-                      <Lock className="w-3 h-3" />
-                      <span>Megolm E2EE · Epoch {activeConversation.keyEpoch}</span>
-                    </div>
+                    {activeConversation.kind === "system_readonly" ? (
+                      <div className="text-[11px] text-[#b45309] flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3 shrink-0" />
+                        <span>Server-signed · Not E2EE · Verified system alerts</span>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-[#059669] flex items-center gap-1">
+                        <Lock className="w-3 h-3" />
+                        <span>Megolm E2EE · Epoch {activeConversation.keyEpoch}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -770,6 +878,140 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
                       minute: "2-digit",
                     });
 
+                    if (row.server.eventType === SYSTEM_SECURITY_EVENT_TYPE) {
+                      const verification = otpVerifications[row.server.id];
+                      if (!verification) {
+                        return (
+                          <div key={row.server.id} className="flex justify-start">
+                            <div className="max-w-md w-full rounded-2xl border border-[#ede8e3] bg-white p-4 text-xs text-[#6b7280] flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 animate-spin text-[#059669]" />
+                              <span>Verifying Bitebend Ed25519 signature…</span>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (!verification.valid) {
+                        return (
+                          <div key={row.server.id} className="flex justify-start">
+                            <div className="max-w-md w-full rounded-2xl border border-[#fecaca] bg-[#fef2f2] p-4 space-y-1.5 shadow-xs">
+                              <div className="flex items-center gap-2 text-xs font-extrabold text-[#991b1b]">
+                                <ShieldAlert className="w-4 h-4 shrink-0" />
+                                <span>Signature Verification Failed — OTP Hidden</span>
+                              </div>
+                              <p className="text-xs text-[#7f1d1d] leading-relaxed">
+                                This security alert failed client-side Ed25519 signature verification ({verification.reason}). Do not trust this message.
+                              </p>
+                              <div className="text-[10px] text-[#b91c1c] flex items-center justify-between pt-1">
+                                <span>#{row.server.serverSeq}</span>
+                                <span>{timeStr}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      const payload = verification.payload;
+                      const displayState = getOtpDisplayState({
+                        valid: true,
+                        payload,
+                        highestValidSeq: highestValidOtpSeq,
+                        serverSeq: row.server.serverSeq,
+                        nowMs: otpNowMs,
+                      });
+                      const remainingSeconds = Math.max(
+                        0,
+                        Math.ceil((Date.parse(payload.expiresAt) - otpNowMs) / 1000),
+                      );
+                      const mins = Math.floor(remainingSeconds / 60);
+                      const secs = remainingSeconds % 60;
+                      const countdownText = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+
+                      return (
+                        <div key={row.server.id} className="flex justify-start">
+                          <div
+                            className={`max-w-md w-full rounded-2xl border p-4 space-y-3 shadow-xs ${
+                              displayState === "active"
+                                ? "bg-white border-[#a7f3d0]"
+                                : "bg-[#f8fafc] border-[#e2e8f0] opacity-85"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#1a0a00]">
+                                <ShieldCheck
+                                  className={`w-4 h-4 shrink-0 ${
+                                    displayState === "active" ? "text-[#059669]" : "text-[#64748b]"
+                                  }`}
+                                />
+                                <span>Profile PIN Reset OTP</span>
+                              </div>
+                              {displayState === "active" ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-[#ecfdf5] text-[#047857] border border-[#a7f3d0]">
+                                  <Clock className="w-3 h-3" />
+                                  {countdownText}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#e2e8f0] text-[#475569] uppercase">
+                                  {displayState === "superseded" ? "Superseded" : "Expired"}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="text-xs text-[#4b5563]">
+                              Restaurant: <strong className="text-[#1a0a00]">{payload.restaurantName}</strong>
+                            </div>
+
+                            {displayState === "active" ? (
+                              <div className="rounded-xl bg-[#faf9f6] border border-[#ede8e3] px-4 py-3 flex items-center justify-between gap-3">
+                                <span className="font-mono text-2xl font-black tracking-[0.28em] text-[#1a0a00]">
+                                  {payload.otp}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(payload.otp);
+                                      setCopiedOtpId(row.server.id);
+                                      window.setTimeout(() => setCopiedOtpId(null), 1800);
+                                    } catch {
+                                      // Clipboard unavailable
+                                    }
+                                  }}
+                                  className="rounded-lg bg-[#059669] hover:bg-[#047857] text-white px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 shrink-0"
+                                >
+                                  {copiedOtpId === row.server.id ? (
+                                    <>
+                                      <Check className="w-3.5 h-3.5" />
+                                      Copied
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3.5 h-3.5" />
+                                      Copy OTP
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="rounded-xl bg-[#f1f5f9] border border-[#e2e8f0] px-4 py-2.5 text-xs text-[#64748b] flex items-center justify-between">
+                                <span className="font-mono tracking-[0.25em] font-bold">••••••</span>
+                                <span>
+                                  {displayState === "superseded"
+                                    ? "Replaced by a newer verification code"
+                                    : "Code expired"}
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-between text-[10px] text-[#6b7280] pt-0.5">
+                              <span>Signed by Bitebend · Key {payload.keyId}</span>
+                              <span>#{row.server.serverSeq} · {timeStr}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div key={row.server.id} className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
                         <div
@@ -829,43 +1071,52 @@ export function ChatWorkspace({ account, cryptoSession, onLoggedOut }: Props) {
                 </div>
               )}
 
-              {/* Message Composer */}
-              <form
-                onSubmit={handleSendText}
-                className="bg-white border-t border-[#ede8e3] px-3 py-2.5 flex items-center gap-2"
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*,application/pdf,text/plain,.doc,.docx"
-                  onChange={handleFileSelected}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  disabled={sending || Boolean(uploadNotice)}
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Send Encrypted File (up to 15 MB)"
-                  className="w-10 h-10 rounded-xl border border-[#ede8e3] bg-[#faf9f6] text-[#1a0a00] hover:bg-[#f5f0eb] flex items-center justify-center shrink-0"
+              {/* Message Composer — strictly hidden for system_readonly Bitebend Security threads */}
+              {activeConversation.kind === "system_readonly" ? (
+                <div className="bg-[#faf9f6] border-t border-[#ede8e3] px-4 py-3 text-center text-xs text-[#6b7280] flex items-center justify-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-[#059669] shrink-0" />
+                  <span>
+                    Read-only Bitebend Security thread. Replies and uploads are disabled. Never share your OTP with anyone.
+                  </span>
+                </div>
+              ) : (
+                <form
+                  onSubmit={handleSendText}
+                  className="bg-white border-t border-[#ede8e3] px-3 py-2.5 flex items-center gap-2"
                 >
-                  <Paperclip className="w-4 h-4" />
-                </button>
-                <input
-                  type="text"
-                  value={messageText}
-                  onChange={(e) => setMessageText(e.target.value)}
-                  placeholder="Write an encrypted message…"
-                  className="flex-1 rounded-xl border border-[#ede8e3] bg-[#faf9f6] px-3.5 py-2.5 text-sm text-[#1a0a00] focus:border-[#059669] focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={sending || !messageText.trim()}
-                  className="w-10 h-10 rounded-xl bg-[#059669] text-white hover:bg-[#047857] disabled:opacity-50 flex items-center justify-center shrink-0"
-                  aria-label="Send message"
-                >
-                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                </button>
-              </form>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,application/pdf,text/plain,.doc,.docx"
+                    onChange={handleFileSelected}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    disabled={sending || Boolean(uploadNotice)}
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Send Encrypted File (up to 15 MB)"
+                    className="w-10 h-10 rounded-xl border border-[#ede8e3] bg-[#faf9f6] text-[#1a0a00] hover:bg-[#f5f0eb] flex items-center justify-center shrink-0"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+                  <input
+                    type="text"
+                    value={messageText}
+                    onChange={(e) => setMessageText(e.target.value)}
+                    placeholder="Write an encrypted message…"
+                    className="flex-1 rounded-xl border border-[#ede8e3] bg-[#faf9f6] px-3.5 py-2.5 text-sm text-[#1a0a00] focus:border-[#059669] focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={sending || !messageText.trim()}
+                    className="w-10 h-10 rounded-xl bg-[#059669] text-white hover:bg-[#047857] disabled:opacity-50 flex items-center justify-center shrink-0"
+                    aria-label="Send message"
+                  >
+                    {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  </button>
+                </form>
+              )}
             </>
           )}
         </main>
